@@ -592,6 +592,34 @@ static void runTrigramIndexTests() {
             std::cout << "    Trigram speedup (limited): " << std::fixed << std::setprecision(1) << speedup << "x\n";
         }
         check(true, "Trigram performance benchmark completed");
+
+        // partial_sort benchmark: compare maxResults=100 vs unlimited (full sort)
+        // With partial_sort, limited queries should be faster on large result sets
+        t0 = std::chrono::steady_clock::now();
+        for (int run = 0; run < 100; run++) {
+            auto res = engine.query("fi", 100);  // many matches, partial_sort
+            (void)res;
+        }
+        t1 = std::chrono::steady_clock::now();
+        double partialSortTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+        t0 = std::chrono::steady_clock::now();
+        for (int run = 0; run < 100; run++) {
+            auto res = engine.query("fi");  // many matches, full sort
+            (void)res;
+        }
+        t1 = std::chrono::steady_clock::now();
+        double fullSortTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+        std::cout << "    100x partial_sort (maxResults=100, many matches): " << std::fixed << std::setprecision(2)
+                  << partialSortTime << "ms (" << partialSortTime / 100 << "ms/query)\n";
+        std::cout << "    100x full_sort (unlimited, many matches): " << std::fixed << std::setprecision(2)
+                  << fullSortTime << "ms (" << fullSortTime / 100 << "ms/query)\n";
+        if (partialSortTime < fullSortTime) {
+            double speedup = fullSortTime / partialSortTime;
+            std::cout << "    partial_sort speedup: " << std::fixed << std::setprecision(1) << speedup << "x\n";
+        }
+        check(true, "partial_sort benchmark completed");
     }
 
     // ── Test 8: Path-only match still works with trigram ──

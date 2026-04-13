@@ -344,15 +344,19 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     }
 
     // Sort by priority, then by path length (shorter = shallower = better)
-    std::sort(merged.begin(), merged.end(),
-        [this](const std::pair<uint32_t, uint8_t>& a, const std::pair<uint32_t, uint8_t>& b) {
-            if (a.second != b.second) return a.second < b.second;
-            return lowerPaths_[a.first].size() < lowerPaths_[b.first].size();
-        });
+    auto cmp = [this](const std::pair<uint32_t, uint8_t>& a, const std::pair<uint32_t, uint8_t>& b) {
+        if (a.second != b.second) return a.second < b.second;
+        return lowerPaths_[a.first].size() < lowerPaths_[b.first].size();
+    };
 
-    // Extract indices, truncated to maxResults
     size_t resultCount = merged.size();
     if (maxResults > 0 && resultCount > maxResults) resultCount = maxResults;
+
+    if (resultCount < merged.size()) {
+        std::partial_sort(merged.begin(), merged.begin() + resultCount, merged.end(), cmp);
+    } else {
+        std::sort(merged.begin(), merged.end(), cmp);
+    }
 
     std::vector<uint32_t> result;
     result.reserve(resultCount);

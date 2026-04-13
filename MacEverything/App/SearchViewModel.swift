@@ -52,9 +52,13 @@ class SearchViewModel: ObservableObject {
     private var indexChangePending = false
 
     static var cacheDir: String {
-        let cacheDir = NSSearchPathForDirectoriesInDomains(.cachesDirectory, .userDomainMask, true).first!
-        let appCache = (cacheDir as NSString).appendingPathComponent("com.maceverything.app")
-        try? FileManager.default.createDirectory(atPath: appCache, withIntermediateDirectories: true)
+        let base = NSSearchPathForDirectoriesInDomains(
+            .cachesDirectory, .userDomainMask, true
+        ).first ?? NSTemporaryDirectory()
+        let appCache = (base as NSString).appendingPathComponent("com.maceverything.app")
+        try? FileManager.default.createDirectory(
+            atPath: appCache, withIntermediateDirectories: true
+        )
         return appCache
     }
 
@@ -201,27 +205,28 @@ class SearchViewModel: ObservableObject {
         let bridge = self.bridge
         let maxResults = Self.maxResults
         let pageSize = Self.pageSize
-        let gen = self.searchGeneration
-        Task.detached {
+        let gen = searchGeneration
+        Task.detached { [weak self] in
             let start = CFAbsoluteTimeGetCurrent()
             let indices = bridge.queryIndices(keyword, maxResults: maxResults)
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let totalCount = indices.count
 
-            // Fetch first page on background thread
             let firstPageCount = min(totalCount, pageSize)
             var items: [FileItem] = []
             items.reserveCapacity(firstPageCount)
             for i in 0..<firstPageCount {
                 let idx = indices[i].uint32Value
                 if let r = bridge.record(at: idx) {
-                    items.append(FileItem(id: idx, name: r.name, path: r.path,
-                                         type: r.type, size: r.size, modTime: r.modTime))
+                    items.append(FileItem(
+                        id: idx, name: r.name, path: r.path,
+                        type: r.type, size: r.size, modTime: r.modTime
+                    ))
                 }
             }
 
-            await MainActor.run {
-                guard self.searchGeneration == gen else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.searchGeneration == gen else { return }
                 self.cachedIndices = indices
                 self.loadedCount = firstPageCount
                 self.displayItems = items
@@ -233,7 +238,8 @@ class SearchViewModel: ObservableObject {
 
     private func performContentSearch(_ keyword: String) {
         let bridge = self.bridge
-        Task.detached {
+        let gen = searchGeneration
+        Task.detached { [weak self] in
             let start = CFAbsoluteTimeGetCurrent()
             let results = bridge.queryContent(keyword, maxResults: 200)
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
@@ -250,7 +256,8 @@ class SearchViewModel: ObservableObject {
                 ))
             }
 
-            await MainActor.run {
+            await MainActor.run { [weak self] in
+                guard let self, self.searchGeneration == gen else { return }
                 self.contentResults = items
                 self.totalMatches = items.count
                 self.queryTimeMs = elapsed
@@ -267,20 +274,24 @@ class SearchViewModel: ObservableObject {
         let indices = cachedIndices
         let currentLoaded = loadedCount
         let pageSize = Self.pageSize
+        let gen = searchGeneration
 
-        Task.detached {
+        Task.detached { [weak self] in
             let nextEnd = min(currentLoaded + pageSize, indices.count)
             var newItems: [FileItem] = []
             newItems.reserveCapacity(nextEnd - currentLoaded)
             for i in currentLoaded..<nextEnd {
                 let idx = indices[i].uint32Value
                 if let r = bridge.record(at: idx) {
-                    newItems.append(FileItem(id: idx, name: r.name, path: r.path,
-                                             type: r.type, size: r.size, modTime: r.modTime))
+                    newItems.append(FileItem(
+                        id: idx, name: r.name, path: r.path,
+                        type: r.type, size: r.size, modTime: r.modTime
+                    ))
                 }
             }
 
-            await MainActor.run {
+            await MainActor.run { [weak self] in
+                guard let self, self.searchGeneration == gen else { return }
                 self.displayItems.append(contentsOf: newItems)
                 self.loadedCount = nextEnd
                 self.isLoadingMore = false
@@ -291,8 +302,8 @@ class SearchViewModel: ObservableObject {
     private func loadRecentFiles() {
         recentTask?.cancel()
         let bridge = self.bridge
-        let gen = self.searchGeneration
-        recentTask = Task.detached {
+        let gen = searchGeneration
+        recentTask = Task.detached { [weak self] in
             let indices = bridge.recentIndices(100)
             var items: [FileItem] = []
             items.reserveCapacity(indices.count)
@@ -300,13 +311,14 @@ class SearchViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 let idx = num.uint32Value
                 if let r = bridge.record(at: idx) {
-                    items.append(FileItem(id: idx, name: r.name, path: r.path,
-                                         type: r.type, size: r.size, modTime: r.modTime))
+                    items.append(FileItem(
+                        id: idx, name: r.name, path: r.path,
+                        type: r.type, size: r.size, modTime: r.modTime
+                    ))
                 }
             }
-            await MainActor.run {
-                // Only apply if no new search has started since this was kicked off
-                guard self.searchGeneration == gen else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.searchGeneration == gen else { return }
                 self.displayItems = items
                 self.showingRecent = true
             }
@@ -321,8 +333,9 @@ class SearchViewModel: ObservableObject {
         }
         performIndexRefresh()
         // Schedule a cooldown — any calls during this window are coalesced
-        indexChangeTask = Task { @MainActor in
+        indexChangeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.indexChangeThrottleNs)
+            guard let self else { return }
             self.indexChangeTask = nil
             if self.indexChangePending {
                 self.indexChangePending = false
@@ -339,9 +352,11 @@ class SearchViewModel: ObservableObject {
             let bridge = self.bridge
             let keyword = searchText
             let maxResults = Self.maxResults
-            Task.detached {
+            let gen = searchGeneration
+            Task.detached { [weak self] in
                 let indices = bridge.queryIndices(keyword, maxResults: maxResults)
-                await MainActor.run {
+                await MainActor.run { [weak self] in
+                    guard let self, self.searchGeneration == gen else { return }
                     self.cachedIndices = indices
                     self.totalMatches = indices.count
                 }

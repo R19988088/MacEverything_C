@@ -44,11 +44,12 @@ class HotkeyManager {
             var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                           eventKind: UInt32(kEventHotKeyPressed))
             InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
-                if NSApp.isActive, let window = NSApp.windows.first, window.isVisible {
+                let mainWindow = NSApp.windows.first { !($0 is NSPanel) }
+                if NSApp.isActive, let window = mainWindow, window.isVisible {
                     NSApp.hide(nil)
                 } else {
                     NSApp.activate(ignoringOtherApps: true)
-                    if let window = NSApp.windows.first {
+                    if let window = mainWindow {
                         window.makeKeyAndOrderFront(nil)
                     }
                 }
@@ -69,5 +70,9 @@ class HotkeyManager {
             NotificationCenter.default.removeObserver(obs)
         }
         unregisterHotkey()
+        if let handler = eventHandlerRef {
+            RemoveEventHandler(handler)
+            eventHandlerRef = nil
+        }
     }
 }

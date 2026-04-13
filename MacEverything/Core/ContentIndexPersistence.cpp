@@ -34,7 +34,13 @@ bool ContentIndexWAL::appendAdd(uint32_t fileIndex, uint64_t contentHash,
     if (triCount > 0 && fwrite(trigrams.data(), sizeof(Trigram), triCount, file_) != triCount) return false;
 
     fflush(file_);
-    fsync(fileno(file_));
+    unflushedCount_++;
+
+    if (syncInterval_ > 0 && unflushedCount_ >= syncInterval_) {
+        fsync(fileno(file_));
+        unflushedCount_ = 0;
+    }
+
     return true;
 }
 
@@ -47,7 +53,13 @@ bool ContentIndexWAL::appendRemove(uint32_t fileIndex) {
     if (fwrite(&fileIndex, sizeof(uint32_t), 1, file_) != 1) return false;
 
     fflush(file_);
-    fsync(fileno(file_));
+    unflushedCount_++;
+
+    if (syncInterval_ > 0 && unflushedCount_ >= syncInterval_) {
+        fsync(fileno(file_));
+        unflushedCount_ = 0;
+    }
+
     return true;
 }
 
@@ -85,9 +97,21 @@ std::vector<ContentIndexWAL::Entry> ContentIndexWAL::readAll(const std::string& 
     return entries;
 }
 
+void ContentIndexWAL::sync() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (file_ && unflushedCount_ > 0) {
+        fsync(fileno(file_));
+        unflushedCount_ = 0;
+    }
+}
+
 void ContentIndexWAL::close() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (file_) {
+        if (unflushedCount_ > 0) {
+            fsync(fileno(file_));
+            unflushedCount_ = 0;
+        }
         fclose(file_);
         file_ = nullptr;
     }

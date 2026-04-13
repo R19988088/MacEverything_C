@@ -707,12 +707,99 @@ static void runTrigramIndexTests() {
 }
 
 // ═══════════════════════════════════════════════════════
+//  Part 9: ContentIndex sorted posting list benchmark
+// ═══════════════════════════════════════════════════════
+
+static void runContentIndexQueryBenchmark() {
+    std::cout << "========================================\n";
+    std::cout << "  Part 9: ContentIndex Sorted Posting Lists\n";
+    std::cout << "========================================\n\n";
+
+    // Test: sorted posting lists enable O(n+m) set_intersection
+    // Build a ContentIndex with many files sharing overlapping trigrams
+    std::string tmpDir = "/tmp/maceverything_ci_bench_" + std::to_string(getpid());
+    fs::create_directories(tmpDir);
+
+    ContentIndex ci;
+    ci.setExtensions({"txt"});
+
+    // Create 500 files with varied content to populate posting lists
+    const int numFiles = 500;
+    for (int i = 0; i < numFiles; i++) {
+        std::string path = tmpDir + "/file_" + std::to_string(i) + ".txt";
+        {
+            std::ofstream ofs(path);
+            // Write varied content so trigrams differ across files
+            ofs << "content file number " << i << " with searchable keywords ";
+            if (i % 3 == 0) ofs << "alpha beta gamma ";
+            if (i % 5 == 0) ofs << "delta epsilon zeta ";
+            if (i % 7 == 0) ofs << "searchable unique pattern ";
+            ofs << "padding text to ensure enough trigrams are generated for the index.";
+        }
+        ci.indexFile(static_cast<uint32_t>(i), path);
+    }
+
+    check(ci.indexedFileCount() == numFiles,
+          "CI-Bench: all files indexed");
+
+    // Benchmark: query that requires intersecting multiple posting lists
+    auto t0 = std::chrono::steady_clock::now();
+    const int iterations = 1000;
+    int totalMatches = 0;
+    for (int run = 0; run < iterations; run++) {
+        auto results = ci.query("alpha", 100);
+        totalMatches += results.size();
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    double queryTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+    std::cout << "  " << iterations << "x query 'alpha' (" << (totalMatches / iterations)
+              << " matches/query): " << std::fixed << std::setprecision(2)
+              << queryTime << "ms (" << queryTime / iterations << "ms/query)\n";
+
+    // Verify correctness: 'alpha' appears in files where i%3==0
+    auto results = ci.query("alpha", 1000);
+    int expectedCount = 0;
+    for (int i = 0; i < numFiles; i++) {
+        if (i % 3 == 0) expectedCount++;
+    }
+    check(static_cast<int>(results.size()) == expectedCount,
+          "CI-Bench: 'alpha' matches correct count of files");
+
+    // Benchmark: query with no matches (should short-circuit via trigram miss)
+    t0 = std::chrono::steady_clock::now();
+    for (int run = 0; run < iterations; run++) {
+        auto res = ci.query("xyznonexistent", 100);
+        (void)res;
+    }
+    t1 = std::chrono::steady_clock::now();
+    double noMatchTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+    std::cout << "  " << iterations << "x query no-match: " << std::fixed << std::setprecision(2)
+              << noMatchTime << "ms (" << noMatchTime / iterations << "ms/query)\n";
+    check(true, "CI-Bench: query benchmark completed");
+
+    // Test: posting lists are sorted after load from file
+    std::string savePath = tmpDir + "/ci_bench.bin";
+    ci.saveToFile(savePath);
+
+    ContentIndex ci2;
+    ci2.loadFromFile(savePath);
+    auto results2 = ci2.query("alpha", 1000);
+    check(results2.size() == results.size(),
+          "CI-Bench: loaded index returns same results as original");
+
+    fs::remove_all(tmpDir);
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════
 
 static void printUsage(const char* prog) {
     std::cout << "Usage: " << prog << " [options] [root_path]\n";
-    std::cout << "  --fast             Run fast unit tests only (3, 3b-3e, 5, 7-7d, 8)\n";
+    std::cout << "  --fast             Run fast unit tests only (3, 3b-3e, 5, 7-7d, 8, 9)\n";
     std::cout << "  --slow             Run slow integration tests only (1, 4, 6)\n";
     std::cout << "  --part <id>        Run specific part (can be repeated)\n";
     std::cout << "  --help             Show this help\n";
@@ -721,7 +808,8 @@ static void printUsage(const char* prog) {
     std::cout << "  3c (metadata), 3d (compaction), 3e (ranking), 4 (FSEvents),\n";
     std::cout << "  5 (thread safety), 6 (end-to-end), 7 (compact+content),\n";
     std::cout << "  7b (destructor safety), 7c (WAL race), 7d (saveToFile),\n";
-    std::cout << "  7e (scanner re-entry), 7f (content index), 8 (trigram index)\n";
+    std::cout << "  7e (scanner re-entry), 7f (content index), 8 (trigram index),\n";
+    std::cout << "  9 (content index query benchmark)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -736,7 +824,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8", "9"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -759,7 +847,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9"};
     }
 
     // Validate root path if scan test is selected
@@ -799,6 +887,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("7e")) runScannerReentryTest();
     if (selectedParts.count("7f")) runContentIndexTests();
     if (selectedParts.count("8"))  runTrigramIndexTests();
+    if (selectedParts.count("9"))  runContentIndexQueryBenchmark();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

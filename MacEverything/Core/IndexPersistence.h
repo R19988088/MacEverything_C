@@ -36,6 +36,9 @@ public:
     /// Stop auto-compaction timer.
     void stopAutoCompaction();
 
+    /// Stop auto-compaction and wait for in-flight compaction to finish.
+    void stopAutoCompactionAndWait();
+
     const std::string& basePath() const { return basePath_; }
     const std::string& walPath() const { return walPath_; }
 

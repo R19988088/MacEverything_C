@@ -59,7 +59,9 @@ public:
 
     /// Compact in-memory records by removing tombstoned entries.
     /// Rebuilds pathIndex_ and lowerNames_/lowerPaths_. Thread-safe.
-    void compactRecords();
+    /// Returns a mapping from old index → new index for live records.
+    /// Returns empty map if nothing was compacted.
+    std::unordered_map<uint32_t, uint32_t> compactRecords();
 
     /// Save live records to a binary file (format v3). Thread-safe.
     /// metadata.extra can contain arbitrary key-value pairs for forward compatibility.

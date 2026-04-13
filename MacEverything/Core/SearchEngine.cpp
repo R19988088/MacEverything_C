@@ -305,11 +305,14 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     liveCount_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void SearchEngine::compactRecords() {
+std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     std::unique_lock lock(mutex_);
 
     uint32_t live = liveCount_.load(std::memory_order_relaxed);
-    if (live == records_.size()) return; // nothing to compact
+    if (live == records_.size()) return {}; // nothing to compact
+
+    std::unordered_map<uint32_t, uint32_t> remap;
+    remap.reserve(live);
 
     std::vector<FileRecord> newRecords;
     newRecords.reserve(live);
@@ -323,6 +326,7 @@ void SearchEngine::compactRecords() {
     for (size_t i = 0; i < records_.size(); i++) {
         if (records_[i].type == 0) continue;
         uint32_t newIdx = static_cast<uint32_t>(newRecords.size());
+        remap[static_cast<uint32_t>(i)] = newIdx;
         std::string fullPath = makeFullPath(records_[i].path, records_[i].name);
         newPathIndex[fullPath] = newIdx;
         newLowerNames.push_back(std::move(lowerNames_[i]));
@@ -334,6 +338,8 @@ void SearchEngine::compactRecords() {
     lowerNames_ = std::move(newLowerNames);
     lowerPaths_ = std::move(newLowerPaths);
     pathIndex_ = std::move(newPathIndex);
+
+    return remap;
 }
 
 void SearchEngine::attachWAL(std::shared_ptr<IndexWAL> wal) {
@@ -446,7 +452,11 @@ bool SearchEngine::saveToFile(const std::string& filePath, const IndexMetadata& 
     for (size_t i = 0; i < records_.size(); i++) {
         const auto& r = records_[i];
         if (r.type == 0) continue;
-        writeRecord(f, r);
+        if (!writeRecord(f, r)) {
+            fclose(f);
+            remove(tmpPath.c_str());
+            return false;
+        }
     }
 
     fclose(f);

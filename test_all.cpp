@@ -41,6 +41,7 @@ namespace fs = std::filesystem;
 #include "tests/test_fsevents.h"
 #include "tests/test_thread_safety.h"
 #include "tests/test_e2e.h"
+#include "tests/test_phase1.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -55,7 +56,7 @@ static void printUsage(const char* prog) {
     std::cout << "  root_path          Root path for disk scan (default: /)\n";
     std::cout << "\nPart IDs: 1 (scan+query), 3 (mutation), 3b (path search),\n";
     std::cout << "  3c (metadata), 3d (compaction), 3e (ranking), 4 (FSEvents),\n";
-    std::cout << "  5 (thread safety), 6 (end-to-end)\n";
+    std::cout << "  5 (thread safety), 6 (end-to-end), 7 (phase1 regression)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -70,7 +71,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -93,7 +94,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7"};
     }
 
     // Validate root path if scan test is selected
@@ -126,6 +127,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("4"))  runFSEventsTest();
     if (selectedParts.count("5"))  runThreadSafetyTest();
     if (selectedParts.count("6"))  runEndToEndTest();
+    if (selectedParts.count("7"))  runPhase1Tests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

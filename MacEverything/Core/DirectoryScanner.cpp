@@ -12,6 +12,24 @@
 static constexpr size_t ATTR_BUF_SIZE = 4 * 1024 * 1024; // 4 MB per-thread buffer
 
 void DirectoryScanner::scan(const std::string& rootPath) {
+    // Reset state so scanner can be reused across multiple scans
+    done_.store(false, std::memory_order_relaxed);
+    activeTasks_.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(dedupMutex_);
+        visitedDirs_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        while (!workQueue_.empty()) workQueue_.pop();
+    }
+    threadResults_.clear();
+    stats_.fileCount.store(0, std::memory_order_relaxed);
+    stats_.dirCount.store(0, std::memory_order_relaxed);
+    stats_.symlinkCount.store(0, std::memory_order_relaxed);
+    stats_.otherCount.store(0, std::memory_order_relaxed);
+    stats_.errorCount.store(0, std::memory_order_relaxed);
+
     unsigned numThreads = std::thread::hardware_concurrency();
     if (numThreads < 4) numThreads = 4;
     if (numThreads > 32) numThreads = 32;

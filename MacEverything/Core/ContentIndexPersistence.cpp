@@ -117,7 +117,7 @@ ContentIndexPersistence::ContentIndexPersistence(std::shared_ptr<ContentIndex> i
 {}
 
 ContentIndexPersistence::~ContentIndexPersistence() {
-    stopAutoCompaction();
+    stopAutoCompactionAndWait();
     if (wal_) wal_->close();
 }
 
@@ -225,14 +225,30 @@ void ContentIndexPersistence::stopAutoCompaction() {
     }
 }
 
+void ContentIndexPersistence::stopAutoCompactionAndWait() {
+    if (compactionTimer_) {
+        dispatch_source_cancel(compactionTimer_);
+        dispatch_release(compactionTimer_);
+        compactionTimer_ = nullptr;
+    }
+    if (compactionQueue_) {
+        // Drain in-flight compaction by synchronously dispatching a no-op
+        dispatch_sync(compactionQueue_, ^{});
+        dispatch_release(compactionQueue_);
+        compactionQueue_ = nullptr;
+    }
+}
+
 void ContentIndexPersistence::walAppendAdd(uint32_t fileIndex, uint64_t contentHash,
                                             const std::vector<Trigram>& trigrams) {
+    std::lock_guard<std::mutex> lock(walMutex_);
     if (wal_) {
         wal_->appendAdd(fileIndex, contentHash, trigrams);
     }
 }
 
 void ContentIndexPersistence::walAppendRemove(uint32_t fileIndex) {
+    std::lock_guard<std::mutex> lock(walMutex_);
     if (wal_) {
         wal_->appendRemove(fileIndex);
     }

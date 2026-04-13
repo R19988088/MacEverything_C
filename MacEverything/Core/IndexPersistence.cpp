@@ -10,7 +10,7 @@ IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
 {}
 
 IndexPersistence::~IndexPersistence() {
-    stopAutoCompaction();
+    stopAutoCompactionAndWait();
     if (engine_) engine_->detachWAL();
     if (wal_) wal_->close();
 }
@@ -133,6 +133,20 @@ void IndexPersistence::stopAutoCompaction() {
         compactionTimer_ = nullptr;
     }
     if (compactionQueue_) {
+        dispatch_release(compactionQueue_);
+        compactionQueue_ = nullptr;
+    }
+}
+
+void IndexPersistence::stopAutoCompactionAndWait() {
+    if (compactionTimer_) {
+        dispatch_source_cancel(compactionTimer_);
+        dispatch_release(compactionTimer_);
+        compactionTimer_ = nullptr;
+    }
+    if (compactionQueue_) {
+        // Drain in-flight compaction by synchronously dispatching a no-op
+        dispatch_sync(compactionQueue_, ^{});
         dispatch_release(compactionQueue_);
         compactionQueue_ = nullptr;
     }

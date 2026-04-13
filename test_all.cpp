@@ -30,6 +30,7 @@
 #include <sys/stat.h>
 #include <cassert>
 #include <set>
+#include <dispatch/dispatch.h>
 
 namespace fs = std::filesystem;
 
@@ -1035,6 +1036,105 @@ static void runRecentIndicesTests() {
 }
 
 // ═══════════════════════════════════════════════════════
+//  Part 12: Parallel Snippet Generation Tests
+// ═══════════════════════════════════════════════════════
+
+static void runParallelSnippetTests() {
+    std::cout << "========================================\n";
+    std::cout << "  Part 12: Parallel Snippet Generation\n";
+    std::cout << "========================================\n\n";
+
+    // Create temp directory with test files
+    std::string tmpDir = "/tmp/maceverything_p12_" + std::to_string(getpid());
+    fs::create_directories(tmpDir);
+
+    const int NUM_FILES = 20;
+    std::string keyword = "SearchableKeyword";
+
+    for (int i = 0; i < NUM_FILES; i++) {
+        std::string filePath = tmpDir + "/file_" + std::to_string(i) + ".txt";
+        std::ofstream ofs(filePath);
+        // Write some padding, then the keyword, then more padding
+        for (int j = 0; j < 10; j++) ofs << "Line " << j << " of file " << i << " with some padding text.\n";
+        ofs << "Found the " << keyword << " here in file " << i << "!\n";
+        for (int j = 0; j < 10; j++) ofs << "More padding line " << j << " after the keyword.\n";
+    }
+
+    // Test generateSnippet correctness
+    for (int i = 0; i < NUM_FILES; i++) {
+        std::string filePath = tmpDir + "/file_" + std::to_string(i) + ".txt";
+        uint32_t offset = 0;
+        auto snippet = ContentIndex::generateSnippet(filePath, keyword, offset);
+        check(!snippet.empty(), "snippet generation: file has snippet");
+        check(snippet.find(keyword) != std::string::npos || snippet.find("SearchableK") != std::string::npos,
+              "snippet generation: file contains keyword");
+    }
+
+    // Benchmark: sequential vs parallel snippet generation
+    auto seqStart = std::chrono::high_resolution_clock::now();
+    for (int rep = 0; rep < 10; rep++) {
+        for (int i = 0; i < NUM_FILES; i++) {
+            std::string filePath = tmpDir + "/file_" + std::to_string(i) + ".txt";
+            uint32_t offset = 0;
+            auto snippet = ContentIndex::generateSnippet(filePath, keyword, offset);
+            (void)snippet;
+        }
+    }
+    auto seqEnd = std::chrono::high_resolution_clock::now();
+    double seqMs = std::chrono::duration<double, std::milli>(seqEnd - seqStart).count();
+
+    // Parallel version using dispatch_apply
+    std::vector<std::string> filePaths(NUM_FILES);
+    for (int i = 0; i < NUM_FILES; i++) {
+        filePaths[i] = tmpDir + "/file_" + std::to_string(i) + ".txt";
+    }
+
+    auto parStart = std::chrono::high_resolution_clock::now();
+    for (int rep = 0; rep < 10; rep++) {
+        auto* snippetsBuf = new std::string[NUM_FILES];
+        auto* offsetsBuf = new uint32_t[NUM_FILES]();
+        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+        dispatch_apply(NUM_FILES, queue, ^(size_t i) {
+            snippetsBuf[i] = ContentIndex::generateSnippet(filePaths[i], keyword, offsetsBuf[i]);
+        });
+        delete[] snippetsBuf;
+        delete[] offsetsBuf;
+    }
+    auto parEnd = std::chrono::high_resolution_clock::now();
+    double parMs = std::chrono::duration<double, std::milli>(parEnd - parStart).count();
+
+    std::cout << "    Sequential: 10x " << NUM_FILES << " snippets: "
+              << std::fixed << std::setprecision(2) << seqMs << "ms\n";
+    std::cout << "    Parallel:   10x " << NUM_FILES << " snippets: "
+              << std::fixed << std::setprecision(2) << parMs << "ms\n";
+    if (parMs > 0) {
+        std::cout << "    Speedup: " << std::fixed << std::setprecision(1) << seqMs / parMs << "x\n";
+    }
+    check(true, "parallel snippet generation: benchmark completed");
+
+    // Verify parallel results are correct
+    {
+        auto* snippetsBuf = new std::string[NUM_FILES];
+        auto* offsetsBuf2 = new uint32_t[NUM_FILES]();
+        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+        dispatch_apply(NUM_FILES, queue, ^(size_t i) {
+            snippetsBuf[i] = ContentIndex::generateSnippet(filePaths[i], keyword, offsetsBuf2[i]);
+        });
+        int validCount = 0;
+        for (int i = 0; i < NUM_FILES; i++) {
+            if (!snippetsBuf[i].empty()) validCount++;
+        }
+        delete[] snippetsBuf;
+        delete[] offsetsBuf2;
+        check(validCount == NUM_FILES, "parallel snippet generation: all snippets valid");
+    }
+
+    // Cleanup
+    fs::remove_all(tmpDir);
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════
 
@@ -1051,7 +1151,7 @@ static void printUsage(const char* prog) {
     std::cout << "  7b (destructor safety), 7c (WAL race), 7d (saveToFile),\n";
     std::cout << "  7e (scanner re-entry), 7f (content index), 8 (trigram index),\n";
     std::cout << "  9 (content index query benchmark), 10 (WAL batch fsync),\n";
-    std::cout << "  11 (recentIndices)\n";
+    std::cout << "  11 (recentIndices), 12 (parallel snippets)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -1066,7 +1166,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8", "9", "10", "11"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8", "9", "10", "11", "12"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -1089,7 +1189,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12"};
     }
 
     // Validate root path if scan test is selected
@@ -1132,6 +1232,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("9"))  runContentIndexQueryBenchmark();
     if (selectedParts.count("10")) runWalBatchFsyncBenchmark();
     if (selectedParts.count("11")) runRecentIndicesTests();
+    if (selectedParts.count("12")) runParallelSnippetTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

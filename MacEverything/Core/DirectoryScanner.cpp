@@ -128,6 +128,10 @@ void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, i
                         | ATTR_CMN_FILEID;
     attrList.fileattr = ATTR_FILE_DATALENGTH;
 
+    // Collect subdirectories locally, then batch-push to work queue
+    // to reduce queueMutex_ contention (one lock per batch, not per directory).
+    std::vector<std::string> pendingDirs;
+
     for (;;) {
         int retcount = getattrlistbulk(dirfd, &attrList, buffer, ATTR_BUF_SIZE, FSOPT_NOFOLLOW);
 
@@ -238,11 +242,7 @@ void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, i
                         name[nameLen-2] == 'p' && name[nameLen-1] == 'p');
 
                     if (!isAppBundle) {
-                        {
-                            std::lock_guard<std::mutex> lock(queueMutex_);
-                            workQueue_.push(std::move(childPath));
-                        }
-                        queueCV_.notify_one();
+                        pendingDirs.push_back(std::move(childPath));
                     }
 
                     stats_.dirCount.fetch_add(1, std::memory_order_relaxed);
@@ -266,6 +266,17 @@ void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, i
     }
 
     close(dirfd);
+
+    // Batch-push all discovered subdirectories in a single lock acquisition
+    if (!pendingDirs.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            for (auto& dir : pendingDirs) {
+                workQueue_.push(std::move(dir));
+            }
+        }
+        queueCV_.notify_all();
+    }
 }
 
 bool DirectoryScanner::tryVisitDirectory(dev_t dev, uint64_t ino) {

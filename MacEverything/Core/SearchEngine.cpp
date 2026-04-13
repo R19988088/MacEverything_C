@@ -432,32 +432,29 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
 
     std::string lowerPrefix = toLower(pathPrefix);
     uint32_t removed = 0;
-    // Collect paths to remove (can't erase from pathIndex_ while iterating)
-    std::vector<std::string> toRemove;
-    for (const auto& [path, idx] : pathIndex_) {
-        // pathIndex_ keys are already lowercase
+    // Single-pass: iterate and erase matching entries using iterator advancement.
+    // unordered_map::erase(iterator) returns the next valid iterator, so this is safe.
+    // pathIndex_ keys are already lowercase.
+    for (auto it = pathIndex_.begin(); it != pathIndex_.end(); ) {
+        const auto& path = it->first;
         if (path.size() >= lowerPrefix.size() &&
             path.compare(0, lowerPrefix.size(), lowerPrefix) == 0 &&
             (path.size() == lowerPrefix.size() || path[lowerPrefix.size()] == '/')) {
-            toRemove.push_back(path);
+            uint32_t idx = it->second;
+            records_[idx].type = 0;
+            records_[idx].name.clear();
+            records_[idx].path.clear();
+            records_[idx].size = 0;
+            records_[idx].modTime = 0;
+            lowerNames_[idx].clear();
+            lowerPaths_[idx].clear();
+            removeTrigramsForRecord(idx);
+            liveCount_.fetch_sub(1, std::memory_order_relaxed);
+            it = pathIndex_.erase(it);
+            removed++;
+        } else {
+            ++it;
         }
-    }
-
-    for (const auto& path : toRemove) {
-        auto it = pathIndex_.find(path);
-        if (it == pathIndex_.end()) continue;
-        uint32_t idx = it->second;
-        records_[idx].type = 0;
-        records_[idx].name.clear();
-        records_[idx].path.clear();
-        records_[idx].size = 0;
-        records_[idx].modTime = 0;
-        lowerNames_[idx].clear();
-        lowerPaths_[idx].clear();
-        pathIndex_.erase(it);
-        removeTrigramsForRecord(idx);
-        liveCount_.fetch_sub(1, std::memory_order_relaxed);
-        removed++;
     }
 
     return removed;

@@ -658,6 +658,51 @@ static void runTrigramIndexTests() {
         check(res.size() == 1, "removeByPathPrefix: 'ccc' still findable via trigram");
     }
 
+    // ── Test 10: removeByPathPrefix benchmark (single-pass vs old double-lookup) ──
+    std::cout << "\n  --- removeByPathPrefix benchmark ---\n";
+    {
+        // Build a large dataset: 50K records under 10 different prefixes
+        const int recordsPerPrefix = 5000;
+        const int numPrefixes = 10;
+        const int totalRecords = recordsPerPrefix * numPrefixes;
+
+        auto buildRecords = [&]() {
+            std::vector<FileRecord> records;
+            records.reserve(totalRecords);
+            for (int p = 0; p < numPrefixes; p++) {
+                std::string prefix = "/volume/prefix" + std::to_string(p);
+                for (int i = 0; i < recordsPerPrefix; i++) {
+                    std::string name = "file_" + std::to_string(p) + "_" + std::to_string(i) + ".txt";
+                    records.push_back({name, prefix + "/sub/deep", 1, static_cast<uint64_t>(i * 100), static_cast<time_t>(1000 + i)});
+                }
+            }
+            return records;
+        };
+
+        // Benchmark: remove one prefix (5000 records out of 50000)
+        SearchEngine engine;
+        engine.loadRecords(buildRecords());
+        auto t0 = std::chrono::steady_clock::now();
+        uint32_t removed = engine.removeByPathPrefix("/volume/prefix0");
+        auto t1 = std::chrono::steady_clock::now();
+        double removeTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+        check(removed == recordsPerPrefix, "removeByPathPrefix: removed correct count");
+        check(engine.liveRecordCount() == totalRecords - recordsPerPrefix,
+              "removeByPathPrefix: live count correct after removal");
+
+        // Verify removed records are not queryable
+        auto res = engine.query("file_0_0");
+        check(res.empty(), "removeByPathPrefix: removed file not queryable");
+        // Verify non-removed records still queryable
+        res = engine.query("file_1_0");
+        check(res.size() >= 1, "removeByPathPrefix: non-removed file still queryable");
+
+        std::cout << "    Remove " << removed << " / " << totalRecords << " records: "
+                  << std::fixed << std::setprecision(2) << removeTime << "ms\n";
+        check(true, "removeByPathPrefix benchmark completed");
+    }
+
     std::cout << "\n";
 }
 

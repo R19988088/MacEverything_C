@@ -99,7 +99,9 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
     }
 
     // 6. Rename new WAL to standard path
-    rename(newWalPath.c_str(), walPath_.c_str());
+    if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
+        std::cerr << "[IndexPersistence] Failed to rename WAL: " << newWalPath << " -> " << walPath_ << "\n";
+    }
 }
 
 void IndexPersistence::startAutoCompaction(double intervalSec, FileSystemWatcher* watcher) {

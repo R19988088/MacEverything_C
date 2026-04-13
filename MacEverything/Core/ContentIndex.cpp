@@ -77,6 +77,11 @@ bool ContentIndex::isBinaryFile(const std::string& path) {
 }
 
 bool ContentIndex::hasAllowedExtension(const std::string& filename) const {
+    std::shared_lock lock(mutex_);
+    return hasAllowedExtensionLocked(filename);
+}
+
+bool ContentIndex::hasAllowedExtensionLocked(const std::string& filename) const {
     // Find last dot
     size_t dotPos = filename.rfind('.');
     if (dotPos == std::string::npos || dotPos == filename.size() - 1) {
@@ -118,17 +123,23 @@ std::string ContentIndex::readFileContent(const std::string& path, uint64_t maxS
 std::vector<Trigram> ContentIndex::extractTrigrams(const std::string& text) {
     if (text.size() < 3) return {};
 
-    std::unordered_set<Trigram> trigramSet;
-    trigramSet.reserve(text.size()); // upper bound
+    // Bitmap dedup: 2^24 = 16M bits = 2MB, much faster than unordered_set for large texts
+    static constexpr size_t kBitmapSize = 1 << 24;
+    std::vector<bool> seen(kBitmapSize, false);
+    std::vector<Trigram> result;
 
     for (size_t i = 0; i + 2 < text.size(); i++) {
         uint8_t a = static_cast<uint8_t>(std::tolower(static_cast<unsigned char>(text[i])));
         uint8_t b = static_cast<uint8_t>(std::tolower(static_cast<unsigned char>(text[i + 1])));
         uint8_t c = static_cast<uint8_t>(std::tolower(static_cast<unsigned char>(text[i + 2])));
-        trigramSet.insert(makeTrigram(a, b, c));
+        Trigram t = makeTrigram(a, b, c);
+        if (!seen[t]) {
+            seen[t] = true;
+            result.push_back(t);
+        }
     }
 
-    return std::vector<Trigram>(trigramSet.begin(), trigramSet.end());
+    return result;
 }
 
 // --- Snippet generation ---
@@ -219,12 +230,10 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
         // Extract filename from path
         size_t lastSlash = fullPath.rfind('/');
         std::string filename = (lastSlash != std::string::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
-        if (extensions_.empty() || !hasAllowedExtension(filename)) return false;
+        if (extensions_.empty() || !hasAllowedExtensionLocked(filename)) return false;
     }
 
-    // Check binary and read content outside lock
-    if (isBinaryFile(fullPath)) return false;
-
+    // Single I/O: read content and check for binary in one pass
     uint64_t maxSize;
     {
         std::shared_lock lock(mutex_);
@@ -233,6 +242,12 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
 
     std::string content = readFileContent(fullPath, maxSize);
     if (content.empty()) return false;
+
+    // Check for NUL bytes (binary detection) in the content we already read
+    size_t checkLen = std::min(content.size(), size_t(8192));
+    for (size_t i = 0; i < checkLen; i++) {
+        if (content[i] == '\0') return false;
+    }
 
     uint64_t hash = hashContent(content);
     auto trigrams = extractTrigrams(content);
@@ -265,9 +280,13 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
         }
     }
 
-    // Add to inverted index
+    // Add to inverted index (sorted insertion)
     for (Trigram tri : trigrams) {
-        invertedIndex_[tri].push_back(fileIndex);
+        auto& list = invertedIndex_[tri];
+        auto pos = std::lower_bound(list.begin(), list.end(), fileIndex);
+        if (pos == list.end() || *pos != fileIndex) {
+            list.insert(pos, fileIndex);
+        }
     }
 
     // Store file info
@@ -317,9 +336,13 @@ void ContentIndex::insertFileInfo(uint32_t fileIndex, uint64_t contentHash, std:
     // Remove old if exists
     removeFileInternal(fileIndex);
 
-    // Add to inverted index
+    // Add to inverted index (sorted insertion)
     for (Trigram tri : trigrams) {
-        invertedIndex_[tri].push_back(fileIndex);
+        auto& list = invertedIndex_[tri];
+        auto pos = std::lower_bound(list.begin(), list.end(), fileIndex);
+        if (pos == list.end() || *pos != fileIndex) {
+            list.insert(pos, fileIndex);
+        }
     }
 
     ContentFileInfo info;
@@ -367,20 +390,22 @@ std::vector<ContentMatch> ContentIndex::query(const std::string& keyword, uint32
 
         if (!smallest) return {};
 
+        // Remember which trigram is the smallest so we can skip it during intersection
+        const std::vector<uint32_t>* smallestPtr = smallest;
+
         // Intersect: start with smallest posting list, check all other trigrams
-        for (uint32_t fileIdx : *smallest) {
+        for (uint32_t fileIdx : *smallestPtr) {
             bool inAll = true;
             for (Trigram tri : keyTrigrams) {
-                if (tri == keyTrigrams[0] && smallest == &invertedIndex_.at(keyTrigrams[0])) {
-                    // Skip the one we're already iterating
-                    // (this optimization is only valid if we track which trigram smallest came from)
-                }
                 auto it = invertedIndex_.find(tri);
                 if (it == invertedIndex_.end()) { inAll = false; break; }
 
-                // Binary search in sorted posting list or linear scan
+                // Skip the posting list we're already iterating
+                if (&it->second == smallestPtr) continue;
+
+                // Binary search in sorted posting list
                 const auto& list = it->second;
-                if (std::find(list.begin(), list.end(), fileIdx) == list.end()) {
+                if (!std::binary_search(list.begin(), list.end(), fileIdx)) {
                     inAll = false;
                     break;
                 }
@@ -554,9 +579,13 @@ bool ContentIndex::loadFromFile(const std::string& path) {
             return false;
         }
 
-        // Build inverted index
+        // Build inverted index (sorted insertion)
         for (Trigram tri : trigrams) {
-            newInvertedIndex[tri].push_back(fileIndex);
+            auto& list = newInvertedIndex[tri];
+            auto pos = std::lower_bound(list.begin(), list.end(), fileIndex);
+            if (pos == list.end() || *pos != fileIndex) {
+                list.insert(pos, fileIndex);
+            }
         }
 
         ContentFileInfo info;

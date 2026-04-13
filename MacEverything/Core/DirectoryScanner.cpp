@@ -9,7 +9,7 @@
 #include <iostream>
 #include <memory>
 
-static constexpr size_t ATTR_BUF_SIZE = 4 * 1024 * 1024; // 4 MB per-thread buffer
+static constexpr size_t ATTR_BUF_SIZE = 1 * 1024 * 1024; // 1 MB per-thread buffer
 
 void DirectoryScanner::scan(const std::string& rootPath) {
     // Reset state so scanner can be reused across multiple scans
@@ -38,7 +38,7 @@ void DirectoryScanner::scan(const std::string& rootPath) {
 
     threadResults_.resize(numThreads);
     for (auto& v : threadResults_) {
-        v.reserve(200000);
+        v.reserve(50000);
     }
 
     {

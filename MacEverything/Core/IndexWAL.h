@@ -29,8 +29,11 @@ public:
     /// Open WAL file for appending. Creates if not exists.
     bool open(const std::string& walPath);
 
-    /// Append a mutation entry. Thread-safe.
+    /// Append a mutation entry. Thread-safe. Does NOT fsync on each call.
     bool append(WALOp op, const std::string& fullPath, const FileRecord& record = {});
+
+    /// Explicitly flush buffered writes to disk (fflush + fsync).
+    void flush();
 
     /// Read all valid entries from a WAL file (stops at first corrupt entry).
     static std::vector<WALEntry> readAll(const std::string& walPath);

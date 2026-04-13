@@ -128,6 +128,9 @@ private:
 
     mutable std::shared_mutex mutex_;
 
+    // Lock-free version for internal use (caller must hold mutex_)
+    bool hasAllowedExtensionLocked(const std::string& filename) const;
+
     // Internal: read file content, returns empty string on failure
     static std::string readFileContent(const std::string& path, uint64_t maxSize);
 

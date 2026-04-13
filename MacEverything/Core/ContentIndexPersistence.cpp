@@ -171,9 +171,13 @@ void ContentIndexPersistence::compact() {
         return;
     }
 
-    // 2. Swap WAL
-    auto oldWal = wal_;
-    wal_ = newWal;
+    // 2. Swap WAL (under walMutex_ so walAppendAdd/Remove see the new WAL)
+    std::shared_ptr<ContentIndexWAL> oldWal;
+    {
+        std::lock_guard<std::mutex> lock(walMutex_);
+        oldWal = wal_;
+        wal_ = newWal;
+    }
 
     // 3. Close and delete old WAL
     if (oldWal) {
@@ -189,7 +193,9 @@ void ContentIndexPersistence::compact() {
     }
 
     // 5. Rename new WAL to standard path
-    rename(newWalPath.c_str(), walPath_.c_str());
+    if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
+        std::cerr << "[ContentIndexPersistence] Failed to rename WAL: " << newWalPath << " -> " << walPath_ << "\n";
+    }
 }
 
 void ContentIndexPersistence::startAutoCompaction(double intervalSec) {

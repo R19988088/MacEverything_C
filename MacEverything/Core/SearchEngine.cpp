@@ -53,11 +53,11 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
 
     for (auto& th : threads) th.join();
 
-    // Build path index
+    // Build path index (case-insensitive keys for macOS APFS compatibility)
     pathIndex_.clear();
     pathIndex_.reserve(records_.size());
     for (size_t i = 0; i < records_.size(); i++) {
-        pathIndex_[makeFullPath(records_[i].path, records_[i].name)] = static_cast<uint32_t>(i);
+        pathIndex_[toLower(makeFullPath(records_[i].path, records_[i].name))] = static_cast<uint32_t>(i);
     }
 
     liveCount_.store(static_cast<uint32_t>(records_.size()), std::memory_order_relaxed);
@@ -209,7 +209,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     records_.push_back(std::move(record));
     lowerNames_.push_back(std::move(lower));
     lowerPaths_.push_back(std::move(lowerPath));
-    pathIndex_[std::move(fullPath)] = idx;
+    pathIndex_[toLower(fullPath)] = idx;
     liveCount_.fetch_add(1, std::memory_order_relaxed);
 
     return idx;
@@ -218,7 +218,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
 bool SearchEngine::removeByPath(const std::string& fullPath) {
     std::unique_lock lock(mutex_);
 
-    auto it = pathIndex_.find(fullPath);
+    auto it = pathIndex_.find(toLower(fullPath));
     if (it == pathIndex_.end()) return false;
 
     if (wal_) wal_->append(WALOp::Remove, fullPath);
@@ -240,14 +240,15 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
 uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
     std::unique_lock lock(mutex_);
 
+    std::string lowerPrefix = toLower(pathPrefix);
     uint32_t removed = 0;
     // Collect paths to remove (can't erase from pathIndex_ while iterating)
     std::vector<std::string> toRemove;
     for (const auto& [path, idx] : pathIndex_) {
-        // Match: path starts with prefix, and either equals prefix or next char is '/'
-        if (path.size() >= pathPrefix.size() &&
-            path.compare(0, pathPrefix.size(), pathPrefix) == 0 &&
-            (path.size() == pathPrefix.size() || path[pathPrefix.size()] == '/')) {
+        // pathIndex_ keys are already lowercase
+        if (path.size() >= lowerPrefix.size() &&
+            path.compare(0, lowerPrefix.size(), lowerPrefix) == 0 &&
+            (path.size() == lowerPrefix.size() || path[lowerPrefix.size()] == '/')) {
             toRemove.push_back(path);
         }
     }
@@ -277,8 +278,8 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
 
     if (wal_) wal_->append(WALOp::Update, fullPath, updated);
 
-    // Remove old record if exists
-    auto it = pathIndex_.find(fullPath);
+    // Remove old record if exists (case-insensitive lookup)
+    auto it = pathIndex_.find(toLower(fullPath));
     if (it != pathIndex_.end()) {
         uint32_t idx = it->second;
         records_[idx].type = 0;
@@ -301,7 +302,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     records_.push_back(std::move(updated));
     lowerNames_.push_back(std::move(lower));
     lowerPaths_.push_back(std::move(lowerPath));
-    pathIndex_[std::move(newFullPath)] = newIdx;
+    pathIndex_[lowerPath] = newIdx;
     liveCount_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -327,7 +328,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         if (records_[i].type == 0) continue;
         uint32_t newIdx = static_cast<uint32_t>(newRecords.size());
         remap[static_cast<uint32_t>(i)] = newIdx;
-        std::string fullPath = makeFullPath(records_[i].path, records_[i].name);
+        std::string fullPath = toLower(makeFullPath(records_[i].path, records_[i].name));
         newPathIndex[fullPath] = newIdx;
         newLowerNames.push_back(std::move(lowerNames_[i]));
         newLowerPaths.push_back(std::move(lowerPaths_[i]));
@@ -538,7 +539,7 @@ bool SearchEngine::loadFromFile(const std::string& filePath, IndexMetadata* outM
 
 uint32_t SearchEngine::indexForPath(const std::string& fullPath) const {
     std::shared_lock lock(mutex_);
-    auto it = pathIndex_.find(fullPath);
+    auto it = pathIndex_.find(toLower(fullPath));
     return (it != pathIndex_.end()) ? it->second : UINT32_MAX;
 }
 

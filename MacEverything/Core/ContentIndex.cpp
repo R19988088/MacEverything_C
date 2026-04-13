@@ -118,6 +118,36 @@ std::string ContentIndex::readFileContent(const std::string& path, uint64_t maxS
     return content;
 }
 
+std::string ContentIndex::readFileIfText(const std::string& path, uint64_t maxSize) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return {};
+
+    fseek(f, 0, SEEK_END);
+    long fileSize = ftell(f);
+    if (fileSize <= 0 || static_cast<uint64_t>(fileSize) > maxSize) {
+        fclose(f);
+        return {};
+    }
+
+    fseek(f, 0, SEEK_SET);
+    std::string content;
+    content.resize(static_cast<size_t>(fileSize));
+    size_t bytesRead = fread(content.data(), 1, content.size(), f);
+    fclose(f);
+
+    if (bytesRead != content.size()) {
+        content.resize(bytesRead);
+    }
+
+    // Check for binary (NUL byte in first 8KB)
+    size_t checkLen = std::min(bytesRead, size_t(8192));
+    for (size_t i = 0; i < checkLen; i++) {
+        if (content[i] == '\0') return {};
+    }
+
+    return content;
+}
+
 // --- Trigram extraction ---
 
 std::vector<Trigram> ContentIndex::extractTrigrams(const std::string& text) {
@@ -240,7 +270,8 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
         maxSize = maxFileSize_;
     }
 
-    std::string content = readFileContent(fullPath, maxSize);
+    // Single-pass read: open file once, read content, check for binary
+    std::string content = readFileIfText(fullPath, maxSize);
     if (content.empty()) return false;
 
     // Check for NUL bytes (binary detection) in the content we already read

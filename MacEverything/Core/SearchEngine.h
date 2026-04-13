@@ -59,7 +59,7 @@ public:
     uint32_t liveRecordCount() const { return liveCount_.load(std::memory_order_relaxed); }
 
     /// Compact in-memory records by removing tombstoned entries.
-    /// Rebuilds pathIndex_ and lowerNames_/lowerPaths_. Thread-safe.
+    /// Rebuilds pathIndex_ and lowerNames_. Thread-safe.
     /// Returns a mapping from old index → new index for live records.
     /// Returns empty map if nothing was compacted.
     std::unordered_map<uint32_t, uint32_t> compactRecords();
@@ -97,7 +97,6 @@ public:
 private:
     std::vector<FileRecord> records_;
     std::vector<std::string> lowerNames_; // pre-computed lowercase filenames
-    std::vector<std::string> lowerPaths_; // pre-computed lowercase full paths
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> index
     std::atomic<uint32_t> liveCount_{0};
     mutable std::shared_mutex mutex_;

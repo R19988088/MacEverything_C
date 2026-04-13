@@ -210,9 +210,10 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         }
     }
 
-    // Collect results: pair<index, priority>
+    // Collect results: (index, priority, pathLen) so sorting doesn't need records_ access.
     // Priority: 0=name exact match, 1=name starts with, 2=name contains, 3=path-only match
-    std::vector<std::pair<uint32_t, uint8_t>> merged;
+    struct Match { uint32_t idx; uint8_t priority; uint32_t pathLen; };
+    std::vector<Match> merged;
 
     if (useTrigramIndex) {
         // Phase 1: Check trigram candidates for name matches (fast, only a subset)
@@ -229,7 +230,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 } else {
                     priority = 2;
                 }
-                merged.emplace_back(idx, priority);
+                uint32_t pLen = static_cast<uint32_t>(records_[idx].path.size() + 1 + records_[idx].name.size());
+                merged.push_back({idx, priority, pLen});
             }
         }
 
@@ -245,7 +247,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         size_t totalSize = records_.size();
         size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
 
-        std::vector<std::vector<std::pair<uint32_t, uint8_t>>> threadResults(numThreads);
+        std::vector<std::vector<Match>> threadResults(numThreads);
         auto* threadResultsPtr = &threadResults;
         const auto* recordsPtr = &records_;
         const auto* lowerNamesPtr = &lowerNames_;
@@ -269,15 +271,16 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 std::string lowerPath = toLower(makeFullPath((*recordsPtr)[i].path, (*recordsPtr)[i].name));
                 if (lowerPath.find(lowerKey) != std::string::npos) {
                     const auto& lowerName = (*lowerNamesPtr)[i];
+                    uint32_t pLen = static_cast<uint32_t>((*recordsPtr)[i].path.size() + 1 + (*recordsPtr)[i].name.size());
                     if (lowerName.find(lowerKey) != std::string::npos) {
                         uint8_t priority;
                         if (lowerName == lowerKey) priority = 0;
                         else if (lowerName.size() >= lowerKey.size() &&
                                  lowerName.compare(0, lowerKey.size(), lowerKey) == 0) priority = 1;
                         else priority = 2;
-                        local.emplace_back(static_cast<uint32_t>(i), priority);
+                        local.push_back({static_cast<uint32_t>(i), priority, pLen});
                     } else {
-                        local.emplace_back(static_cast<uint32_t>(i), uint8_t(3));
+                        local.push_back({static_cast<uint32_t>(i), uint8_t(3), pLen});
                     }
                 }
             }
@@ -296,7 +299,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         size_t totalSize = records_.size();
         size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
 
-        std::vector<std::vector<std::pair<uint32_t, uint8_t>>> threadResults(numThreads);
+        std::vector<std::vector<Match>> threadResults(numThreads);
 
         auto* threadResultsPtr = &threadResults;
         const auto* recordsPtr = &records_;
@@ -334,7 +337,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     } else {
                         priority = 3;
                     }
-                    local.emplace_back(static_cast<uint32_t>(i), priority);
+                    uint32_t pLen = static_cast<uint32_t>((*recordsPtr)[i].path.size() + 1 + (*recordsPtr)[i].name.size());
+                    local.push_back({static_cast<uint32_t>(i), priority, pLen});
                 }
             }
         });
@@ -344,13 +348,14 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         }
     }
 
+    // Release shared lock before sorting — all needed data is captured in Match structs.
+    // This allows concurrent writers to proceed while we sort/truncate results.
+    lock.unlock();
+
     // Sort by priority, then by full path length (shorter = shallower = better)
-    auto cmp = [this](const std::pair<uint32_t, uint8_t>& a, const std::pair<uint32_t, uint8_t>& b) {
-        if (a.second != b.second) return a.second < b.second;
-        // Compute full path length from path + separator + name (avoids storing lowerPaths_)
-        size_t lenA = records_[a.first].path.size() + 1 + records_[a.first].name.size();
-        size_t lenB = records_[b.first].path.size() + 1 + records_[b.first].name.size();
-        return lenA < lenB;
+    auto cmp = [](const Match& a, const Match& b) {
+        if (a.priority != b.priority) return a.priority < b.priority;
+        return a.pathLen < b.pathLen;
     };
 
     size_t resultCount = merged.size();
@@ -365,7 +370,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     std::vector<uint32_t> result;
     result.reserve(resultCount);
     for (size_t i = 0; i < resultCount; i++) {
-        result.push_back(merged[i].first);
+        result.push_back(merged[i].idx);
     }
 
     return result;

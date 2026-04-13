@@ -532,7 +532,8 @@ static bool pathEndsWithApp(const std::string& path) {
 - (NSArray<NSNumber *> *)recentIndices:(uint32_t)count {
     if (!_engine) return @[];
 
-    // B4: Use engine's batch method — single lock, no per-record overhead
+    // Use SearchEngine::recentIndices which accesses records_ directly under
+    // a single shared lock, avoiding N full FileRecord copies via getRecord.
     auto indices = _engine->recentIndices(count);
 
     NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:indices.size()];

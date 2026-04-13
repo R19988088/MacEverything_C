@@ -731,7 +731,7 @@ bool SearchEngine::loadFromFile(const std::string& filePath, IndexMetadata* outM
 std::vector<uint32_t> SearchEngine::recentIndices(uint32_t count) const {
     std::shared_lock lock(mutex_);
 
-    // Collect (index, modTime) for live records under a single lock
+    // Collect (index, modTime) for live records directly — no FileRecord copy
     std::vector<std::pair<uint32_t, time_t>> entries;
     entries.reserve(records_.size());
     for (size_t i = 0; i < records_.size(); i++) {

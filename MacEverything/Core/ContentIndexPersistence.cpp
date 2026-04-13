@@ -117,7 +117,7 @@ ContentIndexPersistence::ContentIndexPersistence(std::shared_ptr<ContentIndex> i
 {}
 
 ContentIndexPersistence::~ContentIndexPersistence() {
-    stopAutoCompactionAndWait();
+    stopAutoCompaction();
     if (wal_) wal_->close();
 }
 

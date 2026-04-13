@@ -1,0 +1,359 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1000001 /* MacEverythingApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001; };
+		A1000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002; };
+		A1000003 /* SearchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003; };
+		A1000004 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004; };
+		A1000005 /* ResultRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005; };
+		A1000006 /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000006; };
+		A1000007 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000007; };
+		A1000008 /* MacSearchBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = A2000009; };
+		A1000009 /* DirectoryScanner.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200000B; };
+		A100000A /* SearchEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200000D; };
+		A100000B /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A200000F; };
+		A100000C /* FileSystemWatcher.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000014; };
+		A100000D /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000015; };
+		A100000E /* IndexWAL.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000017; };
+		A100000F /* IndexPersistence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000019; };
+		A1000010 /* ShortcutSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001A; };
+		A1000011 /* ContentIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200001C; };
+		A1000012 /* ContentIndexPersistence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200001E; };
+		A1000013 /* ContentResultRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001F; };
+		A1000014 /* ContentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A2000001 /* MacEverythingApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEverythingApp.swift; sourceTree = "<group>"; };
+		A2000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A2000003 /* SearchViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchViewModel.swift; sourceTree = "<group>"; };
+		A2000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A2000005 /* ResultRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultRow.swift; sourceTree = "<group>"; };
+		A2000006 /* PermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionView.swift; sourceTree = "<group>"; };
+		A2000007 /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
+		A2000008 /* MacSearchBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MacSearchBridge.h; sourceTree = "<group>"; };
+		A2000009 /* MacSearchBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = MacSearchBridge.mm; sourceTree = "<group>"; };
+		A200000A /* DirectoryScanner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DirectoryScanner.h; sourceTree = "<group>"; };
+		A200000B /* DirectoryScanner.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DirectoryScanner.cpp; sourceTree = "<group>"; };
+		A200000C /* SearchEngine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SearchEngine.h; sourceTree = "<group>"; };
+		A200000D /* SearchEngine.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEngine.cpp; sourceTree = "<group>"; };
+		A200000E /* FileRecord.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FileRecord.h; sourceTree = "<group>"; };
+		A200000F /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
+		A2000013 /* FileSystemWatcher.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FileSystemWatcher.h; sourceTree = "<group>"; };
+		A2000014 /* FileSystemWatcher.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FileSystemWatcher.cpp; sourceTree = "<group>"; };
+		A2000015 /* CoreServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreServices.framework; path = System/Library/Frameworks/CoreServices.framework; sourceTree = SDKROOT; };
+		A2000016 /* IndexWAL.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IndexWAL.h; sourceTree = "<group>"; };
+		A2000017 /* IndexWAL.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IndexWAL.cpp; sourceTree = "<group>"; };
+		A2000018 /* IndexPersistence.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IndexPersistence.h; sourceTree = "<group>"; };
+		A2000019 /* IndexPersistence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IndexPersistence.cpp; sourceTree = "<group>"; };
+		A2000010 /* MacEverything-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "MacEverything-Bridging-Header.h"; sourceTree = "<group>"; };
+		A2000011 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000012 /* MacEverything.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MacEverything.entitlements; sourceTree = "<group>"; };
+		A2000099 /* MacEverything.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacEverything.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A200001A /* ShortcutSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutSettingsView.swift; sourceTree = "<group>"; };
+		A200001B /* ContentIndex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ContentIndex.h; sourceTree = "<group>"; };
+		A200001C /* ContentIndex.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ContentIndex.cpp; sourceTree = "<group>"; };
+		A200001D /* ContentIndexPersistence.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ContentIndexPersistence.h; sourceTree = "<group>"; };
+		A200001E /* ContentIndexPersistence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ContentIndexPersistence.cpp; sourceTree = "<group>"; };
+		A200001F /* ContentResultRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentResultRow.swift; sourceTree = "<group>"; };
+		A2000020 /* ContentSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSettingsView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A3000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100000B /* Carbon.framework in Frameworks */,
+				A100000D /* CoreServices.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A4000001 /* Root */ = {
+			isa = PBXGroup;
+			children = (
+				A4000002 /* MacEverything */,
+				A4000006 /* Frameworks */,
+				A4000007 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A4000002 /* MacEverything */ = {
+			isa = PBXGroup;
+			children = (
+				A4000003 /* App */,
+				A4000004 /* Bridge */,
+				A4000005 /* Core */,
+				A2000010 /* MacEverything-Bridging-Header.h */,
+				A2000011 /* Info.plist */,
+				A2000012 /* MacEverything.entitlements */,
+			);
+			path = MacEverything;
+			sourceTree = "<group>";
+		};
+		A4000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A2000001 /* MacEverythingApp.swift */,
+				A2000002 /* AppDelegate.swift */,
+				A2000003 /* SearchViewModel.swift */,
+				A2000004 /* ContentView.swift */,
+				A2000005 /* ResultRow.swift */,
+				A2000006 /* PermissionView.swift */,
+				A2000007 /* HotkeyManager.swift */,
+				A200001A /* ShortcutSettingsView.swift */,
+				A200001F /* ContentResultRow.swift */,
+				A2000020 /* ContentSettingsView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A4000004 /* Bridge */ = {
+			isa = PBXGroup;
+			children = (
+				A2000008 /* MacSearchBridge.h */,
+				A2000009 /* MacSearchBridge.mm */,
+			);
+			path = Bridge;
+			sourceTree = "<group>";
+		};
+		A4000005 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				A200000E /* FileRecord.h */,
+				A200000A /* DirectoryScanner.h */,
+				A200000B /* DirectoryScanner.cpp */,
+				A200000C /* SearchEngine.h */,
+				A200000D /* SearchEngine.cpp */,
+				A2000013 /* FileSystemWatcher.h */,
+				A2000014 /* FileSystemWatcher.cpp */,
+				A2000016 /* IndexWAL.h */,
+				A2000017 /* IndexWAL.cpp */,
+				A2000018 /* IndexPersistence.h */,
+				A2000019 /* IndexPersistence.cpp */,
+				A200001B /* ContentIndex.h */,
+				A200001C /* ContentIndex.cpp */,
+				A200001D /* ContentIndexPersistence.h */,
+				A200001E /* ContentIndexPersistence.cpp */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		A4000006 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A200000F /* Carbon.framework */,
+				A2000015 /* CoreServices.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		A4000007 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A2000099 /* MacEverything.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A5000001 /* MacEverything */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A7000003 /* Build configuration list for PBXNativeTarget "MacEverything" */;
+			buildPhases = (
+				A6000001 /* Sources */,
+				A3000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MacEverything;
+			productName = MacEverything;
+			productReference = A2000099 /* MacEverything.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A8000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1540;
+				LastUpgradeCheck = 1540;
+			};
+			buildConfigurationList = A7000001 /* Build configuration list for PBXProject "MacEverything" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A4000001;
+			productRefGroup = A4000007 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A5000001 /* MacEverything */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A6000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000001 /* MacEverythingApp.swift in Sources */,
+				A1000002 /* AppDelegate.swift in Sources */,
+				A1000003 /* SearchViewModel.swift in Sources */,
+				A1000004 /* ContentView.swift in Sources */,
+				A1000005 /* ResultRow.swift in Sources */,
+				A1000006 /* PermissionView.swift in Sources */,
+				A1000007 /* HotkeyManager.swift in Sources */,
+				A1000008 /* MacSearchBridge.mm in Sources */,
+				A1000009 /* DirectoryScanner.cpp in Sources */,
+				A100000A /* SearchEngine.cpp in Sources */,
+				A100000C /* FileSystemWatcher.cpp in Sources */,
+				A100000E /* IndexWAL.cpp in Sources */,
+				A100000F /* IndexPersistence.cpp in Sources */,
+				A1000010 /* ShortcutSettingsView.swift in Sources */,
+				A1000011 /* ContentIndex.cpp in Sources */,
+				A1000012 /* ContentIndexPersistence.cpp in Sources */,
+				A1000013 /* ContentResultRow.swift in Sources */,
+				A1000014 /* ContentSettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A9000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A9000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				GCC_OPTIMIZATION_LEVEL = 2;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		A9000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacEverything/MacEverything.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = MacEverything/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.maceverything.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "MacEverything/MacEverything-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/MacEverything/Core",
+					"$(SRCROOT)/MacEverything/Bridge",
+				);
+			};
+			name = Debug;
+		};
+		A9000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacEverything/MacEverything.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = MacEverything/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.maceverything.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "MacEverything/MacEverything-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/MacEverything/Core",
+					"$(SRCROOT)/MacEverything/Bridge",
+				);
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A7000001 /* Build configuration list for PBXProject "MacEverything" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A9000001 /* Debug */,
+				A9000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A7000003 /* Build configuration list for PBXNativeTarget "MacEverything" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A9000003 /* Debug */,
+				A9000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = A8000001 /* Project object */;
+}

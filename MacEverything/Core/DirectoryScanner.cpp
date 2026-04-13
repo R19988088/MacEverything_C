@@ -1,0 +1,257 @@
+#include "DirectoryScanner.h"
+#include <sys/attr.h>
+#include <sys/vnode.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <cstring>
+#include <cerrno>
+#include <iostream>
+#include <memory>
+
+static constexpr size_t ATTR_BUF_SIZE = 4 * 1024 * 1024; // 4 MB per-thread buffer
+
+void DirectoryScanner::scan(const std::string& rootPath) {
+    unsigned numThreads = std::thread::hardware_concurrency();
+    if (numThreads < 4) numThreads = 4;
+    if (numThreads > 32) numThreads = 32;
+
+    std::cout << "Scanning from: " << rootPath << " (using " << numThreads << " threads)\n";
+
+    threadResults_.resize(numThreads);
+    for (auto& v : threadResults_) {
+        v.reserve(200000);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        workQueue_.push(rootPath);
+    }
+
+    std::vector<std::thread> threads;
+    threads.reserve(numThreads);
+    for (unsigned i = 0; i < numThreads; i++) {
+        threads.emplace_back(&DirectoryScanner::workerThread, this, static_cast<int>(i));
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+}
+
+std::vector<FileRecord> DirectoryScanner::takeResults() {
+    std::vector<FileRecord> merged;
+    size_t total = 0;
+    for (auto& v : threadResults_) total += v.size();
+    merged.reserve(total);
+    for (auto& v : threadResults_) {
+        merged.insert(merged.end(),
+                      std::make_move_iterator(v.begin()),
+                      std::make_move_iterator(v.end()));
+        v.clear();
+        v.shrink_to_fit();
+    }
+    threadResults_.clear();
+    return merged;
+}
+
+void DirectoryScanner::workerThread(int threadIndex) {
+    auto buffer = std::make_unique<char[]>(ATTR_BUF_SIZE);
+
+    for (;;) {
+        std::string dirPath;
+
+        {
+            std::unique_lock<std::mutex> lock(queueMutex_);
+            queueCV_.wait(lock, [this] {
+                return !workQueue_.empty() || (activeTasks_.load(std::memory_order_acquire) == 0 && workQueue_.empty());
+            });
+
+            if (workQueue_.empty() && activeTasks_.load(std::memory_order_acquire) == 0) {
+                done_ = true;
+                queueCV_.notify_all();
+                return;
+            }
+
+            if (done_) return;
+
+            dirPath = std::move(workQueue_.front());
+            workQueue_.pop();
+            activeTasks_.fetch_add(1, std::memory_order_acq_rel);
+        }
+
+        scanDirectory(dirPath, buffer.get(), threadIndex);
+
+        activeTasks_.fetch_sub(1, std::memory_order_acq_rel);
+        queueCV_.notify_all();
+    }
+}
+
+void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, int threadIndex) {
+    int dirfd = open(dirPath.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dirfd < 0) {
+        if (errno == EACCES || errno == EPERM) {
+            stats_.errorCount.fetch_add(1, std::memory_order_relaxed);
+        } else if (errno != ENOENT && errno != ENOTDIR) {
+            stats_.errorCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        return;
+    }
+
+    struct attrlist attrList;
+    memset(&attrList, 0, sizeof(attrList));
+    attrList.bitmapcount = ATTR_BIT_MAP_COUNT;
+    attrList.commonattr = ATTR_CMN_RETURNED_ATTRS
+                        | ATTR_CMN_NAME
+                        | ATTR_CMN_ERROR
+                        | ATTR_CMN_DEVID
+                        | ATTR_CMN_OBJTYPE
+                        | ATTR_CMN_MODTIME
+                        | ATTR_CMN_FILEID;
+    attrList.fileattr = ATTR_FILE_DATALENGTH;
+
+    for (;;) {
+        int retcount = getattrlistbulk(dirfd, &attrList, buffer, ATTR_BUF_SIZE, FSOPT_NOFOLLOW);
+
+        if (retcount == -1) {
+            if (errno == EACCES || errno == EPERM) {
+                stats_.errorCount.fetch_add(1, std::memory_order_relaxed);
+            }
+            break;
+        }
+        if (retcount == 0) {
+            break;
+        }
+
+        char* entry = buffer;
+        for (int i = 0; i < retcount; i++) {
+            char* field = entry;
+
+            // 1. Entry length
+            uint32_t entryLength;
+            memcpy(&entryLength, field, sizeof(uint32_t));
+            char* nextEntry = entry + entryLength;
+            field += sizeof(uint32_t);
+
+            // 2. Returned attributes
+            attribute_set_t returned;
+            memcpy(&returned, field, sizeof(attribute_set_t));
+            field += sizeof(attribute_set_t);
+
+            // 3. Error (special position after returned_attrs)
+            uint32_t error = 0;
+            if (returned.commonattr & ATTR_CMN_ERROR) {
+                memcpy(&error, field, sizeof(uint32_t));
+                field += sizeof(uint32_t);
+            }
+
+            // 4. Name reference (ATTR_CMN_NAME = 0x01)
+            char* nameRefPtr = nullptr;
+            attrreference_t nameRef = {};
+            if (returned.commonattr & ATTR_CMN_NAME) {
+                nameRefPtr = field;
+                memcpy(&nameRef, field, sizeof(attrreference_t));
+                field += sizeof(attrreference_t);
+            }
+
+            // 5. Device ID (ATTR_CMN_DEVID = 0x02)
+            dev_t devid = 0;
+            if (returned.commonattr & ATTR_CMN_DEVID) {
+                memcpy(&devid, field, sizeof(dev_t));
+                field += sizeof(dev_t);
+            }
+
+            // 6. Object type (ATTR_CMN_OBJTYPE = 0x08)
+            fsobj_type_t objtype = VNON;
+            if (returned.commonattr & ATTR_CMN_OBJTYPE) {
+                memcpy(&objtype, field, sizeof(fsobj_type_t));
+                field += sizeof(fsobj_type_t);
+            }
+
+            // 7. Modification time (ATTR_CMN_MODTIME = 0x400)
+            struct timespec modtime = {};
+            if (returned.commonattr & ATTR_CMN_MODTIME) {
+                memcpy(&modtime, field, sizeof(struct timespec));
+                field += sizeof(struct timespec);
+            }
+
+            // 8. File ID (ATTR_CMN_FILEID = 0x02000000)
+            uint64_t fileid = 0;
+            if (returned.commonattr & ATTR_CMN_FILEID) {
+                memcpy(&fileid, field, sizeof(uint64_t));
+                field += sizeof(uint64_t);
+            }
+
+            // 9. Data length (ATTR_FILE_DATALENGTH = 0x200, file attr, only for VREG)
+            off_t datalength = 0;
+            if (returned.fileattr & ATTR_FILE_DATALENGTH) {
+                memcpy(&datalength, field, sizeof(off_t));
+                field += sizeof(off_t);
+            }
+
+            // Skip entries with errors
+            if (error != 0) {
+                entry = nextEntry;
+                continue;
+            }
+
+            // Extract name string
+            if (!nameRefPtr) {
+                entry = nextEntry;
+                continue;
+            }
+            const char* name = nameRefPtr + nameRef.attr_dataoffset;
+            if (name[0] == '\0') {
+                entry = nextEntry;
+                continue;
+            }
+
+            // Process entry
+            if (objtype == VDIR) {
+                if (tryVisitDirectory(devid, fileid)) {
+                    std::string childPath = dirPath;
+                    if (childPath.back() != '/') childPath += '/';
+                    childPath += name;
+
+                    // Detect .app bundles — record as type 5, skip recursion
+                    size_t nameLen = strlen(name);
+                    bool isAppBundle = (nameLen > 4 &&
+                        name[nameLen-4] == '.' && name[nameLen-3] == 'a' &&
+                        name[nameLen-2] == 'p' && name[nameLen-1] == 'p');
+
+                    if (!isAppBundle) {
+                        {
+                            std::lock_guard<std::mutex> lock(queueMutex_);
+                            workQueue_.push(std::move(childPath));
+                        }
+                        queueCV_.notify_one();
+                    }
+
+                    stats_.dirCount.fetch_add(1, std::memory_order_relaxed);
+                    threadResults_[threadIndex].push_back({name, dirPath,
+                        static_cast<uint8_t>(isAppBundle ? 5 : 2),
+                        0, modtime.tv_sec, fileid, static_cast<int32_t>(devid)});
+                }
+            } else if (objtype == VREG) {
+                stats_.fileCount.fetch_add(1, std::memory_order_relaxed);
+                threadResults_[threadIndex].push_back({name, dirPath, 1, static_cast<uint64_t>(datalength), modtime.tv_sec, fileid, static_cast<int32_t>(devid)});
+            } else if (objtype == VLNK) {
+                stats_.symlinkCount.fetch_add(1, std::memory_order_relaxed);
+                threadResults_[threadIndex].push_back({name, dirPath, 3, 0, modtime.tv_sec, fileid, static_cast<int32_t>(devid)});
+            } else {
+                stats_.otherCount.fetch_add(1, std::memory_order_relaxed);
+                threadResults_[threadIndex].push_back({name, dirPath, 4, 0, modtime.tv_sec, fileid, static_cast<int32_t>(devid)});
+            }
+
+            entry = nextEntry;
+        }
+    }
+
+    close(dirfd);
+}
+
+bool DirectoryScanner::tryVisitDirectory(dev_t dev, uint64_t ino) {
+    InodeKey key{dev, ino};
+    std::lock_guard<std::mutex> lock(dedupMutex_);
+    return visitedDirs_.insert(key).second;
+}

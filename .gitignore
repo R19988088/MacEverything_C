@@ -1,0 +1,17 @@
+# Build artifacts
+build/
+test_all
+benchmark
+*.o
+*.dmg
+
+# Xcode
+*.xcuserdata
+DerivedData/
+
+# Index cache
+*.bin
+*.wal
+
+# macOS
+.DS_Store

@@ -55,9 +55,9 @@
     std::shared_ptr<IndexPersistence> _persistence;
     std::shared_ptr<ContentIndex> _contentIndex;
     std::shared_ptr<ContentIndexPersistence> _contentPersistence;
-    BOOL _isScanning;
-    BOOL _isMonitoring;
-    BOOL _isContentIndexing;
+    std::atomic<bool> _isScanning;
+    std::atomic<bool> _isMonitoring;
+    std::atomic<bool> _isContentIndexing;
     std::atomic<bool> _shuttingDown;
 }
 
@@ -76,25 +76,25 @@
         _engine = std::make_shared<SearchEngine>();
         _watcher = std::make_unique<FileSystemWatcher>();
         _contentIndex = std::make_shared<ContentIndex>();
-        _isScanning = NO;
-        _isMonitoring = NO;
-        _isContentIndexing = NO;
-        _shuttingDown.store(false);
+        _isScanning.store(false, std::memory_order_relaxed);
+        _isMonitoring.store(false, std::memory_order_relaxed);
+        _isContentIndexing.store(false, std::memory_order_relaxed);
+        _shuttingDown.store(false, std::memory_order_relaxed);
     }
     return self;
 }
 
 - (BOOL)isScanning {
-    return _isScanning;
+    return _isScanning.load(std::memory_order_relaxed);
 }
 
 - (BOOL)isMonitoring {
-    return _isMonitoring;
+    return _isMonitoring.load(std::memory_order_relaxed);
 }
 
 - (void)startScanFrom:(NSString *)rootPath
            completion:(void (^)(uint32_t totalRecords))completion {
-    _isScanning = YES;
+    _isScanning.store(true, std::memory_order_relaxed);
 
     // Stop existing monitoring during rescan
     [self stopMonitoring];
@@ -108,11 +108,14 @@
         dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
         dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), 200 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
         __weak MacSearchBridge *weakSelf = self;
-        auto scannerWeak = scanner;
+        // B1: Use weak_ptr so the timer block doesn't keep the scanner alive
+        std::weak_ptr<DirectoryScanner> scannerWeak = scanner;
         dispatch_source_set_event_handler(timer, ^{
             MacSearchBridge *strongSelf = weakSelf;
             if (!strongSelf || !strongSelf.onScanProgress) return;
-            const auto& stats = scannerWeak->getStats();
+            auto scannerStrong = scannerWeak.lock();
+            if (!scannerStrong) return;
+            const auto& stats = scannerStrong->getStats();
             strongSelf.onScanProgress(
                 stats.fileCount.load(std::memory_order_relaxed),
                 stats.dirCount.load(std::memory_order_relaxed)
@@ -133,7 +136,7 @@
 
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_engine = engine;
-            self->_isScanning = NO;
+            self->_isScanning.store(false, std::memory_order_relaxed);
             if (completion) {
                 completion(count);
             }
@@ -150,7 +153,7 @@
                    cachePath:(NSString *)cachePath
                      walPath:(NSString *)walPath
                   completion:(void (^)(uint32_t totalRecords, BOOL didFullScan))completion {
-    _isScanning = YES;
+    _isScanning.store(true, std::memory_order_relaxed);
     [self stopMonitoring];
 
     NSString *root = [rootPath copy];
@@ -204,7 +207,7 @@
                 dispatch_async(dispatch_get_main_queue(), ^{
                     self->_engine = engine;
                     self->_persistence = sharedPersistence;
-                    self->_isScanning = NO;
+                    self->_isScanning.store(false, std::memory_order_relaxed);
 
                     self->_persistence->attachWAL();
 
@@ -315,6 +318,8 @@ static bool pathEndsWithApp(const std::string& path) {
         bool exists = (lstat(path.c_str(), &st) == 0);
 
         if (itemRemoved || (itemRenamed && !exists)) {
+            // B2: Update content index before removing from metadata index
+            [self updateContentIndexForPath:path removed:YES];
             engine->removeByPath(path);
         } else if (exists) {
             std::string dirPath, fileName;
@@ -345,12 +350,17 @@ static bool pathEndsWithApp(const std::string& path) {
             record.devId = static_cast<int32_t>(st.st_dev);
 
             engine->updateByPath(path, std::move(record));
+
+            // B2: Update content index for created/modified regular files
+            if (type == 1) {
+                [self updateContentIndexForPath:path removed:NO];
+            }
         }
     }
 }
 
 - (void)startMonitoringFrom:(NSString *)rootPath {
-    if (_isMonitoring) return;
+    if (_isMonitoring.load(std::memory_order_relaxed)) return;
 
     std::string root([rootPath UTF8String]);
 
@@ -461,7 +471,7 @@ static bool pathEndsWithApp(const std::string& path) {
         }
     });
 
-    _isMonitoring = YES;
+    _isMonitoring.store(true, std::memory_order_relaxed);
 }
 
 - (void)stopMonitoring {
@@ -476,7 +486,7 @@ static bool pathEndsWithApp(const std::string& path) {
     if (_contentPersistence) {
         _contentPersistence->stopAutoCompactionAndWait();
     }
-    _isMonitoring = NO;
+    _isMonitoring.store(false, std::memory_order_relaxed);
 }
 
 - (NSArray<NSNumber *> *)queryIndices:(NSString *)keyword
@@ -522,25 +532,12 @@ static bool pathEndsWithApp(const std::string& path) {
 - (NSArray<NSNumber *> *)recentIndices:(uint32_t)count {
     if (!_engine) return @[];
 
-    uint32_t total = _engine->recordCount();
-    // Collect (index, modTime) for live records
-    std::vector<std::pair<uint32_t, time_t>> entries;
-    entries.reserve(total);
-    for (uint32_t i = 0; i < total; ++i) {
-        auto r = _engine->getRecord(i);
-        if (r.type != 0) { // skip tombstones
-            entries.emplace_back(i, r.modTime);
-        }
-    }
+    // B4: Use engine's batch method — single lock, no per-record overhead
+    auto indices = _engine->recentIndices(count);
 
-    // Partial sort to get top 'count' by modTime descending
-    uint32_t n = std::min(count, static_cast<uint32_t>(entries.size()));
-    std::partial_sort(entries.begin(), entries.begin() + n, entries.end(),
-                      [](const auto& a, const auto& b) { return a.second > b.second; });
-
-    NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:n];
-    for (uint32_t i = 0; i < n; ++i) {
-        [result addObject:@(entries[i].first)];
+    NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:indices.size()];
+    for (uint32_t idx : indices) {
+        [result addObject:@(idx)];
     }
     return result;
 }
@@ -595,7 +592,15 @@ static bool pathEndsWithApp(const std::string& path) {
 
 - (BOOL)saveIndexToFile:(NSString *)path {
     if (!_engine) return NO;
-    return _engine->saveToFile(std::string([path UTF8String])) ? YES : NO;
+    // B3: Preserve metadata (event ID, scan root, versions) when saving
+    IndexMetadata meta;
+    meta.lastEventId = _watcher ? _watcher->getLastEventId() : 0;
+    meta.extra[IndexMetadata::kAppVersion] = "1.1.0";
+    NSOperatingSystemVersion osVer = [[NSProcessInfo processInfo] operatingSystemVersion];
+    meta.extra[IndexMetadata::kOSVersion] = [[NSString stringWithFormat:@"%ld.%ld.%ld",
+        (long)osVer.majorVersion, (long)osVer.minorVersion, (long)osVer.patchVersion] UTF8String];
+    meta.extra[IndexMetadata::kRecordFormat] = "v3_inode";
+    return _engine->saveToFile(std::string([path UTF8String]), meta) ? YES : NO;
 }
 
 - (BOOL)loadIndexFromFile:(NSString *)path {
@@ -607,7 +612,7 @@ static bool pathEndsWithApp(const std::string& path) {
 
 - (void)startContentIndexing {
     if (!_engine || !_contentIndex) return;
-    _isContentIndexing = YES;
+    _isContentIndexing.store(true, std::memory_order_relaxed);
 
     auto engine = _engine;
     auto contentIndex = _contentIndex;
@@ -657,7 +662,7 @@ static bool pathEndsWithApp(const std::string& path) {
         dispatch_async(dispatch_get_main_queue(), ^{
             MacSearchBridge *strongSelf = weakSelf;
             if (strongSelf) {
-                strongSelf->_isContentIndexing = NO;
+                strongSelf->_isContentIndexing.store(false, std::memory_order_relaxed);
                 if (strongSelf.onContentIndexComplete) {
                     strongSelf.onContentIndexComplete(totalIndexed);
                 }
@@ -674,10 +679,14 @@ static bool pathEndsWithApp(const std::string& path) {
     NSString *appCacheDir = [cachesDir stringByAppendingPathComponent:@"com.maceverything.app"];
 
     // Ensure directory exists
-    [[NSFileManager defaultManager] createDirectoryAtPath:appCacheDir
+    NSError *dirError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:appCacheDir
                               withIntermediateDirectories:YES
                                                attributes:nil
-                                                    error:nil];
+                                                    error:&dirError]) {
+        NSLog(@"[MacSearchBridge] Failed to create content index directory: %@", dirError);
+        return;
+    }
 
     std::string basePath = std::string([[appCacheDir stringByAppendingPathComponent:@"content_index.bin"] UTF8String]);
     std::string walPath = std::string([[appCacheDir stringByAppendingPathComponent:@"content_index.wal"] UTF8String]);
@@ -758,7 +767,7 @@ static bool pathEndsWithApp(const std::string& path) {
 
 - (void)rebuildContentIndex {
     if (!_engine || !_contentIndex) return;
-    if (_isContentIndexing) return; // already running
+    if (_isContentIndexing.load(std::memory_order_relaxed)) return; // already running
 
     // Clear old content index data
     {

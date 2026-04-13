@@ -83,6 +83,10 @@ public:
     /// Detach the WAL (e.g. before compaction).
     void detachWAL();
 
+    /// Return indices of the most recently modified live records, sorted by modTime descending.
+    /// Performs the scan under a single shared lock for efficiency.
+    std::vector<uint32_t> recentIndices(uint32_t count) const;
+
     /// Look up the record index for a given full path. Returns UINT32_MAX if not found.
     uint32_t indexForPath(const std::string& fullPath) const;
 

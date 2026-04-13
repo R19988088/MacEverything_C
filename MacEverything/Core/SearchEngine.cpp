@@ -537,6 +537,30 @@ bool SearchEngine::loadFromFile(const std::string& filePath, IndexMetadata* outM
     return true;
 }
 
+std::vector<uint32_t> SearchEngine::recentIndices(uint32_t count) const {
+    std::shared_lock lock(mutex_);
+
+    // Collect (index, modTime) for live records under a single lock
+    std::vector<std::pair<uint32_t, time_t>> entries;
+    entries.reserve(records_.size());
+    for (size_t i = 0; i < records_.size(); i++) {
+        if (records_[i].type != 0) {
+            entries.emplace_back(static_cast<uint32_t>(i), records_[i].modTime);
+        }
+    }
+
+    uint32_t n = std::min(count, static_cast<uint32_t>(entries.size()));
+    std::partial_sort(entries.begin(), entries.begin() + n, entries.end(),
+                      [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    std::vector<uint32_t> result;
+    result.reserve(n);
+    for (uint32_t i = 0; i < n; i++) {
+        result.push_back(entries[i].first);
+    }
+    return result;
+}
+
 uint32_t SearchEngine::indexForPath(const std::string& fullPath) const {
     std::shared_lock lock(mutex_);
     auto it = pathIndex_.find(toLower(fullPath));

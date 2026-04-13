@@ -1,5 +1,6 @@
 #pragma once
 #include "FileRecord.h"
+#include "ContentIndex.h" // for Trigram type and extractTrigrams/makeTrigram
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -100,6 +101,17 @@ private:
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> index
     std::atomic<uint32_t> liveCount_{0};
     mutable std::shared_mutex mutex_;
+
+    // Trigram inverted index for fast filename search
+    std::unordered_map<Trigram, std::vector<uint32_t>> nameTrigramIndex_; // trigram -> record indices
+    std::vector<std::vector<Trigram>> recordTrigrams_; // per-record trigram list (for removal)
+
+    /// Build trigram index from lowerNames_ (called inside loadRecords/compactRecords under lock)
+    void buildTrigramIndex();
+    /// Add trigrams for a single record to the index
+    void addTrigramsForRecord(uint32_t idx, const std::string& lowerName);
+    /// Remove trigrams for a single record from the index
+    void removeTrigramsForRecord(uint32_t idx);
 
     static std::string toLower(const std::string& s);
     static std::string makeFullPath(const std::string& path, const std::string& name);

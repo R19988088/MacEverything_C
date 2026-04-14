@@ -6,6 +6,9 @@ struct ContentSettingsView: View {
     @State private var maxFileSizeMB: Double = 1.0
     @State private var indexedCount: UInt32 = 0
 
+    @State private var initialExtensions: [String] = []
+    @State private var initialMaxFileSizeMB: Double = 1.0
+
     private let bridge = MacSearchBridge.shared()
 
     var body: some View {
@@ -77,6 +80,9 @@ struct ContentSettingsView: View {
         indexedCount = bridge.contentIndexedFileCount()
         extensions = (bridge.contentGetExtensions() as? [String]) ?? []
         maxFileSizeMB = Double(bridge.contentGetMaxFileSize()) / (1024.0 * 1024.0)
+
+        initialExtensions = extensions
+        initialMaxFileSizeMB = maxFileSizeMB
     }
 
     private func addExtension() {
@@ -94,7 +100,13 @@ struct ContentSettingsView: View {
     private func applySettings() {
         bridge.setContentMaxFileSize(UInt64(maxFileSizeMB * 1024 * 1024))
         bridge.setContentExtensions(extensions)
-        bridge.rebuildContentIndex()
+
+        let dirty = extensions != initialExtensions || maxFileSizeMB != initialMaxFileSizeMB
+        if dirty {
+            bridge.rebuildContentIndex()
+            initialExtensions = extensions
+            initialMaxFileSizeMB = maxFileSizeMB
+        }
     }
 }
 

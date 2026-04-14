@@ -307,12 +307,6 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
     std::string content = readFileIfText(fullPath, maxSize);
     if (content.empty()) return false;
 
-    // Check for NUL bytes (binary detection) in the content we already read
-    size_t checkLen = std::min(content.size(), size_t(8192));
-    for (size_t i = 0; i < checkLen; i++) {
-        if (content[i] == '\0') return false;
-    }
-
     uint64_t hash = hashContent(content);
     auto trigrams = extractTrigrams(content);
 

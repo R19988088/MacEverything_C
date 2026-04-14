@@ -369,6 +369,10 @@ class SearchViewModel: ObservableObject {
         isMonitoring = bridge.isMonitoring
         contentIndexedCount = bridge.contentIndexedFileCount()
 
+        // Skip expensive search/query when app is not focused.
+        // Results will refresh on focus regain via onWindowFocusChanged.
+        guard refreshThrottle.isFocused else { return }
+
         if !searchText.isEmpty && !isContentSearch {
             performSearch(searchText)
         } else if isContentSearch && !contentKeyword.isEmpty {

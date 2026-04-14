@@ -55,19 +55,14 @@ std::string SearchEngine::makeFullPath(const std::string& path, const std::strin
 
 void SearchEngine::buildTrigramIndex() {
     nameTrigramIndex_.clear();
-    recordTrigrams_.resize(lowerNames_.size());
 
     for (size_t i = 0; i < lowerNames_.size(); i++) {
-        if (records_[i].type == 0) {
-            recordTrigrams_[i].clear();
-            continue;
-        }
+        if (records_[i].type == 0) continue;
         auto trigrams = ContentIndex::extractTrigrams(lowerNames_[i]);
         // P-2 fix: sort+unique instead of unordered_set to reduce heap allocations
         std::sort(trigrams.begin(), trigrams.end());
         trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
-        recordTrigrams_[i] = std::move(trigrams);
-        for (Trigram t : recordTrigrams_[i]) {
+        for (Trigram t : trigrams) {
             nameTrigramIndex_[t].push_back(static_cast<uint32_t>(i));
         }
     }
@@ -84,12 +79,7 @@ void SearchEngine::addTrigramsForRecord(uint32_t idx, const std::string& lowerNa
     std::sort(trigrams.begin(), trigrams.end());
     trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
 
-    if (idx >= recordTrigrams_.size()) {
-        recordTrigrams_.resize(idx + 1);
-    }
-    recordTrigrams_[idx] = std::move(trigrams);
-
-    for (Trigram t : recordTrigrams_[idx]) {
+    for (Trigram t : trigrams) {
         auto& list = nameTrigramIndex_[t];
         // Insert in sorted position to maintain sorted posting lists
         auto pos = std::lower_bound(list.begin(), list.end(), idx);
@@ -98,8 +88,12 @@ void SearchEngine::addTrigramsForRecord(uint32_t idx, const std::string& lowerNa
 }
 
 void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
-    if (idx >= recordTrigrams_.size()) return;
-    for (Trigram t : recordTrigrams_[idx]) {
+    if (idx >= lowerNames_.size() || lowerNames_[idx].empty()) return;
+    // Recompute trigrams from lowerNames_ instead of storing per-record lists
+    auto trigrams = ContentIndex::extractTrigrams(lowerNames_[idx]);
+    std::sort(trigrams.begin(), trigrams.end());
+    trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
+    for (Trigram t : trigrams) {
         auto it = nameTrigramIndex_.find(t);
         if (it != nameTrigramIndex_.end()) {
             auto& list = it->second;
@@ -113,7 +107,6 @@ void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
             }
         }
     }
-    recordTrigrams_[idx].clear();
 }
 
 void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
@@ -145,6 +138,15 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
 
     for (auto& th : threads) th.join();
 
+    // Path deduplication: intern paths into PathTable, then clear record.path strings
+    pathTable_.clear();
+    pathIndices_.resize(records_.size());
+    for (size_t i = 0; i < records_.size(); i++) {
+        pathIndices_[i] = pathTable_.intern(records_[i].path);
+        records_[i].path.clear();
+        records_[i].path.shrink_to_fit(); // release heap allocation
+    }
+
     // H6 fix: Parallelize path string computation, insert into map sequentially
     // (map insertion is not thread-safe, but string construction is the bottleneck)
     std::vector<std::string> loweredPaths(records_.size());
@@ -157,7 +159,7 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
             if (start >= end) break;
             pathThreads.emplace_back([this, &loweredPaths, start, end] {
                 for (size_t i = start; i < end; i++) {
-                    loweredPaths[i] = toLower(makeFullPath(records_[i].path, records_[i].name));
+                    loweredPaths[i] = toLower(makeFullPath(pathTable_.resolve(pathIndices_[i]), records_[i].name));
                 }
             });
         }
@@ -291,7 +293,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 } else {
                     priority = 2;
                 }
-                uint32_t pLen = static_cast<uint32_t>(records_[idx].path.size() + 1 + records_[idx].name.size());
+                uint32_t pLen = static_cast<uint32_t>(pathTable_.resolve(pathIndices_[idx]).size() + 1 + records_[idx].name.size());
                 merged.push_back({idx, priority, pLen});
             }
         }
@@ -314,6 +316,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         // prevents compactRecords() from replacing these vectors.
         const auto& records = records_;
         const auto& lowerNames = lowerNames_;
+        const auto& pTable = pathTable_;
+        const auto& pIndices = pathIndices_;
 
         // Build a set of name-matched indices to skip (trigramCandidates is sorted)
         const auto* candidatesPtr = &trigramCandidates;
@@ -333,11 +337,12 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 // Skip indices already handled by trigram phase
                 if (std::binary_search(candidatesPtr->begin(), candidatesPtr->end(), static_cast<uint32_t>(i))) continue;
 
+                const auto& rPath = pTable.resolve(pIndices[i]);
                 // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
-                std::string lowerPath = toLower(makeFullPath(records[i].path, records[i].name));
+                std::string lowerPath = toLower(makeFullPath(rPath, records[i].name));
                 if (lowerPath.find(lowerKey) != std::string::npos) {
                     const auto& lowerName = lowerNames[i];
-                    uint32_t pLen = static_cast<uint32_t>(records[i].path.size() + 1 + records[i].name.size());
+                    uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
                     if (lowerName.find(lowerKey) != std::string::npos) {
                         uint8_t priority;
                         if (lowerName == lowerKey) priority = 0;
@@ -373,6 +378,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         // C-1 fix: Access members directly — shared_lock held at function scope
         const auto& records = records_;
         const auto& lowerNames = lowerNames_;
+        const auto& pTable = pathTable_;
+        const auto& pIndices = pathIndices_;
 
         dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
         const auto* genPtr = &queryGeneration_;
@@ -388,13 +395,14 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 if (records[i].type == 0) continue;
 
                 const auto& lowerName = lowerNames[i];
+                const auto& rPath = pTable.resolve(pIndices[i]);
 
                 bool nameMatch = useGlob ? globMatch(lowerKey, lowerName)
                                          : (lowerName.find(lowerKey) != std::string::npos);
                 bool pathMatch = false;
                 if (!nameMatch) {
                     // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
-                    std::string lowerPath = toLower(makeFullPath(records[i].path, records[i].name));
+                    std::string lowerPath = toLower(makeFullPath(rPath, records[i].name));
                     pathMatch = useGlob ? globMatch(lowerKey, lowerPath)
                                         : (lowerPath.find(lowerKey) != std::string::npos);
                 }
@@ -409,7 +417,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     } else {
                         priority = 3;
                     }
-                    uint32_t pLen = static_cast<uint32_t>(records[i].path.size() + 1 + records[i].name.size());
+                    uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
                     local.push_back({static_cast<uint32_t>(i), priority, pLen});
                 }
             }
@@ -457,7 +465,12 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 FileRecord SearchEngine::getRecord(uint32_t index) const {
     std::shared_lock lock(mutex_);
     if (index >= records_.size()) return {};
-    return records_[index];
+    FileRecord r = records_[index];
+    // Reconstruct path from PathTable (record.path was cleared after interning)
+    if (r.type != 0 && index < pathIndices_.size()) {
+        r.path = pathTable_.resolve(pathIndices_[index]);
+    }
+    return r;
 }
 
 uint32_t SearchEngine::recordCount() const {
@@ -474,8 +487,14 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
 
     if (wal_) wal_->append(WALOp::Add, fullPath, record);
 
+    // Intern path before moving record
+    uint32_t pIdx = pathTable_.intern(record.path);
+    record.path.clear();
+    record.path.shrink_to_fit();
+
     records_.push_back(std::move(record));
     lowerNames_.push_back(lower);
+    pathIndices_.push_back(pIdx);
     pathIndex_[toLower(fullPath)] = idx;
 
     // Update trigram index
@@ -497,16 +516,14 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
 
     uint32_t idx = it->second;
     time_t oldModTime = records_[idx].modTime;
+    // Clean up trigram index (must happen before clearing lowerNames_)
+    removeTrigramsForRecord(idx);
     records_[idx].type = 0;
     records_[idx].name.clear();
-    records_[idx].path.clear();
     records_[idx].size = 0;
     records_[idx].modTime = 0;
     lowerNames_[idx].clear();
     pathIndex_.erase(it);
-
-    // Clean up trigram index
-    removeTrigramsForRecord(idx);
 
     liveCount_.fetch_sub(1, std::memory_order_relaxed);
     removeFromRecentCache(idx, oldModTime);
@@ -519,9 +536,6 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
 
     std::string lowerPrefix = toLower(pathPrefix);
     uint32_t removed = 0;
-    // Single-pass: iterate and erase matching entries using iterator advancement.
-    // unordered_map::erase(iterator) returns the next valid iterator, so this is safe.
-    // pathIndex_ keys are already lowercase.
     for (auto it = pathIndex_.begin(); it != pathIndex_.end(); ) {
         const auto& path = it->first;
         if (path.size() >= lowerPrefix.size() &&
@@ -531,18 +545,18 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
 
             // H-4: Write WAL entry for each removed path
             if (wal_) {
-                std::string fullPath = makeFullPath(records_[idx].path, records_[idx].name);
+                std::string fullPath = makeFullPath(pathTable_.resolve(pathIndices_[idx]), records_[idx].name);
                 wal_->append(WALOp::Remove, fullPath);
             }
 
             time_t oldModTime = records_[idx].modTime;
+            // Clean up trigram index (must happen before clearing lowerNames_)
+            removeTrigramsForRecord(idx);
             records_[idx].type = 0;
             records_[idx].name.clear();
-            records_[idx].path.clear();
             records_[idx].size = 0;
             records_[idx].modTime = 0;
             lowerNames_[idx].clear();
-            removeTrigramsForRecord(idx);
             liveCount_.fetch_sub(1, std::memory_order_relaxed);
             removeFromRecentCache(idx, oldModTime);
             it = pathIndex_.erase(it);
@@ -566,14 +580,14 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     if (it != pathIndex_.end()) {
         uint32_t idx = it->second;
         time_t oldModTime = records_[idx].modTime;
+        // Clean up trigram index (must happen before clearing lowerNames_)
+        removeTrigramsForRecord(idx);
         records_[idx].type = 0;
         records_[idx].name.clear();
-        records_[idx].path.clear();
         records_[idx].size = 0;
         records_[idx].modTime = 0;
         lowerNames_[idx].clear();
         pathIndex_.erase(it);
-        removeTrigramsForRecord(idx);
         liveCount_.fetch_sub(1, std::memory_order_relaxed);
         removeFromRecentCache(idx, oldModTime);
     }
@@ -583,8 +597,14 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     std::string newFullPath = makeFullPath(updated.path, updated.name);
     std::string lower = toLower(updated.name);
 
+    // Intern path before moving record
+    uint32_t pIdx = pathTable_.intern(updated.path);
+    updated.path.clear();
+    updated.path.shrink_to_fit();
+
     records_.push_back(std::move(updated));
     lowerNames_.push_back(lower);
+    pathIndices_.push_back(pIdx);
     pathIndex_[toLower(newFullPath)] = newIdx;
     addTrigramsForRecord(newIdx, lower);
     liveCount_.fetch_add(1, std::memory_order_relaxed);
@@ -604,6 +624,9 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     newRecords.reserve(live);
     std::vector<std::string> newLowerNames;
     newLowerNames.reserve(live);
+    std::vector<uint32_t> newPathIndices;
+    newPathIndices.reserve(live);
+    PathTable newPathTable;
     std::unordered_map<std::string, uint32_t> newPathIndex;
     newPathIndex.reserve(live);
 
@@ -611,14 +634,19 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         if (records_[i].type == 0) continue;
         uint32_t newIdx = static_cast<uint32_t>(newRecords.size());
         remap[static_cast<uint32_t>(i)] = newIdx;
-        std::string fullPath = toLower(makeFullPath(records_[i].path, records_[i].name));
+        const std::string& origPath = pathTable_.resolve(pathIndices_[i]);
+        uint32_t newPIdx = newPathTable.intern(origPath);
+        std::string fullPath = toLower(makeFullPath(origPath, records_[i].name));
         newPathIndex[fullPath] = newIdx;
         newLowerNames.push_back(std::move(lowerNames_[i]));
+        newPathIndices.push_back(newPIdx);
         newRecords.push_back(std::move(records_[i]));
     }
 
     records_ = std::move(newRecords);
     lowerNames_ = std::move(newLowerNames);
+    pathIndices_ = std::move(newPathIndices);
+    pathTable_ = std::move(newPathTable);
     pathIndex_ = std::move(newPathIndex);
 
     // Rebuild trigram index from scratch

@@ -23,7 +23,24 @@
     __weak MacSearchBridge *weakSelf = self;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        uint32_t total = engine->recordCount();
+        // Build a lightweight list of (index, fullPath) for regular files under one lock,
+        // avoiding 4.5M getRecord() copies that each reconstruct path strings.
+        struct FileEntry { uint32_t idx; std::string fullPath; };
+        auto fileEntries = std::make_shared<std::vector<FileEntry>>();
+        {
+            uint32_t total = engine->recordCount();
+            std::vector<uint32_t> allIndices;
+            allIndices.reserve(total);
+            for (uint32_t i = 0; i < total; i++) allIndices.push_back(i);
+
+            fileEntries->reserve(total);
+            engine->forEachRecordWithPath(allIndices, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
+                if (r.type != 1) return; // only regular files
+                fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name)});
+            });
+        }
+
+        uint32_t total = static_cast<uint32_t>(fileEntries->size());
         auto indexed = std::make_shared<std::atomic<uint32_t>>(0);
         auto lastReported = std::make_shared<std::atomic<uint32_t>>(0);
 
@@ -32,20 +49,18 @@
         // contentPersistence->walAppendAdd() is also thread-safe (WAL has its own mutex).
         // This overlaps file I/O across threads for significant speedup.
         dispatch_queue_t concurrentQ = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+        const auto& entries = *fileEntries;
         dispatch_apply(total, concurrentQ, ^(size_t i) {
             if (shuttingDown->load(std::memory_order_relaxed)) return;
             if (cancelFlag->load(std::memory_order_relaxed)) return;
 
-            auto record = engine->getRecord(static_cast<uint32_t>(i));
-            if (record.type != 1) return; // only regular files
-
-            std::string fullPath = SearchEngine::makeFullPath(record.path, record.name);
-            bool didIndex = contentIndex->indexFile(static_cast<uint32_t>(i), fullPath);
+            const auto& entry = entries[i];
+            bool didIndex = contentIndex->indexFile(entry.idx, entry.fullPath);
 
             if (didIndex && contentPersistence) {
                 ContentFileInfo info;
-                if (contentIndex->getFileInfo(static_cast<uint32_t>(i), info)) {
-                    contentPersistence->walAppendAdd(static_cast<uint32_t>(i), info.contentHash, info.trigrams);
+                if (contentIndex->getFileInfo(entry.idx, info)) {
+                    contentPersistence->walAppendAdd(entry.idx, info.contentHash, info.trigrams);
                 }
             }
 

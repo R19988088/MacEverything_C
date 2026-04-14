@@ -14,6 +14,42 @@
 
 class IndexWAL;
 
+/// Deduplication table for directory path strings.
+/// Interns unique paths and returns a compact uint32_t index.
+class PathTable {
+public:
+    /// Look up or insert a path, returning its index.
+    uint32_t intern(const std::string& path) {
+        auto it = lookup_.find(path);
+        if (it != lookup_.end()) return it->second;
+        uint32_t idx = static_cast<uint32_t>(paths_.size());
+        paths_.push_back(path);
+        lookup_[path] = idx;
+        return idx;
+    }
+
+    /// Resolve an index back to its path string.
+    const std::string& resolve(uint32_t index) const {
+        return paths_[index];
+    }
+
+    /// Number of unique paths stored.
+    uint32_t size() const { return static_cast<uint32_t>(paths_.size()); }
+
+    /// Clear all entries.
+    void clear() { paths_.clear(); lookup_.clear(); }
+
+    PathTable() = default;
+    PathTable(PathTable&&) = default;
+    PathTable& operator=(PathTable&&) = default;
+    PathTable(const PathTable&) = default;
+    PathTable& operator=(const PathTable&) = default;
+
+private:
+    std::vector<std::string> paths_;                    // index -> path
+    std::unordered_map<std::string, uint32_t> lookup_;  // path -> index
+};
+
 /// Metadata stored in the index header (v3+). Extensible key-value pairs.
 struct IndexMetadata {
     uint32_t formatVersion = 0; // populated on load
@@ -98,16 +134,36 @@ public:
     /// Build the full path from a record's path and name components.
     static std::string makeFullPath(const std::string& path, const std::string& name);
 
+    /// Resolve a record's path via PathTable. Thread-safe (caller should hold lock or use externally).
+    const std::string& resolveRecordPath(uint32_t index) const {
+        return pathTable_.resolve(pathIndices_[index]);
+    }
+
+    /// Batch callback access under a single shared_lock. Avoids per-record copy.
+    /// Callback signature: void(uint32_t idx, const FileRecord& record, const std::string& path)
+    template<typename Func>
+    void forEachRecordWithPath(const std::vector<uint32_t>& indices, Func&& func) const {
+        std::shared_lock lock(mutex_);
+        for (uint32_t idx : indices) {
+            if (idx >= records_.size() || records_[idx].type == 0) continue;
+            func(idx, records_[idx], pathTable_.resolve(pathIndices_[idx]));
+        }
+    }
+
+    /// Access to PathTable for external callers that need path resolution.
+    const PathTable& pathTable() const { return pathTable_; }
+
 private:
     std::vector<FileRecord> records_;
     std::vector<std::string> lowerNames_; // pre-computed lowercase filenames
+    std::vector<uint32_t> pathIndices_;    // per-record index into pathTable_
+    PathTable pathTable_;                  // deduplication table for directory paths
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> index
     std::atomic<uint32_t> liveCount_{0};
     mutable std::shared_mutex mutex_;
 
     // Trigram inverted index for fast filename search
     std::unordered_map<Trigram, std::vector<uint32_t>> nameTrigramIndex_; // trigram -> record indices
-    std::vector<std::vector<Trigram>> recordTrigrams_; // per-record trigram list (for removal)
 
     /// Build trigram index from lowerNames_ (called inside loadRecords/compactRecords under lock)
     void buildTrigramIndex();

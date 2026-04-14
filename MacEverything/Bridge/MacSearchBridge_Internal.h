@@ -31,6 +31,10 @@
     std::atomic<bool> _cancelContentIndexing;
     // C-3: Protects _contentIndex shared_ptr from concurrent read/write
     std::shared_mutex _contentMutex;
+    // C-2: Protects _persistence shared_ptr from concurrent read/write
+    std::shared_mutex _persistenceMutex;
+    // C-3: Protects _contentPersistence shared_ptr from concurrent read/write
+    std::shared_mutex _contentPersistenceMutex;
     // P-5: Semaphore signaled when content indexing completes
     dispatch_semaphore_t _contentIndexingSemaphore;
 }
@@ -40,6 +44,14 @@
 
 /// Thread-safe content index accessor (C-3)
 - (std::shared_ptr<ContentIndex>)safeContentIndex;
+
+/// Thread-safe persistence accessors (C-2)
+- (std::shared_ptr<IndexPersistence>)safePersistence;
+- (void)setPersistence:(std::shared_ptr<IndexPersistence>)persistence;
+
+/// Thread-safe content persistence accessors (C-3)
+- (std::shared_ptr<ContentIndexPersistence>)safeContentPersistence;
+- (void)setContentPersistence:(std::shared_ptr<ContentIndexPersistence>)persistence;
 
 /// Content indexing lifecycle
 - (void)startContentIndexing;

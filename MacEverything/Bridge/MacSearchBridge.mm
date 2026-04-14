@@ -83,6 +83,28 @@
     _engine = engine;
 }
 
+// C-2: Thread-safe persistence accessors
+- (std::shared_ptr<IndexPersistence>)safePersistence {
+    std::shared_lock lock(_persistenceMutex);
+    return _persistence;
+}
+
+- (void)setPersistence:(std::shared_ptr<IndexPersistence>)persistence {
+    std::unique_lock lock(_persistenceMutex);
+    _persistence = persistence;
+}
+
+// C-3: Thread-safe content persistence accessors
+- (std::shared_ptr<ContentIndexPersistence>)safeContentPersistence {
+    std::shared_lock lock(_contentPersistenceMutex);
+    return _contentPersistence;
+}
+
+- (void)setContentPersistence:(std::shared_ptr<ContentIndexPersistence>)persistence {
+    std::unique_lock lock(_contentPersistenceMutex);
+    _contentPersistence = persistence;
+}
+
 - (BOOL)isScanning {
     return _isScanning.load(std::memory_order_relaxed);
 }
@@ -241,19 +263,19 @@
                     }
 
                     [self setEngine:engine]; // C-4: thread-safe engine swap
-                    self->_persistence = sharedPersistence;
+                    [self setPersistence:sharedPersistence]; // C-2: thread-safe persistence swap
                     self->_isScanning.store(false, std::memory_order_relaxed);
 
-                    self->_persistence->attachWAL();
+                    sharedPersistence->attachWAL();
                     // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
-                    self->_persistence->setContentIndex([self safeContentIndex]);
+                    sharedPersistence->setContentIndex([self safeContentIndex]);
 
                     uint32_t count = engine->liveRecordCount();
                     if (completion) completion(count, NO);
 
                     [self startMonitoringFrom:root];
 
-                    self->_persistence->startAutoCompaction(300.0, self->_watcher);
+                    sharedPersistence->startAutoCompaction(300.0, self->_watcher);
 
                     // Start content indexing in background
                     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
@@ -279,13 +301,14 @@
                     return; // timeout already fired completion
                 }
 
-                self->_persistence = std::make_shared<IndexPersistence>(
+                auto newPersistence = std::make_shared<IndexPersistence>(
                     [self safeEngine], cacheStr, walStr
                 );
-                self->_persistence->attachWAL();
+                [self setPersistence:newPersistence]; // C-2: thread-safe persistence swap
+                newPersistence->attachWAL();
                 // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
-                self->_persistence->setContentIndex([self safeContentIndex]);
-                self->_persistence->startAutoCompaction(300.0, self->_watcher);
+                newPersistence->setContentIndex([self safeContentIndex]);
+                newPersistence->startAutoCompaction(300.0, self->_watcher);
 
                 uint64_t eventId = self->_watcher ? self->_watcher->getLastEventId() : 0;
                 IndexMetadata meta;
@@ -306,11 +329,12 @@
 }
 
 - (void)compactIndex {
-    if (_persistence && _watcher) {
+    auto persistence = [self safePersistence]; // C-2: thread-safe access
+    if (persistence && _watcher) {
         uint64_t eventId = _watcher->getLastEventId();
         // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
-        _persistence->setContentIndex([self safeContentIndex]);
-        _persistence->compact(eventId);
+        persistence->setContentIndex([self safeContentIndex]);
+        persistence->compact(eventId);
     }
 }
 
@@ -333,13 +357,15 @@
     }
 
     // 4. Now safe to compact on main thread — no competing lock holders
-    if (_persistence) {
+    auto persistence = [self safePersistence]; // C-2: thread-safe access
+    if (persistence) {
         // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
-        _persistence->setContentIndex([self safeContentIndex]);
-        _persistence->compact(lastEventId);
+        persistence->setContentIndex([self safeContentIndex]);
+        persistence->compact(lastEventId);
     }
-    if (_contentPersistence) {
-        _contentPersistence->compact();
+    auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
+    if (contentPersistence) {
+        contentPersistence->compact();
     }
 }
 
@@ -542,11 +568,13 @@ static bool pathEndsWithApp(const std::string& path) {
 
     // Stop auto-compaction timers and wait for any in-flight handlers to finish.
     // This ensures no background thread holds the mutex when we return.
-    if (_persistence) {
-        _persistence->stopAutoCompactionAndWait();
+    auto persistence = [self safePersistence]; // C-2: thread-safe access
+    if (persistence) {
+        persistence->stopAutoCompactionAndWait();
     }
-    if (_contentPersistence) {
-        _contentPersistence->stopAutoCompactionAndWait();
+    auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
+    if (contentPersistence) {
+        contentPersistence->stopAutoCompactionAndWait();
     }
     _isMonitoring.store(false, std::memory_order_relaxed);
 }

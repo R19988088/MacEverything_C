@@ -249,8 +249,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 std::sort(postingLists.begin(), postingLists.end(),
                     [](const auto* a, const auto* b) { return a->size() < b->size(); });
 
-                // Copy the shortest list (small enough to copy)
-                trigramCandidates = *postingLists[0];
+                // H-1 fix: reserve + assign avoids reallocation during copy
+                trigramCandidates.reserve(postingLists[0]->size());
+                trigramCandidates.assign(postingLists[0]->begin(), postingLists[0]->end());
 
                 // Intersect with remaining lists using sorted merge
                 for (size_t li = 1; li < postingLists.size() && !trigramCandidates.empty(); li++) {
@@ -652,12 +653,23 @@ std::vector<uint32_t> SearchEngine::recentIndices(uint32_t count) const {
 }
 
 void SearchEngine::rebuildRecentCache() {
+    // H-2 fix: Use partial_sort for O(N + k log k) instead of O(N log k) set insert/erase
     recentCache_.clear();
+
+    struct TimePair { time_t modTime; uint32_t index; };
+    std::vector<TimePair> pairs;
+    pairs.reserve(records_.size());
     for (size_t i = 0; i < records_.size(); i++) {
         if (records_[i].type == 0) continue;
-        recentCache_.insert({records_[i].modTime, static_cast<uint32_t>(i)});
-        if (recentCache_.size() > kRecentCacheSize) {
-            recentCache_.erase(std::prev(recentCache_.end()));
+        pairs.push_back({records_[i].modTime, static_cast<uint32_t>(i)});
+    }
+
+    size_t k = std::min(pairs.size(), static_cast<size_t>(kRecentCacheSize));
+    if (k > 0) {
+        std::partial_sort(pairs.begin(), pairs.begin() + k, pairs.end(),
+                          [](const TimePair& a, const TimePair& b) { return a.modTime > b.modTime; });
+        for (size_t i = 0; i < k; i++) {
+            recentCache_.insert({pairs[i].modTime, pairs[i].index});
         }
     }
 }

@@ -22,7 +22,7 @@ struct ContentView: View {
                 if !viewModel.searchText.isEmpty {
                     Button {
                         viewModel.searchText = ""
-                        viewModel.onSearchTextChanged()
+                        // H-8: .onChange(of: searchText) will trigger onSearchTextChanged() automatically
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 16))

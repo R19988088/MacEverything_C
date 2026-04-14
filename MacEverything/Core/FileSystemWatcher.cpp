@@ -112,6 +112,9 @@ void FileSystemWatcher::fseventsCallback(
         // Skip root-changed meta events
         if (flags & kFSEventStreamEventFlagRootChanged) continue;
 
+        // H-7: Skip unmount events (e.g. external disk ejected)
+        if (flags & kFSEventStreamEventFlagUnmount) continue;
+
         // Detect history-done — replay is complete
         if (flags & kFSEventStreamEventFlagHistoryDone) {
             historyDone = true;

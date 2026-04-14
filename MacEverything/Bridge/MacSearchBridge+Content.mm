@@ -17,7 +17,7 @@
     _isContentIndexing.store(true, std::memory_order_relaxed);
     _cancelContentIndexing.store(false, std::memory_order_relaxed); // H-8: reset cancel flag
 
-    auto contentPersistence = _contentPersistence;
+    auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
     auto* shuttingDown = &_shuttingDown;
     auto* cancelFlag = &_cancelContentIndexing; // H-8
     __weak MacSearchBridge *weakSelf = self;
@@ -81,7 +81,8 @@
 }
 
 - (void)setupContentPersistence {
-    if (!_contentIndex) return;
+    auto contentIndex = [self safeContentIndex]; // C-3: thread-safe access
+    if (!contentIndex) return;
 
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
     NSString *cachesDir = [paths firstObject];
@@ -100,10 +101,11 @@
     std::string basePath = std::string([[appCacheDir stringByAppendingPathComponent:@"content_index.bin"] UTF8String]);
     std::string walPath = std::string([[appCacheDir stringByAppendingPathComponent:@"content_index.wal"] UTF8String]);
 
-    _contentPersistence = std::make_shared<ContentIndexPersistence>(_contentIndex, basePath, walPath);
-    _contentPersistence->load();
-    _contentPersistence->attachWAL();
-    _contentPersistence->startAutoCompaction(300.0);
+    auto newContentPersistence = std::make_shared<ContentIndexPersistence>(contentIndex, basePath, walPath);
+    [self setContentPersistence:newContentPersistence]; // C-3: thread-safe assignment
+    newContentPersistence->load();
+    newContentPersistence->attachWAL();
+    newContentPersistence->startAutoCompaction(300.0);
 }
 
 - (NSArray<MEContentResult *> *)queryContent:(NSString *)keyword maxResults:(uint32_t)maxResults {
@@ -227,9 +229,13 @@
 
     // H8 fix: Stop old persistence's auto-compaction timer before replacing,
     // to prevent timer firing into a dangling reference.
-    if (_contentPersistence) {
-        _contentPersistence->stopAutoCompactionAndWait();
-        _contentPersistence.reset();
+    // C-3: Thread-safe access via safeContentPersistence/setContentPersistence
+    {
+        auto oldContentPersistence = [self safeContentPersistence];
+        if (oldContentPersistence) {
+            oldContentPersistence->stopAutoCompactionAndWait();
+        }
+        [self setContentPersistence:nullptr];
     }
 
     // C-3: Replace _contentIndex under exclusive lock
@@ -259,22 +265,24 @@
     auto contentIndex = [self safeContentIndex]; // C-3
     if (!engine || !contentIndex) return;
 
+    auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
+
     if (removed) {
         uint32_t fileIndex = engine->indexForPath(fullPath);
         if (fileIndex != UINT32_MAX) {
             contentIndex->removeFile(fileIndex);
-            if (_contentPersistence) {
-                _contentPersistence->walAppendRemove(fileIndex);
+            if (contentPersistence) {
+                contentPersistence->walAppendRemove(fileIndex);
             }
         }
     } else {
         uint32_t fileIndex = engine->indexForPath(fullPath);
         if (fileIndex != UINT32_MAX) {
             bool didIndex = contentIndex->indexFile(fileIndex, fullPath);
-            if (didIndex && _contentPersistence) {
+            if (didIndex && contentPersistence) {
                 ContentFileInfo info;
                 if (contentIndex->getFileInfo(fileIndex, info)) {
-                    _contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams);
+                    contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams);
                 }
             }
         }

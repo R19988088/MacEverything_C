@@ -1,5 +1,6 @@
 #include "IndexWAL.h"
 #include <cstring>
+#include <iostream>
 #include <unistd.h>
 #include <array>
 
@@ -44,6 +45,20 @@ bool IndexWAL::open(const std::string& walPath) {
     path_ = walPath;
     file_ = fopen(walPath.c_str(), "ab");
     if (!file_) return false;
+
+    // H-3: Write magic+version header if this is a new (empty) file
+    long pos = ftell(file_);
+    if (pos == 0) {
+        uint32_t magic = kMagic;
+        uint32_t version = kVersion;
+        if (fwrite(&magic, sizeof(uint32_t), 1, file_) != 1 ||
+            fwrite(&version, sizeof(uint32_t), 1, file_) != 1) {
+            fclose(file_);
+            file_ = nullptr;
+            return false;
+        }
+        fflush(file_);
+    }
 
     entryCount_ = 0;
     return true;
@@ -110,6 +125,15 @@ std::vector<WALEntry> IndexWAL::readAll(const std::string& walPath) {
     FILE* f = fopen(walPath.c_str(), "rb");
     if (!f) return entries;
 
+    // H-3: Verify magic+version header
+    uint32_t magic = 0, version = 0;
+    if (fread(&magic, sizeof(uint32_t), 1, f) != 1 ||
+        fread(&version, sizeof(uint32_t), 1, f) != 1 ||
+        magic != kMagic || version != kVersion) {
+        // Legacy WAL without header — try reading from the beginning
+        fseek(f, 0, SEEK_SET);
+    }
+
     while (true) {
         // Record the start position to re-read the raw bytes for CRC verification
         long startPos = ftell(f);
@@ -148,7 +172,12 @@ std::vector<WALEntry> IndexWAL::readAll(const std::string& walPath) {
         fseek(f, afterCRC, SEEK_SET);
 
         uint32_t computedCRC = crc32(rawBuf.data(), rawBuf.size());
-        if (computedCRC != storedCRC) break; // CRC mismatch — stop at corrupt entry
+        if (computedCRC != storedCRC) {
+            // H-4: Log CRC mismatch location for diagnostics
+            std::cerr << "[IndexWAL] CRC mismatch at offset " << startPos
+                      << ", recovered " << entries.size() << " entries\n";
+            break;
+        }
 
         entries.push_back(std::move(entry));
     }

@@ -60,6 +60,10 @@ public:
     /// Maximum WAL file size (50 MB). append() returns false when exceeded.
     static constexpr size_t kMaxWALSize = 50 * 1024 * 1024;
 
+    /// H-3: WAL file header constants for format identification and versioning
+    static constexpr uint32_t kMagic   = 0x57414C31; // "WAL1"
+    static constexpr uint32_t kVersion = 1;
+
 private:
     FILE* file_ = nullptr;
     std::string path_;

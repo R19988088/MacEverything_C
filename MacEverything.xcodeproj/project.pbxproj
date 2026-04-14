@@ -30,6 +30,7 @@
 		A1000015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000021; };
 		A1000016 /* MacSearchBridge+Content.mm in Sources */ = {isa = PBXBuildFile; fileRef = A2000023; };
 		A1000017 /* SearchEnginePersistence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000024; };
+		A1000018 /* IndexRefreshThrottle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,6 +71,7 @@
 		A2000022 /* MacSearchBridge_Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MacSearchBridge_Internal.h; sourceTree = "<group>"; };
 		A2000023 /* MacSearchBridge+Content.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = "MacSearchBridge+Content.mm"; sourceTree = "<group>"; };
 		A2000024 /* SearchEnginePersistence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEnginePersistence.cpp; sourceTree = "<group>"; };
+		A2000025 /* IndexRefreshThrottle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexRefreshThrottle.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -132,6 +134,7 @@
 				A200001A /* ShortcutSettingsView.swift */,
 				A200001F /* ContentResultRow.swift */,
 				A2000020 /* ContentSettingsView.swift */,
+				A2000025 /* IndexRefreshThrottle.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -260,6 +263,7 @@
 				A1000014 /* ContentSettingsView.swift in Sources */,
 				A1000016 /* MacSearchBridge+Content.mm in Sources */,
 				A1000017 /* SearchEnginePersistence.cpp in Sources */,
+				A1000018 /* IndexRefreshThrottle.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

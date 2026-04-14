@@ -51,8 +51,7 @@ class SearchViewModel: ObservableObject {
     private static let indexChangeThrottleNs: UInt64 = 5_000_000_000 // 5 seconds
 
     private var indexChangeTask: Task<Void, Never>?
-    private var indexChangePending = false
-    var isWindowFocused: Bool = true
+    let refreshThrottle = IndexRefreshThrottle()
 
     static var cacheDir: String {
         let base = NSSearchPathForDirectoriesInDomains(
@@ -341,34 +340,27 @@ class SearchViewModel: ObservableObject {
     }
 
     private func onIndexChanged() {
-        // Window not focused: accumulate changes, refresh on focus regain
-        guard isWindowFocused else {
-            indexChangePending = true
-            return
-        }
-        // Throttle: if a refresh is already scheduled, just mark pending
-        if indexChangeTask != nil {
-            indexChangePending = true
-            return
-        }
-        performIndexRefresh()
-        // Schedule a cooldown — any calls during this window are coalesced
-        indexChangeTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: Self.indexChangeThrottleNs)
-            guard let self else { return }
-            self.indexChangeTask = nil
-            if self.indexChangePending {
-                self.indexChangePending = false
-                self.performIndexRefresh()
-            }
+        if refreshThrottle.indexChanged() {
+            performIndexRefresh()
+            scheduleCooldown()
         }
     }
 
     func onWindowFocusChanged(_ focused: Bool) {
-        isWindowFocused = focused
-        if focused && indexChangePending {
-            indexChangePending = false
+        if refreshThrottle.focusChanged(focused) {
             performIndexRefresh()
+        }
+    }
+
+    private func scheduleCooldown() {
+        indexChangeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.indexChangeThrottleNs)
+            guard let self else { return }
+            self.indexChangeTask = nil
+            if self.refreshThrottle.cooldownExpired() {
+                self.performIndexRefresh()
+                self.scheduleCooldown()
+            }
         }
     }
 

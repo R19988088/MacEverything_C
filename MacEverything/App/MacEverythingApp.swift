@@ -27,11 +27,6 @@ struct MacEverythingApp: App {
                 }
             }
         }
-
-        Window("Shortcut Settings", id: "shortcut-settings") {
-            ShortcutSettingsView()
-        }
-        .windowResizability(.contentSize)
     }
 }
 

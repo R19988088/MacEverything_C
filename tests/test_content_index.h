@@ -26,7 +26,7 @@ static void runContentIndexTests() {
     // Create binary file (with NUL byte)
     {
         FILE* f = fopen((tmpDir + "/binary.bin").c_str(), "wb");
-        const char data[] = "some\x00binary";
+        const char data[] = "some\0binary";
         fwrite(data, 1, sizeof(data) - 1, f);
         fclose(f);
     }

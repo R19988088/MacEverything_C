@@ -37,6 +37,8 @@ class HotkeyManager {
                                           GetApplicationEventTarget(), 0, &ref)
         if status == noErr {
             hotKeyRef = ref
+        } else {
+            NSLog("Failed to register hotkey: status %d", status)
         }
 
         // Only install event handler once

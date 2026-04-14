@@ -1,10 +1,26 @@
 #pragma once
 // Part 19: Rapid Typing Stress Test
-// Simulates user rapidly typing/deleting/retyping to measure query latency
-// and cancellation behavior under high-frequency query load.
+// Simulates user rapidly typing/deleting/retyping to measure query latency,
+// cancellation behavior, and CPU/memory usage under high-frequency query load.
+
+static void printResourceDelta(const char* label,
+                               const ResourceSnapshot& before,
+                               const ResourceSnapshot& after) {
+    double cpuUser = after.cpu.userMs - before.cpu.userMs;
+    double cpuSys  = after.cpu.sysMs  - before.cpu.sysMs;
+    int64_t memDelta = static_cast<int64_t>(after.memMB) - static_cast<int64_t>(before.memMB);
+    std::cout << "    " << label << " resources:\n";
+    std::cout << "      CPU user: " << std::fixed << std::setprecision(1)
+              << cpuUser << " ms, sys: " << cpuSys << " ms, total: "
+              << (cpuUser + cpuSys) << " ms\n";
+    std::cout << "      Memory: " << before.memMB << " → " << after.memMB
+              << " MB (delta " << (memDelta >= 0 ? "+" : "") << memDelta << " MB)\n";
+}
 
 inline void runRapidTypingTest() {
     std::cout << "=== Part 19: Rapid Typing Stress Test ===\n\n";
+
+    auto testStart = ResourceSnapshot::take();
 
     // Build a large engine (100k records) so query() takes measurable time
     constexpr uint32_t N = 100'000;
@@ -14,7 +30,6 @@ inline void runRapidTypingTest() {
         records.reserve(N);
         for (uint32_t i = 0; i < N; i++) {
             FileRecord r;
-            // Spread names to avoid trivial trigram hits for short prefixes
             r.name = "hello_world_file_" + std::to_string(i) + ".txt";
             r.path = "/deep/nested/path/number/" + std::to_string(i % 1000);
             r.type = 1;
@@ -25,28 +40,29 @@ inline void runRapidTypingTest() {
         engine.loadRecords(std::move(records));
     }
 
-    // ── Scenario 1: Incremental typing "h" → "he" → "hel" → "hell" → "hello" ──
+    auto afterLoad = ResourceSnapshot::take();
+    printResourceDelta("Engine load (100k records)", testStart, afterLoad);
+    std::cout << "\n";
+
+    // ── Scenario 1: Incremental typing "h" -> "he" -> "hel" -> "hell" -> "hello" ──
     {
         std::cout << "  Scenario 1: Incremental typing simulation\n";
+        auto before = ResourceSnapshot::take();
 
         const std::vector<std::string> keystrokes = {"h", "he", "hel", "hell", "hello"};
 
-        // Fire queries rapidly from background threads, simulating debounce arrivals
         std::vector<std::thread> threads;
         std::vector<std::atomic<size_t>> resultCounts(keystrokes.size());
         for (auto& rc : resultCounts) rc.store(0, std::memory_order_relaxed);
 
-        // Launch intermediate queries (will be cancelled by subsequent ones)
         for (size_t i = 0; i < keystrokes.size() - 1; i++) {
             threads.emplace_back([&engine, &resultCounts, &keystrokes, i] {
                 auto results = engine.query(keystrokes[i], 10000);
                 resultCounts[i].store(results.size(), std::memory_order_relaxed);
             });
-            // Small delay between "keystrokes" (30ms simulates post-debounce interval)
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
         }
 
-        // Final query — this one should complete with results
         auto finalStart = std::chrono::steady_clock::now();
         auto finalResults = engine.query(keystrokes.back(), 10000);
         auto finalElapsed = std::chrono::steady_clock::now() - finalStart;
@@ -54,30 +70,35 @@ inline void runRapidTypingTest() {
 
         for (auto& t : threads) t.join();
 
-        // Count how many intermediate queries were cancelled
+        auto after = ResourceSnapshot::take();
+
         size_t cancelledCount = 0;
         for (size_t i = 0; i < keystrokes.size() - 1; i++) {
-            if (resultCounts[i].load(std::memory_order_relaxed) == 0) {
+            if (resultCounts[i].load(std::memory_order_relaxed) == 0)
                 cancelledCount++;
-            }
         }
+
+        double cpuTotal = after.cpu.totalMs() - before.cpu.totalMs();
 
         std::cout << "    Intermediate queries cancelled: " << cancelledCount
                   << "/" << (keystrokes.size() - 1) << "\n";
         std::cout << "    Final query (\"hello\"): " << finalMs << " ms, "
                   << finalResults.size() << " results\n";
+        printResourceDelta("Scenario 1", before, after);
 
         check(!finalResults.empty(),
               "Scenario 1: Final query returns results");
         check(finalMs < 200.0,
               "Scenario 1: Final query latency < 200ms");
+        check(cpuTotal < 5000.0,
+              "Scenario 1: CPU time < 5s (no runaway threads)");
     }
 
-    // ── Scenario 2: Type → Clear → Retype ──
+    // ── Scenario 2: Type -> Clear -> Retype ──
     {
-        std::cout << "\n  Scenario 2: Type → Clear → Retype\n";
+        std::cout << "\n  Scenario 2: Type -> Clear -> Retype\n";
+        auto before = ResourceSnapshot::take();
 
-        // Phase 1: Start a slow query
         std::atomic<size_t> phase1Results{0};
         std::thread t1([&] {
             auto results = engine.query("deep/nested", 10000);
@@ -86,10 +107,8 @@ inline void runRapidTypingTest() {
 
         std::this_thread::sleep_for(std::chrono::microseconds(500));
 
-        // Phase 2: User clears the search box (empty string cancels in-flight)
         auto emptyResults = engine.query("", 0);
 
-        // Phase 3: Small pause then retype (simulates user thinking + new input)
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
         auto retypeStart = std::chrono::steady_clock::now();
@@ -99,7 +118,10 @@ inline void runRapidTypingTest() {
 
         t1.join();
 
+        auto after = ResourceSnapshot::take();
+
         bool phase1Cancelled = phase1Results.load(std::memory_order_relaxed) == 0;
+        double cpuTotal = after.cpu.totalMs() - before.cpu.totalMs();
 
         std::cout << "    Phase 1 (\"deep/nested\"): "
                   << phase1Results.load() << " results"
@@ -107,6 +129,7 @@ inline void runRapidTypingTest() {
         std::cout << "    Phase 2 (clear): " << emptyResults.size() << " results\n";
         std::cout << "    Phase 3 (\"hello_world_file_42\"): " << retypeMs << " ms, "
                   << retypeResults.size() << " results\n";
+        printResourceDelta("Scenario 2", before, after);
 
         check(emptyResults.empty(),
               "Scenario 2: Empty query returns empty");
@@ -114,11 +137,14 @@ inline void runRapidTypingTest() {
               "Scenario 2: Retype query returns correct results");
         check(retypeMs < 200.0,
               "Scenario 2: Retype latency < 200ms");
+        check(cpuTotal < 2000.0,
+              "Scenario 2: CPU time < 2s (cancelled query stops promptly)");
     }
 
     // ── Scenario 3: High-frequency stress (100 rapid queries) ──
     {
         std::cout << "\n  Scenario 3: High-frequency stress (100 rapid queries)\n";
+        auto before = ResourceSnapshot::take();
 
         constexpr int QUERY_COUNT = 100;
         std::vector<std::thread> threads;
@@ -127,18 +153,15 @@ inline void runRapidTypingTest() {
 
         auto stressStart = std::chrono::steady_clock::now();
 
-        // Fire 99 "intermediate" queries rapidly from background threads
         for (int i = 0; i < QUERY_COUNT - 1; i++) {
             threads.emplace_back([&engine, &resultCounts, i] {
                 std::string keyword = "file_stress_query_" + std::to_string(i);
                 auto results = engine.query(keyword, 1000);
                 resultCounts[i].store(results.size(), std::memory_order_relaxed);
             });
-            // 10ms between queries — faster than real typing, stress test
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
-        // Final query — should complete correctly
         auto finalStart = std::chrono::steady_clock::now();
         auto finalResults = engine.query("hello_world_file_99", 100);
         auto finalElapsed = std::chrono::steady_clock::now() - finalStart;
@@ -149,39 +172,44 @@ inline void runRapidTypingTest() {
         auto stressElapsed = std::chrono::steady_clock::now() - stressStart;
         double totalMs = std::chrono::duration<double, std::milli>(stressElapsed).count();
 
-        // Count cancellations
+        auto after = ResourceSnapshot::take();
+
         size_t cancelledCount = 0;
         for (int i = 0; i < QUERY_COUNT - 1; i++) {
-            if (resultCounts[i].load(std::memory_order_relaxed) == 0) {
+            if (resultCounts[i].load(std::memory_order_relaxed) == 0)
                 cancelledCount++;
-            }
         }
 
         double cancelRate = 100.0 * cancelledCount / (QUERY_COUNT - 1);
+        double cpuTotal = after.cpu.totalMs() - before.cpu.totalMs();
+        int64_t memDelta = static_cast<int64_t>(after.memMB) - static_cast<int64_t>(before.memMB);
 
         std::cout << "    Total wall time: " << totalMs << " ms\n";
         std::cout << "    Cancelled: " << cancelledCount << "/" << (QUERY_COUNT - 1)
                   << " (" << std::fixed << std::setprecision(1) << cancelRate << "%)\n";
         std::cout << "    Final query: " << finalMs << " ms, "
                   << finalResults.size() << " results\n";
+        printResourceDelta("Scenario 3", before, after);
 
         check(!finalResults.empty(),
               "Scenario 3: Final query returns results under stress");
         check(finalMs < 200.0,
               "Scenario 3: Final query latency < 200ms under stress");
-        // At least some intermediate queries should be cancelled
         check(cancelledCount > 0,
               "Scenario 3: Some intermediate queries were cancelled");
+        check(cpuTotal < 10000.0,
+              "Scenario 3: CPU time < 10s (100 queries don't explode CPU)");
+        check(memDelta < 100,
+              "Scenario 3: Memory growth < 100MB (no leak under stress)");
     }
 
     // ── Scenario 4: Baseline latency (no contention) ──
     {
         std::cout << "\n  Scenario 4: Baseline latency (no contention)\n";
+        auto before = ResourceSnapshot::take();
 
-        // Warm up
         engine.query("hello_world_file_0", 10);
 
-        // Measure baseline for a trigram-accelerated query
         constexpr int RUNS = 10;
         double totalMs = 0;
         size_t totalResults = 0;
@@ -194,7 +222,6 @@ inline void runRapidTypingTest() {
         }
         double avgMs = totalMs / RUNS;
 
-        // Measure baseline for a path scan (slow path)
         double pathTotalMs = 0;
         for (int i = 0; i < RUNS; i++) {
             auto start = std::chrono::steady_clock::now();
@@ -204,15 +231,36 @@ inline void runRapidTypingTest() {
         }
         double pathAvgMs = pathTotalMs / RUNS;
 
+        auto after = ResourceSnapshot::take();
+        double cpuTotal = after.cpu.totalMs() - before.cpu.totalMs();
+
         std::cout << "    Trigram query avg: " << std::fixed << std::setprecision(2)
                   << avgMs << " ms (" << totalResults / RUNS << " results avg)\n";
         std::cout << "    Path scan avg:    " << std::fixed << std::setprecision(2)
                   << pathAvgMs << " ms\n";
+        printResourceDelta("Scenario 4", before, after);
 
         check(avgMs < 50.0,
               "Scenario 4: Trigram query baseline < 50ms");
         check(pathAvgMs < 200.0,
               "Scenario 4: Path scan baseline < 200ms");
+        check(cpuTotal < 2000.0,
+              "Scenario 4: Baseline CPU < 2s (20 queries)");
+    }
+
+    // ── Overall resource summary ──
+    {
+        auto testEnd = ResourceSnapshot::take();
+        std::cout << "\n  Overall resource summary:\n";
+        printResourceDelta("Part 19 total", testStart, testEnd);
+
+        double totalCpu = testEnd.cpu.totalMs() - testStart.cpu.totalMs();
+        int64_t totalMemDelta = static_cast<int64_t>(testEnd.memMB) - static_cast<int64_t>(testStart.memMB);
+
+        check(totalCpu < 20000.0,
+              "Part 19: Total CPU time < 20s");
+        check(totalMemDelta < 200,
+              "Part 19: Total memory growth < 200MB");
     }
 
     std::cout << "\n";

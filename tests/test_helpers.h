@@ -1,5 +1,6 @@
 #pragma once
 // ─────────── Helpers ───────────
+#include <sys/resource.h>
 
 static size_t getMemoryUsageMB() {
     mach_task_basic_info_data_t info;
@@ -9,6 +10,26 @@ static size_t getMemoryUsageMB() {
     }
     return 0;
 }
+
+struct CpuTime {
+    double userMs;
+    double sysMs;
+    double totalMs() const { return userMs + sysMs; }
+};
+
+static CpuTime getCpuTime() {
+    struct rusage ru;
+    getrusage(RUSAGE_SELF, &ru);
+    double userMs = ru.ru_utime.tv_sec * 1000.0 + ru.ru_utime.tv_usec / 1000.0;
+    double sysMs  = ru.ru_stime.tv_sec * 1000.0 + ru.ru_stime.tv_usec / 1000.0;
+    return {userMs, sysMs};
+}
+
+struct ResourceSnapshot {
+    size_t memMB;
+    CpuTime cpu;
+    static ResourceSnapshot take() { return {getMemoryUsageMB(), getCpuTime()}; }
+};
 
 static int passed = 0, failed = 0;
 

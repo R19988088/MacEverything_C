@@ -205,6 +205,12 @@ struct ContentView: View {
                         }
                     }
                 }
+                .background(
+                    viewModel.showingRecent
+                        ? Color.orange.opacity(0.06)
+                        : Color.clear
+                )
+                .animation(.easeInOut(duration: 0.25), value: viewModel.showingRecent)
 
                 if viewModel.totalMatches > 0 {
                     HStack {

@@ -31,15 +31,15 @@ static void runContentIndexTests() {
         fclose(f);
     }
 
-    check(!ContentIndex::isBinaryFile(tmpDir + "/text.txt"), "ContentIndex: text file not detected as binary");
-    check(ContentIndex::isBinaryFile(tmpDir + "/binary.bin"), "ContentIndex: binary file detected correctly");
-
-    // Test indexing and querying
+    // Test binary detection via indexFile (readFileIfText rejects binary files)
     ContentIndex ci;
-    ci.setExtensions({"txt"});
+    ci.setExtensions({"txt", "bin"});
 
     bool indexed = ci.indexFile(0, tmpDir + "/text.txt");
     check(indexed, "ContentIndex: indexFile succeeds for text file");
+
+    bool binaryIndexed = ci.indexFile(1, tmpDir + "/binary.bin");
+    check(!binaryIndexed, "ContentIndex: indexFile rejects binary file");
     check(ci.indexedFileCount() == 1, "ContentIndex: 1 file indexed");
 
     auto matches = ci.query("trigram");

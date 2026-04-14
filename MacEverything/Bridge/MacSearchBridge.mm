@@ -614,18 +614,21 @@ static bool pathEndsWithApp(const std::string& path) {
     auto engine = [self safeEngine]; // C-4
     if (!engine) return @[];
 
-    NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.count];
+    // Convert NSArray to std::vector for forEachRecordWithPath
+    std::vector<uint32_t> idxVec;
+    idxVec.reserve(indices.count);
     for (NSNumber *num in indices) {
-        uint32_t idx = [num unsignedIntValue];
-        if (idx >= engine->recordCount()) continue;
-        auto r = engine->getRecord(idx);
-        if (r.type == 0) continue;
+        idxVec.push_back([num unsignedIntValue]);
+    }
+
+    NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.count];
+    engine->forEachRecordWithPath(idxVec, [&](uint32_t, const FileRecord& r, const std::string& path) {
         [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
-                                                        path:[NSString stringWithUTF8String:r.path.c_str()]
+                                                        path:[NSString stringWithUTF8String:path.c_str()]
                                                         type:r.type
                                                         size:r.size
                                                      modTime:r.modTime]];
-    }
+    });
     return results;
 }
 
@@ -653,15 +656,13 @@ static bool pathEndsWithApp(const std::string& path) {
     if (indices.empty()) return @[];
 
     NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.size()];
-    for (uint32_t idx : indices) {
-        auto r = engine->getRecord(idx);
-        if (r.type == 0) continue;
+    engine->forEachRecordWithPath(indices, [&](uint32_t, const FileRecord& r, const std::string& path) {
         [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
-                                                        path:[NSString stringWithUTF8String:r.path.c_str()]
+                                                        path:[NSString stringWithUTF8String:path.c_str()]
                                                         type:r.type
                                                         size:r.size
                                                      modTime:r.modTime]];
-    }
+    });
     return results;
 }
 
@@ -674,15 +675,13 @@ static bool pathEndsWithApp(const std::string& path) {
     if (indices.empty()) return @[];
 
     NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.size()];
-    for (uint32_t idx : indices) {
-        auto r = engine->getRecord(idx);
-        if (r.type == 0) continue;
+    engine->forEachRecordWithPath(indices, [&](uint32_t, const FileRecord& r, const std::string& path) {
         [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
-                                                        path:[NSString stringWithUTF8String:r.path.c_str()]
+                                                        path:[NSString stringWithUTF8String:path.c_str()]
                                                         type:r.type
                                                         size:r.size
                                                      modTime:r.modTime]];
-    }
+    });
     return results;
 }
 

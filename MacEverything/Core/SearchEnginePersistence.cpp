@@ -29,9 +29,11 @@ static bool readString(FILE* f, std::string& s) {
 }
 
 // --- Write a single record (v2/v3 format with inode+devId) ---
-static bool writeRecord(FILE* f, const FileRecord& r) {
+// resolvedPath: the actual directory path (from PathTable), since record.path
+// may be cleared after path interning.
+static bool writeRecord(FILE* f, const FileRecord& r, const std::string& resolvedPath) {
     if (!writeString(f, r.name)) return false;
-    if (!writeString(f, r.path)) return false;
+    if (!writeString(f, resolvedPath)) return false;
     if (fwrite(&r.type, sizeof(uint8_t), 1, f) != 1) return false;
     if (fwrite(&r.size, sizeof(uint64_t), 1, f) != 1) return false;
     int64_t mod = static_cast<int64_t>(r.modTime);
@@ -104,7 +106,9 @@ bool SearchEngine::saveToFile(const std::string& filePath, const IndexMetadata& 
     for (size_t i = 0; i < records_.size(); i++) {
         const auto& r = records_[i];
         if (r.type == 0) continue;
-        if (!writeRecord(f, r)) {
+        // Resolve path from PathTable (record.path is cleared after interning)
+        const std::string& resolvedPath = pathTable_.resolve(pathIndices_[i]);
+        if (!writeRecord(f, r, resolvedPath)) {
             fclose(f);
             remove(tmpPath.c_str());
             return false;

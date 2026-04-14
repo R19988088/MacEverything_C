@@ -29,10 +29,17 @@
     dispatch_queue_t _mutationQueue;
     // H-8: Cancellation flag for content indexing
     std::atomic<bool> _cancelContentIndexing;
+    // C-3: Protects _contentIndex shared_ptr from concurrent read/write
+    std::shared_mutex _contentMutex;
+    // P-5: Semaphore signaled when content indexing completes
+    dispatch_semaphore_t _contentIndexingSemaphore;
 }
 
 /// Thread-safe engine accessor (C-4)
 - (std::shared_ptr<SearchEngine>)safeEngine;
+
+/// Thread-safe content index accessor (C-3)
+- (std::shared_ptr<ContentIndex>)safeContentIndex;
 
 /// Content indexing lifecycle
 - (void)startContentIndexing;

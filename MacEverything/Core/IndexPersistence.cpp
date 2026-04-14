@@ -95,24 +95,28 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
     wal_ = newWal;
     engine_->attachWAL(newWal);
 
-    // 3. Close and delete old WAL (mutations now go to the new WAL)
-    if (oldWal) {
-        oldWal->closeAndDelete();
-    }
-
-    // 4. Compact in-memory records (remove tombstones) before saving
+    // 3. Compact in-memory records (remove tombstones) before saving
     auto remap = engine_->compactRecords();
     // H-1: Propagate index remap to ContentIndex
     if (!remap.empty() && contentIndex_) {
         contentIndex_->remapFileIndices(remap);
     }
 
-    // 5. Write new base file with metadata (uses atomic rename internally)
+    // 4. Write base file BEFORE deleting old WAL (C-2 fix: crash-safe ordering).
+    //    If saveToFile fails, old WAL is preserved so no data is lost.
     if (engine_->saveToFile(basePath_, metadata)) {
         std::cout << "[IndexPersistence] Compacted base index, lastEventId=" << metadata.lastEventId
                   << ", records=" << engine_->liveRecordCount() << "\n";
+        // 5. Only delete old WAL after base file is successfully written
+        if (oldWal) {
+            oldWal->closeAndDelete();
+        }
     } else {
-        std::cerr << "[IndexPersistence] Failed to write base index\n";
+        std::cerr << "[IndexPersistence] Failed to write base index — keeping old WAL for recovery\n";
+        // Old WAL is preserved; on next startup, its entries will be replayed
+        if (oldWal) {
+            oldWal->close();
+        }
     }
 
     // 6. Rename new WAL to standard path

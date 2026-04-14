@@ -4,13 +4,19 @@
 
 @implementation MacSearchBridge (Content)
 
+// C-3: Thread-safe accessor for _contentIndex (mirrors safeEngine pattern)
+- (std::shared_ptr<ContentIndex>)safeContentIndex {
+    std::shared_lock lock(_contentMutex);
+    return _contentIndex;
+}
+
 - (void)startContentIndexing {
     auto engine = [self safeEngine]; // C-4
-    if (!engine || !_contentIndex) return;
+    auto contentIndex = [self safeContentIndex]; // C-3
+    if (!engine || !contentIndex) return;
     _isContentIndexing.store(true, std::memory_order_relaxed);
     _cancelContentIndexing.store(false, std::memory_order_relaxed); // H-8: reset cancel flag
 
-    auto contentIndex = _contentIndex;
     auto contentPersistence = _contentPersistence;
     auto* shuttingDown = &_shuttingDown;
     auto* cancelFlag = &_cancelContentIndexing; // H-8
@@ -64,6 +70,8 @@
             MacSearchBridge *strongSelf = weakSelf;
             if (strongSelf) {
                 strongSelf->_isContentIndexing.store(false, std::memory_order_relaxed);
+                // P-5: Signal semaphore so rebuildContentIndex/prepareForTermination can wait
+                dispatch_semaphore_signal(strongSelf->_contentIndexingSemaphore);
                 if (strongSelf.onContentIndexComplete) {
                     strongSelf.onContentIndexComplete(totalIndexed);
                 }
@@ -100,12 +108,13 @@
 
 - (NSArray<MEContentResult *> *)queryContent:(NSString *)keyword maxResults:(uint32_t)maxResults {
     auto engine = [self safeEngine]; // C-4
-    if (!engine || !_contentIndex) return @[];
+    auto contentIndex = [self safeContentIndex]; // C-3
+    if (!engine || !contentIndex) return @[];
 
     std::string key([keyword UTF8String]);
     if (key.empty()) return @[];
 
-    auto matches = _contentIndex->query(key, maxResults);
+    auto matches = contentIndex->query(key, maxResults);
     if (matches.empty()) return @[];
 
     // Pre-resolve file paths (needs engine lock, do it once)
@@ -166,28 +175,32 @@
 }
 
 - (void)setContentExtensions:(NSArray<NSString *> *)extensions {
-    if (!_contentIndex) return;
+    auto contentIndex = [self safeContentIndex]; // C-3
+    if (!contentIndex) return;
     std::vector<std::string> exts;
     exts.reserve(extensions.count);
     for (NSString *ext in extensions) {
         exts.push_back(std::string([ext UTF8String]));
     }
-    _contentIndex->setExtensions(exts);
+    contentIndex->setExtensions(exts);
 }
 
 - (void)setContentMaxFileSize:(uint64_t)bytes {
-    if (_contentIndex) {
-        _contentIndex->setMaxFileSize(bytes);
+    auto contentIndex = [self safeContentIndex]; // C-3
+    if (contentIndex) {
+        contentIndex->setMaxFileSize(bytes);
     }
 }
 
 - (uint32_t)contentIndexedFileCount {
-    return _contentIndex ? _contentIndex->indexedFileCount() : 0;
+    auto contentIndex = [self safeContentIndex]; // C-3
+    return contentIndex ? contentIndex->indexedFileCount() : 0;
 }
 
 - (NSArray<NSString *> *)contentGetExtensions {
-    if (!_contentIndex) return @[];
-    auto exts = _contentIndex->getExtensions();
+    auto contentIndex = [self safeContentIndex]; // C-3
+    if (!contentIndex) return @[];
+    auto exts = contentIndex->getExtensions();
     NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:exts.size()];
     for (const auto& ext : exts) {
         [result addObject:[NSString stringWithUTF8String:ext.c_str()]];
@@ -196,20 +209,20 @@
 }
 
 - (uint64_t)contentGetMaxFileSize {
-    return _contentIndex ? _contentIndex->getMaxFileSize() : (1 * 1024 * 1024);
+    auto contentIndex = [self safeContentIndex]; // C-3
+    return contentIndex ? contentIndex->getMaxFileSize() : (1 * 1024 * 1024);
 }
 
 - (void)rebuildContentIndex {
     auto engine = [self safeEngine]; // C-4
-    if (!engine || !_contentIndex) return;
+    auto contentIndex = [self safeContentIndex]; // C-3
+    if (!engine || !contentIndex) return;
 
-    // H-8: Cancel in-flight content indexing and wait for it to stop
+    // P-5: Cancel in-flight content indexing and wait via semaphore (not spin-wait)
     if (_isContentIndexing.load(std::memory_order_relaxed)) {
         _cancelContentIndexing.store(true, std::memory_order_relaxed);
-        // Spin briefly to let the indexing loop notice and exit
-        for (int i = 0; i < 100 && _isContentIndexing.load(std::memory_order_relaxed); i++) {
-            usleep(10000); // 10ms
-        }
+        dispatch_semaphore_wait(_contentIndexingSemaphore,
+                                dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
     }
 
     // H8 fix: Stop old persistence's auto-compaction timer before replacing,
@@ -219,15 +232,17 @@
         _contentPersistence.reset();
     }
 
-    // Clear old content index data
+    // C-3: Replace _contentIndex under exclusive lock
     {
-        auto exts = _contentIndex->getExtensions();
-        auto maxSize = _contentIndex->getMaxFileSize();
+        auto exts = contentIndex->getExtensions();
+        auto maxSize = contentIndex->getMaxFileSize();
 
-        // Re-create content index to clear all data
-        _contentIndex = std::make_shared<ContentIndex>();
-        _contentIndex->setExtensions(exts);
-        _contentIndex->setMaxFileSize(maxSize);
+        auto newIndex = std::make_shared<ContentIndex>();
+        newIndex->setExtensions(exts);
+        newIndex->setMaxFileSize(maxSize);
+
+        std::unique_lock lock(_contentMutex);
+        _contentIndex = newIndex;
     }
 
     // Re-setup persistence with fresh index
@@ -241,12 +256,13 @@
 - (void)updateContentIndexForPath:(const std::string&)fullPath
                           removed:(BOOL)removed
                            engine:(std::shared_ptr<SearchEngine>)engine {
-    if (!engine || !_contentIndex) return;
+    auto contentIndex = [self safeContentIndex]; // C-3
+    if (!engine || !contentIndex) return;
 
     if (removed) {
         uint32_t fileIndex = engine->indexForPath(fullPath);
         if (fileIndex != UINT32_MAX) {
-            _contentIndex->removeFile(fileIndex);
+            contentIndex->removeFile(fileIndex);
             if (_contentPersistence) {
                 _contentPersistence->walAppendRemove(fileIndex);
             }
@@ -254,10 +270,10 @@
     } else {
         uint32_t fileIndex = engine->indexForPath(fullPath);
         if (fileIndex != UINT32_MAX) {
-            bool didIndex = _contentIndex->indexFile(fileIndex, fullPath);
+            bool didIndex = contentIndex->indexFile(fileIndex, fullPath);
             if (didIndex && _contentPersistence) {
                 ContentFileInfo info;
-                if (_contentIndex->getFileInfo(fileIndex, info)) {
+                if (contentIndex->getFileInfo(fileIndex, info)) {
                     _contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams);
                 }
             }

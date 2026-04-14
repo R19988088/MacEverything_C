@@ -66,6 +66,8 @@
         _cancelContentIndexing.store(false, std::memory_order_relaxed);
         // H-7: Serial queue for mutations
         _mutationQueue = dispatch_queue_create("com.maceverything.mutation", DISPATCH_QUEUE_SERIAL);
+        // P-5: Semaphore for waiting on content indexing completion
+        _contentIndexingSemaphore = dispatch_semaphore_create(0);
     }
     return self;
 }
@@ -243,8 +245,8 @@
                     self->_isScanning.store(false, std::memory_order_relaxed);
 
                     self->_persistence->attachWAL();
-                    // H-1: Set content index so compaction can propagate remap
-                    self->_persistence->setContentIndex(self->_contentIndex);
+                    // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
+                    self->_persistence->setContentIndex([self safeContentIndex]);
 
                     uint32_t count = engine->liveRecordCount();
                     if (completion) completion(count, NO);
@@ -281,8 +283,8 @@
                     [self safeEngine], cacheStr, walStr
                 );
                 self->_persistence->attachWAL();
-                // H-1: Set content index so compaction can propagate remap
-                self->_persistence->setContentIndex(self->_contentIndex);
+                // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
+                self->_persistence->setContentIndex([self safeContentIndex]);
                 self->_persistence->startAutoCompaction(300.0, self->_watcher);
 
                 uint64_t eventId = self->_watcher ? self->_watcher->getLastEventId() : 0;
@@ -306,8 +308,8 @@
 - (void)compactIndex {
     if (_persistence && _watcher) {
         uint64_t eventId = _watcher->getLastEventId();
-        // H-1: Set content index so compaction can propagate remap
-        _persistence->setContentIndex(_contentIndex);
+        // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
+        _persistence->setContentIndex([self safeContentIndex]);
         _persistence->compact(eventId);
     }
 }
@@ -315,6 +317,7 @@
 - (void)prepareForTermination {
     // 1. Signal all background work to stop immediately
     _shuttingDown.store(true);
+    _cancelContentIndexing.store(true, std::memory_order_relaxed); // C-4: cancel content indexing
 
     // 2. Capture last event ID before stopping the watcher
     uint64_t lastEventId = _watcher ? _watcher->getLastEventId() : 0;
@@ -322,10 +325,17 @@
     // 3. Stop FSEvents stream + auto-compaction timers and wait for in-flight handlers
     [self stopMonitoring];
 
+    // C-4: Wait for content indexing dispatch_apply to finish before compacting.
+    // _shuttingDown + _cancelContentIndexing are checked every iteration, so it will exit quickly.
+    if (_isContentIndexing.load(std::memory_order_relaxed)) {
+        dispatch_semaphore_wait(_contentIndexingSemaphore,
+                                dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    }
+
     // 4. Now safe to compact on main thread — no competing lock holders
     if (_persistence) {
-        // H-1: Set content index so compaction can propagate remap
-        _persistence->setContentIndex(_contentIndex);
+        // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
+        _persistence->setContentIndex([self safeContentIndex]);
         _persistence->compact(lastEventId);
     }
     if (_contentPersistence) {
@@ -571,6 +581,7 @@ static bool pathEndsWithApp(const std::string& path) {
                                      modTime:r.modTime];
 }
 
+// P-3: Single engine lock for all indices instead of N+1 safeEngine calls
 - (NSArray<MEFileResult *> *)recordsAtIndices:(NSArray<NSNumber *> *)indices {
     auto engine = [self safeEngine]; // C-4
     if (!engine) return @[];
@@ -578,8 +589,14 @@ static bool pathEndsWithApp(const std::string& path) {
     NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.count];
     for (NSNumber *num in indices) {
         uint32_t idx = [num unsignedIntValue];
-        MEFileResult *r = [self recordAtIndex:idx];
-        if (r) [results addObject:r];
+        if (idx >= engine->recordCount()) continue;
+        auto r = engine->getRecord(idx);
+        if (r.type == 0) continue;
+        [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
+                                                        path:[NSString stringWithUTF8String:r.path.c_str()]
+                                                        type:r.type
+                                                        size:r.size
+                                                     modTime:r.modTime]];
     }
     return results;
 }
@@ -595,6 +612,50 @@ static bool pathEndsWithApp(const std::string& path) {
         [result addObject:@(idx)];
     }
     return result;
+}
+
+// P-4: Batch query+record lookup — eliminates NSNumber boxing and N+1 engine calls
+- (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword
+                               maxResults:(uint32_t)maxResults {
+    auto engine = [self safeEngine]; // C-4
+    if (!engine) return @[];
+
+    std::string key([keyword UTF8String]);
+    auto indices = engine->query(key, maxResults);
+    if (indices.empty()) return @[];
+
+    NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.size()];
+    for (uint32_t idx : indices) {
+        auto r = engine->getRecord(idx);
+        if (r.type == 0) continue;
+        [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
+                                                        path:[NSString stringWithUTF8String:r.path.c_str()]
+                                                        type:r.type
+                                                        size:r.size
+                                                     modTime:r.modTime]];
+    }
+    return results;
+}
+
+// P-4: Batch recent files — eliminates NSNumber boxing and N+1 engine calls
+- (NSArray<MEFileResult *> *)recentResults:(uint32_t)count {
+    auto engine = [self safeEngine]; // C-4
+    if (!engine) return @[];
+
+    auto indices = engine->recentIndices(count);
+    if (indices.empty()) return @[];
+
+    NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.size()];
+    for (uint32_t idx : indices) {
+        auto r = engine->getRecord(idx);
+        if (r.type == 0) continue;
+        [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
+                                                        path:[NSString stringWithUTF8String:r.path.c_str()]
+                                                        type:r.type
+                                                        size:r.size
+                                                     modTime:r.modTime]];
+    }
+    return results;
 }
 
 - (void)rescanSubtree:(NSString *)dirPath {

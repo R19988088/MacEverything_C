@@ -31,7 +31,7 @@ class SearchViewModel: ObservableObject {
     @Published var queryTimeMs: Double = 0
     @Published var isMonitoring: Bool = false
     @Published var scannedCount: UInt64 = 0
-    @Published var isLoadingMore: Bool = false
+    var isLoadingMore: Bool = false
     @Published var showingRecent: Bool = false
     @Published var isContentSearch: Bool = false
     @Published var contentResults: [ContentFileItem] = []
@@ -42,7 +42,7 @@ class SearchViewModel: ObservableObject {
     private let bridge = MacSearchBridge.shared()
     private var searchTask: Task<Void, Never>?
     private var recentTask: Task<Void, Never>?
-    private var cachedIndices: [NSNumber] = []
+    private var cachedResults: [MEFileResult] = []
     private var loadedCount: Int = 0
     private var searchGeneration: UInt64 = 0
 
@@ -157,7 +157,7 @@ class SearchViewModel: ObservableObject {
         if text.isEmpty {
             totalMatches = 0
             queryTimeMs = 0
-            cachedIndices = []
+            cachedResults = []
             loadedCount = 0
             isContentSearch = false
             contentResults = []
@@ -183,7 +183,7 @@ class SearchViewModel: ObservableObject {
         if lowerText.hasPrefix("infile:") {
             isContentSearch = true
             displayItems = []
-            cachedIndices = []
+            cachedResults = []
             loadedCount = 0
 
             let keyword = String(text.dropFirst(7))
@@ -220,27 +220,26 @@ class SearchViewModel: ObservableObject {
         let gen = searchGeneration
         Task.detached { [weak self] in
             let start = CFAbsoluteTimeGetCurrent()
-            let indices = bridge.queryIndices(keyword, maxResults: maxResults)
+            // P-4: Use batch method — single engine lock, no NSNumber boxing
+            let results = bridge.queryResults(keyword, maxResults: maxResults)
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            let totalCount = indices.count
+            let totalCount = results.count
 
             let firstPageCount = min(totalCount, pageSize)
             var items: [FileItem] = []
             items.reserveCapacity(firstPageCount)
             for i in 0..<firstPageCount {
-                let idx = indices[i].uint32Value
-                if let r = bridge.record(at: idx) {
-                    items.append(FileItem(
-                        id: "\(r.path)/\(r.name)", index: idx,
-                        name: r.name, path: r.path,
-                        type: r.type, size: r.size, modTime: r.modTime
-                    ))
-                }
+                let r = results[i]
+                items.append(FileItem(
+                    id: "\(r.path)/\(r.name)", index: 0,
+                    name: r.name, path: r.path,
+                    type: r.type, size: r.size, modTime: r.modTime
+                ))
             }
 
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else { return }
-                self.cachedIndices = indices
+                self.cachedResults = results
                 self.loadedCount = firstPageCount
                 self.displayItems = items
                 self.totalMatches = totalCount
@@ -281,28 +280,26 @@ class SearchViewModel: ObservableObject {
 
     func loadMore() {
         guard !isLoadingMore else { return }
-        guard loadedCount < cachedIndices.count else { return }
+        guard loadedCount < cachedResults.count else { return }
 
         isLoadingMore = true
-        let bridge = self.bridge
-        let indices = cachedIndices
+        let results = cachedResults
         let currentLoaded = loadedCount
         let pageSize = Self.pageSize
         let gen = searchGeneration
 
+        // P-4: Results are already fetched — just slice the next page, no bridge calls needed
         Task.detached { [weak self] in
-            let nextEnd = min(currentLoaded + pageSize, indices.count)
+            let nextEnd = min(currentLoaded + pageSize, results.count)
             var newItems: [FileItem] = []
             newItems.reserveCapacity(nextEnd - currentLoaded)
             for i in currentLoaded..<nextEnd {
-                let idx = indices[i].uint32Value
-                if let r = bridge.record(at: idx) {
-                    newItems.append(FileItem(
-                        id: "\(r.path)/\(r.name)", index: idx,
-                        name: r.name, path: r.path,
-                        type: r.type, size: r.size, modTime: r.modTime
-                    ))
-                }
+                let r = results[i]
+                newItems.append(FileItem(
+                    id: "\(r.path)/\(r.name)", index: 0,
+                    name: r.name, path: r.path,
+                    type: r.type, size: r.size, modTime: r.modTime
+                ))
             }
 
             await MainActor.run { [weak self] in
@@ -319,19 +316,17 @@ class SearchViewModel: ObservableObject {
         let bridge = self.bridge
         let gen = searchGeneration
         recentTask = Task.detached { [weak self] in
-            let indices = bridge.recentIndices(100)
+            // P-4: Use batch method — single engine lock, no NSNumber boxing
+            let results = bridge.recentResults(100)
             var items: [FileItem] = []
-            items.reserveCapacity(indices.count)
-            for num in indices {
+            items.reserveCapacity(results.count)
+            for r in results {
                 guard !Task.isCancelled else { return }
-                let idx = num.uint32Value
-                if let r = bridge.record(at: idx) {
-                    items.append(FileItem(
-                        id: "\(r.path)/\(r.name)", index: idx,
-                        name: r.name, path: r.path,
-                        type: r.type, size: r.size, modTime: r.modTime
-                    ))
-                }
+                items.append(FileItem(
+                    id: "\(r.path)/\(r.name)", index: 0,
+                    name: r.name, path: r.path,
+                    type: r.type, size: r.size, modTime: r.modTime
+                ))
             }
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else { return }
@@ -375,7 +370,7 @@ class SearchViewModel: ObservableObject {
     }
 
     var hasMoreResults: Bool {
-        loadedCount < cachedIndices.count
+        loadedCount < cachedResults.count
     }
 
     var contentKeyword: String {

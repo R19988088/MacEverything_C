@@ -65,6 +65,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// Return indices of the most recently modified files, sorted by modTime descending.
 - (NSArray<NSNumber *> *)recentIndices:(uint32_t)count;
 
+/// P-4: Perform query and return results directly, eliminating NSNumber boxing overhead.
+- (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword maxResults:(uint32_t)maxResults;
+
+/// P-4: Return most recently modified files as results directly.
+- (NSArray<MEFileResult *> *)recentResults:(uint32_t)count;
+
 /// Total number of indexed records (including tombstones).
 - (uint32_t)recordCount;
 

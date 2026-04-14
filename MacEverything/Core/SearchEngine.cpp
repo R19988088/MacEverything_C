@@ -63,9 +63,10 @@ void SearchEngine::buildTrigramIndex() {
             continue;
         }
         auto trigrams = ContentIndex::extractTrigrams(lowerNames_[i]);
-        // Deduplicate trigrams for this record
-        std::unordered_set<Trigram> seen(trigrams.begin(), trigrams.end());
-        recordTrigrams_[i].assign(seen.begin(), seen.end());
+        // P-2 fix: sort+unique instead of unordered_set to reduce heap allocations
+        std::sort(trigrams.begin(), trigrams.end());
+        trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
+        recordTrigrams_[i] = std::move(trigrams);
         for (Trigram t : recordTrigrams_[i]) {
             nameTrigramIndex_[t].push_back(static_cast<uint32_t>(i));
         }
@@ -79,12 +80,14 @@ void SearchEngine::buildTrigramIndex() {
 
 void SearchEngine::addTrigramsForRecord(uint32_t idx, const std::string& lowerName) {
     auto trigrams = ContentIndex::extractTrigrams(lowerName);
-    std::unordered_set<Trigram> seen(trigrams.begin(), trigrams.end());
+    // P-2 fix: sort+unique instead of unordered_set
+    std::sort(trigrams.begin(), trigrams.end());
+    trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
 
     if (idx >= recordTrigrams_.size()) {
         recordTrigrams_.resize(idx + 1);
     }
-    recordTrigrams_[idx].assign(seen.begin(), seen.end());
+    recordTrigrams_[idx] = std::move(trigrams);
 
     for (Trigram t : recordTrigrams_[idx]) {
         auto& list = nameTrigramIndex_[t];
@@ -210,62 +213,60 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     std::string lowerKey = toLower(keyword);
     bool useGlob = isGlobPattern(lowerKey);
 
-    // H7 fix: Snapshot data under shared_lock, then release before parallel scan.
-    // records_ and lowerNames_ only grow (addRecord appends under unique_lock),
-    // so reading a snapshot size is safe — we just miss newly-added records.
-    size_t snapshotSize;
+    // C-1 fix: Hold shared_lock for the entire query to prevent use-after-free.
+    // compactRecords() replaces records_/lowerNames_ via move-assign under unique_lock,
+    // which would free the old storage. shared_lock prevents compaction during query.
+    // dispatch_apply under shared_lock is safe — multiple readers can hold it concurrently.
+    std::shared_lock lock(mutex_);
+
+    if (records_.empty()) return {};
+    size_t totalSize = records_.size();
+
     std::vector<uint32_t> trigramCandidates;
     bool useTrigramIndex = false;
 
-    {
-        std::shared_lock lock(mutex_);
+    // --- Trigram-accelerated path for non-glob queries with keyword >= 3 chars ---
+    useTrigramIndex = !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
 
-        if (records_.empty()) return {};
-        snapshotSize = records_.size();
+    if (useTrigramIndex) {
+        auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
+        std::unordered_set<Trigram> uniqueKeyTrigrams(keyTrigrams.begin(), keyTrigrams.end());
 
-        // --- Trigram-accelerated path for non-glob queries with keyword >= 3 chars ---
-        useTrigramIndex = !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
-
-        if (useTrigramIndex) {
-            auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
-            std::unordered_set<Trigram> uniqueKeyTrigrams(keyTrigrams.begin(), keyTrigrams.end());
-
-            if (!uniqueKeyTrigrams.empty()) {
-                // Collect posting lists sorted by size (smallest first)
-                std::vector<const std::vector<uint32_t>*> postingLists;
-                bool allFound = true;
-                for (Trigram t : uniqueKeyTrigrams) {
-                    auto it = nameTrigramIndex_.find(t);
-                    if (it == nameTrigramIndex_.end()) {
-                        allFound = false;
-                        break;
-                    }
-                    postingLists.push_back(&it->second);
+        if (!uniqueKeyTrigrams.empty()) {
+            // Collect posting lists sorted by size (smallest first)
+            std::vector<const std::vector<uint32_t>*> postingLists;
+            bool allFound = true;
+            for (Trigram t : uniqueKeyTrigrams) {
+                auto it = nameTrigramIndex_.find(t);
+                if (it == nameTrigramIndex_.end()) {
+                    allFound = false;
+                    break;
                 }
-
-                if (allFound && !postingLists.empty()) {
-                    std::sort(postingLists.begin(), postingLists.end(),
-                        [](const auto* a, const auto* b) { return a->size() < b->size(); });
-
-                    // Copy the shortest list (small enough to copy)
-                    trigramCandidates = *postingLists[0];
-
-                    // Intersect with remaining lists using sorted merge
-                    for (size_t li = 1; li < postingLists.size() && !trigramCandidates.empty(); li++) {
-                        const auto& other = *postingLists[li];
-                        std::vector<uint32_t> intersection;
-                        intersection.reserve(std::min(trigramCandidates.size(), other.size()));
-                        std::set_intersection(trigramCandidates.begin(), trigramCandidates.end(),
-                                              other.begin(), other.end(),
-                                              std::back_inserter(intersection));
-                        trigramCandidates = std::move(intersection);
-                    }
-                }
-            } else {
-                useTrigramIndex = false;
+                postingLists.push_back(&it->second);
             }
+
+            if (allFound && !postingLists.empty()) {
+                std::sort(postingLists.begin(), postingLists.end(),
+                    [](const auto* a, const auto* b) { return a->size() < b->size(); });
+
+                // Copy the shortest list (small enough to copy)
+                trigramCandidates = *postingLists[0];
+
+                // Intersect with remaining lists using sorted merge
+                for (size_t li = 1; li < postingLists.size() && !trigramCandidates.empty(); li++) {
+                    const auto& other = *postingLists[li];
+                    std::vector<uint32_t> intersection;
+                    intersection.reserve(std::min(trigramCandidates.size(), other.size()));
+                    std::set_intersection(trigramCandidates.begin(), trigramCandidates.end(),
+                                          other.begin(), other.end(),
+                                          std::back_inserter(intersection));
+                    trigramCandidates = std::move(intersection);
+                }
+            }
+        } else {
+            useTrigramIndex = false;
         }
-    } // shared_lock released — parallel scan proceeds without holding the lock
+    }
 
     // Collect results: (index, priority, pathLen) so sorting doesn't need records_ access.
     // Priority: 0=name exact match, 1=name starts with, 2=name contains, 3=path-only match
@@ -303,13 +304,15 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         if (numThreads < 1) numThreads = 1;
         if (numThreads > 32) numThreads = 32;
 
-        size_t totalSize = snapshotSize;
         size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
 
         std::vector<std::vector<Match>> threadResults(numThreads);
         auto* threadResultsPtr = &threadResults;
-        const auto* recordsPtr = &records_;
-        const auto* lowerNamesPtr = &lowerNames_;
+
+        // C-1 fix: Access records_/lowerNames_ directly — shared_lock held at function scope
+        // prevents compactRecords() from replacing these vectors.
+        const auto& records = records_;
+        const auto& lowerNames = lowerNames_;
 
         // Build a set of name-matched indices to skip (trigramCandidates is sorted)
         const auto* candidatesPtr = &trigramCandidates;
@@ -325,15 +328,15 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             auto& local = (*threadResultsPtr)[t];
             for (size_t i = start; i < end; i++) {
                 if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
-                if ((*recordsPtr)[i].type == 0) continue;
+                if (records[i].type == 0) continue;
                 // Skip indices already handled by trigram phase
                 if (std::binary_search(candidatesPtr->begin(), candidatesPtr->end(), static_cast<uint32_t>(i))) continue;
 
                 // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
-                std::string lowerPath = toLower(makeFullPath((*recordsPtr)[i].path, (*recordsPtr)[i].name));
+                std::string lowerPath = toLower(makeFullPath(records[i].path, records[i].name));
                 if (lowerPath.find(lowerKey) != std::string::npos) {
-                    const auto& lowerName = (*lowerNamesPtr)[i];
-                    uint32_t pLen = static_cast<uint32_t>((*recordsPtr)[i].path.size() + 1 + (*recordsPtr)[i].name.size());
+                    const auto& lowerName = lowerNames[i];
+                    uint32_t pLen = static_cast<uint32_t>(records[i].path.size() + 1 + records[i].name.size());
                     if (lowerName.find(lowerKey) != std::string::npos) {
                         uint8_t priority;
                         if (lowerName == lowerKey) priority = 0;
@@ -361,14 +364,14 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         if (numThreads < 1) numThreads = 1;
         if (numThreads > 32) numThreads = 32;
 
-        size_t totalSize = snapshotSize;
         size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
 
         std::vector<std::vector<Match>> threadResults(numThreads);
 
         auto* threadResultsPtr = &threadResults;
-        const auto* recordsPtr = &records_;
-        const auto* lowerNamesPtr = &lowerNames_;
+        // C-1 fix: Access members directly — shared_lock held at function scope
+        const auto& records = records_;
+        const auto& lowerNames = lowerNames_;
 
         dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
         const auto* genPtr = &queryGeneration_;
@@ -381,16 +384,16 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             auto& local = (*threadResultsPtr)[t];
             for (size_t i = start; i < end; i++) {
                 if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
-                if ((*recordsPtr)[i].type == 0) continue;
+                if (records[i].type == 0) continue;
 
-                const auto& lowerName = (*lowerNamesPtr)[i];
+                const auto& lowerName = lowerNames[i];
 
                 bool nameMatch = useGlob ? globMatch(lowerKey, lowerName)
                                          : (lowerName.find(lowerKey) != std::string::npos);
                 bool pathMatch = false;
                 if (!nameMatch) {
                     // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
-                    std::string lowerPath = toLower(makeFullPath((*recordsPtr)[i].path, (*recordsPtr)[i].name));
+                    std::string lowerPath = toLower(makeFullPath(records[i].path, records[i].name));
                     pathMatch = useGlob ? globMatch(lowerKey, lowerPath)
                                         : (lowerPath.find(lowerKey) != std::string::npos);
                 }
@@ -405,7 +408,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     } else {
                         priority = 3;
                     }
-                    uint32_t pLen = static_cast<uint32_t>((*recordsPtr)[i].path.size() + 1 + (*recordsPtr)[i].name.size());
+                    uint32_t pLen = static_cast<uint32_t>(records[i].path.size() + 1 + records[i].name.size());
                     local.push_back({static_cast<uint32_t>(i), priority, pLen});
                 }
             }
@@ -421,6 +424,10 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     // Final cancellation check before sorting
     if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+
+    // C-1 fix: Release shared_lock before sorting — Match structs contain only
+    // local data (idx, priority, pathLen), no references into records_/lowerNames_.
+    lock.unlock();
 
     // Sort by priority, then by full path length (shorter = shallower = better)
     auto cmp = [](const Match& a, const Match& b) {

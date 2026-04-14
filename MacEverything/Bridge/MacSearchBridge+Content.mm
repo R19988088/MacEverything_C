@@ -224,7 +224,9 @@
     auto exts = contentIndex->getExtensions();
     NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:exts.size()];
     for (const auto& ext : exts) {
-        [result addObject:[NSString stringWithUTF8String:ext.c_str()]];
+        NSString *str = [NSString stringWithUTF8String:ext.c_str()];
+        if (!str) continue;
+        [result addObject:str];
     }
     return result;
 }

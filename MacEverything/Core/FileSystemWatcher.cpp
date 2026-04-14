@@ -65,11 +65,19 @@ void FileSystemWatcher::stop() {
         stream_ = nullptr;
     }
     if (queue_) {
+        // C3 fix: Drain any in-flight callback on the serial queue, then null
+        // the std::function captures on the queue thread to avoid a data race
+        // (fseventsCallback reads these fields on the same queue).
+        dispatch_sync(queue_, ^{
+            callback_ = nullptr;
+            onReplayDone_ = nullptr;
+        });
         dispatch_release(queue_);
         queue_ = nullptr;
+    } else {
+        callback_ = nullptr;
+        onReplayDone_ = nullptr;
     }
-    callback_ = nullptr;
-    onReplayDone_ = nullptr;
 }
 
 void FileSystemWatcher::fseventsCallback(

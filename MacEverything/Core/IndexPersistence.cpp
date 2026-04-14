@@ -121,7 +121,7 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
     }
 }
 
-void IndexPersistence::startAutoCompaction(double intervalSec, FileSystemWatcher* watcher) {
+void IndexPersistence::startAutoCompaction(double intervalSec, std::shared_ptr<FileSystemWatcher> watcher) {
     stopAutoCompactionAndWait();
 
     // Use a dedicated serial queue so we can dispatch_sync to drain in-flight work
@@ -133,11 +133,11 @@ void IndexPersistence::startAutoCompaction(double intervalSec, FileSystemWatcher
                               intervalNs,
                               30 * NSEC_PER_SEC); // 30s leeway
 
-    // Capture raw pointer — the timer is owned by this object and stopped in destructor
+    // H9 fix: Capture shared_ptr — the block's copy keeps the watcher alive
+    // as long as the timer exists, preventing use-after-free.
     auto* self = this;
-    auto* w = watcher;
     dispatch_source_set_event_handler(compactionTimer_, ^{
-        uint64_t eventId = w ? w->getLastEventId() : 0;
+        uint64_t eventId = watcher ? watcher->getLastEventId() : 0;
         self->compact(eventId);
     });
 

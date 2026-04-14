@@ -12,14 +12,25 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 std::string SearchEngine::toLower(const std::string& s) {
-    // H-5: Unicode-aware lowercasing via CoreFoundation
+    // H1 fix: ASCII fast-path — skip CoreFoundation for pure-ASCII strings
+    // (>95% of filenames on typical systems)
+    bool allAscii = true;
+    for (unsigned char c : s) {
+        if (c >= 128) { allAscii = false; break; }
+    }
+    if (allAscii) {
+        std::string result(s.size(), '\0');
+        for (size_t i = 0; i < s.size(); i++)
+            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+        return result;
+    }
+
+    // Unicode-aware lowercasing via CoreFoundation (non-ASCII only)
     CFStringRef cfStr = CFStringCreateWithBytes(kCFAllocatorDefault,
         reinterpret_cast<const UInt8*>(s.data()), static_cast<CFIndex>(s.size()),
         kCFStringEncodingUTF8, false);
     if (!cfStr) {
-        // Fallback to ASCII tolower for invalid UTF-8
-        std::string result;
-        result.resize(s.size());
+        std::string result(s.size(), '\0');
         for (size_t i = 0; i < s.size(); i++)
             result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
         return result;
@@ -131,11 +142,28 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
 
     for (auto& th : threads) th.join();
 
-    // Build path index (case-insensitive keys for macOS APFS compatibility)
+    // H6 fix: Parallelize path string computation, insert into map sequentially
+    // (map insertion is not thread-safe, but string construction is the bottleneck)
+    std::vector<std::string> loweredPaths(records_.size());
+    {
+        std::vector<std::thread> pathThreads;
+        pathThreads.reserve(numThreads);
+        for (unsigned t = 0; t < numThreads; t++) {
+            size_t start = t * chunkSize;
+            size_t end = std::min(start + chunkSize, records_.size());
+            if (start >= end) break;
+            pathThreads.emplace_back([this, &loweredPaths, start, end] {
+                for (size_t i = start; i < end; i++) {
+                    loweredPaths[i] = toLower(makeFullPath(records_[i].path, records_[i].name));
+                }
+            });
+        }
+        for (auto& th : pathThreads) th.join();
+    }
     pathIndex_.clear();
     pathIndex_.reserve(records_.size());
     for (size_t i = 0; i < records_.size(); i++) {
-        pathIndex_[toLower(makeFullPath(records_[i].path, records_[i].name))] = static_cast<uint32_t>(i);
+        pathIndex_[std::move(loweredPaths[i])] = static_cast<uint32_t>(i);
     }
 
     // Build trigram index for fast filename search
@@ -179,60 +207,65 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (keyword.empty()) return {};
 
-    std::shared_lock lock(mutex_);
-
-    if (records_.empty()) return {};
-
     std::string lowerKey = toLower(keyword);
     bool useGlob = isGlobPattern(lowerKey);
 
-    // --- Trigram-accelerated path for non-glob queries with keyword >= 3 chars ---
-    // Use trigram index to narrow down candidates for name matching,
-    // then fall back to linear scan for path-only matches.
-    bool useTrigramIndex = !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
-
+    // H7 fix: Snapshot data under shared_lock, then release before parallel scan.
+    // records_ and lowerNames_ only grow (addRecord appends under unique_lock),
+    // so reading a snapshot size is safe — we just miss newly-added records.
+    size_t snapshotSize;
     std::vector<uint32_t> trigramCandidates;
-    if (useTrigramIndex) {
-        // Extract trigrams from keyword
-        auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
-        std::unordered_set<Trigram> uniqueKeyTrigrams(keyTrigrams.begin(), keyTrigrams.end());
+    bool useTrigramIndex = false;
 
-        if (!uniqueKeyTrigrams.empty()) {
-            // Collect posting lists sorted by size (smallest first)
-            std::vector<const std::vector<uint32_t>*> postingLists;
-            bool allFound = true;
-            for (Trigram t : uniqueKeyTrigrams) {
-                auto it = nameTrigramIndex_.find(t);
-                if (it == nameTrigramIndex_.end()) {
-                    allFound = false;
-                    break;
+    {
+        std::shared_lock lock(mutex_);
+
+        if (records_.empty()) return {};
+        snapshotSize = records_.size();
+
+        // --- Trigram-accelerated path for non-glob queries with keyword >= 3 chars ---
+        useTrigramIndex = !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
+
+        if (useTrigramIndex) {
+            auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
+            std::unordered_set<Trigram> uniqueKeyTrigrams(keyTrigrams.begin(), keyTrigrams.end());
+
+            if (!uniqueKeyTrigrams.empty()) {
+                // Collect posting lists sorted by size (smallest first)
+                std::vector<const std::vector<uint32_t>*> postingLists;
+                bool allFound = true;
+                for (Trigram t : uniqueKeyTrigrams) {
+                    auto it = nameTrigramIndex_.find(t);
+                    if (it == nameTrigramIndex_.end()) {
+                        allFound = false;
+                        break;
+                    }
+                    postingLists.push_back(&it->second);
                 }
-                postingLists.push_back(&it->second);
-            }
 
-            if (allFound && !postingLists.empty()) {
-                std::sort(postingLists.begin(), postingLists.end(),
-                    [](const auto* a, const auto* b) { return a->size() < b->size(); });
+                if (allFound && !postingLists.empty()) {
+                    std::sort(postingLists.begin(), postingLists.end(),
+                        [](const auto* a, const auto* b) { return a->size() < b->size(); });
 
-                // Start with the shortest list (already sorted during build)
-                trigramCandidates = *postingLists[0];
+                    // Copy the shortest list (small enough to copy)
+                    trigramCandidates = *postingLists[0];
 
-                // Intersect with remaining lists using sorted merge
-                for (size_t li = 1; li < postingLists.size() && !trigramCandidates.empty(); li++) {
-                    const auto& other = *postingLists[li];
-                    std::vector<uint32_t> intersection;
-                    intersection.reserve(std::min(trigramCandidates.size(), other.size()));
-                    std::set_intersection(trigramCandidates.begin(), trigramCandidates.end(),
-                                          other.begin(), other.end(),
-                                          std::back_inserter(intersection));
-                    trigramCandidates = std::move(intersection);
+                    // Intersect with remaining lists using sorted merge
+                    for (size_t li = 1; li < postingLists.size() && !trigramCandidates.empty(); li++) {
+                        const auto& other = *postingLists[li];
+                        std::vector<uint32_t> intersection;
+                        intersection.reserve(std::min(trigramCandidates.size(), other.size()));
+                        std::set_intersection(trigramCandidates.begin(), trigramCandidates.end(),
+                                              other.begin(), other.end(),
+                                              std::back_inserter(intersection));
+                        trigramCandidates = std::move(intersection);
+                    }
                 }
+            } else {
+                useTrigramIndex = false;
             }
-        } else {
-            // Keyword < 3 chars can't produce trigrams, fall back to linear scan
-            useTrigramIndex = false;
         }
-    }
+    } // shared_lock released — parallel scan proceeds without holding the lock
 
     // Collect results: (index, priority, pathLen) so sorting doesn't need records_ access.
     // Priority: 0=name exact match, 1=name starts with, 2=name contains, 3=path-only match
@@ -270,7 +303,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         if (numThreads < 1) numThreads = 1;
         if (numThreads > 32) numThreads = 32;
 
-        size_t totalSize = records_.size();
+        size_t totalSize = snapshotSize;
         size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
 
         std::vector<std::vector<Match>> threadResults(numThreads);
@@ -328,7 +361,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         if (numThreads < 1) numThreads = 1;
         if (numThreads > 32) numThreads = 32;
 
-        size_t totalSize = records_.size();
+        size_t totalSize = snapshotSize;
         size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
 
         std::vector<std::vector<Match>> threadResults(numThreads);
@@ -385,10 +418,6 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             merged.insert(merged.end(), v.begin(), v.end());
         }
     }
-
-    // Release shared lock before sorting — all needed data is captured in Match structs.
-    // This allows concurrent writers to proceed while we sort/truncate results.
-    lock.unlock();
 
     // Final cancellation check before sorting
     if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};

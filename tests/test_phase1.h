@@ -99,7 +99,7 @@ static void runC2_DestructorDrainTest() {
         persistence.attachWAL();
 
         // Start auto-compaction with short interval
-        persistence.startAutoCompaction(0.1, nullptr);
+        persistence.startAutoCompaction(0.1, std::shared_ptr<FileSystemWatcher>(nullptr));
 
         // Wait a bit to let at least one compaction fire
         std::this_thread::sleep_for(std::chrono::milliseconds(300));

@@ -28,7 +28,7 @@ hdiutil create -volname MacEverything -srcfolder build/Release/MacEverything.app
 - 所有代码变更必须通过 Git 管理；禁止在未纳入版本控制的路径上长期开发。
 - 保持历史可读：原子提交、信息明确的 commit message（建议说明「做什么」与「为何」）。
 - `master`（或项目约定的主分支）保持稳定、可发布；合入前须通过约定检查（测试、lint 等）。
-- **任何变更开发完成后需要提交,确保没有任何未提交修改**
+- **任何变更/对文件的修改都应该创建worktree, 开发完成后需要提交,确保没有任何未提交修改**
 
 ## 1. 变更/功能开发与 Bugfix 流程
 

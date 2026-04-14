@@ -18,32 +18,36 @@
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         uint32_t total = engine->recordCount();
-        std::atomic<uint32_t> indexed{0};
-        std::atomic<uint32_t> lastReported{0};
+        auto indexed = std::make_shared<std::atomic<uint32_t>>(0);
+        auto lastReported = std::make_shared<std::atomic<uint32_t>>(0);
 
-        for (uint32_t i = 0; i < total; i++) {
-            // Bail out if shutting down or content indexing cancelled (H-8)
+        // H3 fix: Use dispatch_apply for parallel content indexing.
+        // contentIndex->indexFile() is internally thread-safe (acquires its own lock).
+        // contentPersistence->walAppendAdd() is also thread-safe (WAL has its own mutex).
+        // This overlaps file I/O across threads for significant speedup.
+        dispatch_queue_t concurrentQ = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+        dispatch_apply(total, concurrentQ, ^(size_t i) {
             if (shuttingDown->load(std::memory_order_relaxed)) return;
             if (cancelFlag->load(std::memory_order_relaxed)) return;
 
-            auto record = engine->getRecord(i);
-            if (record.type != 1) continue; // only regular files
+            auto record = engine->getRecord(static_cast<uint32_t>(i));
+            if (record.type != 1) return; // only regular files
 
             std::string fullPath = SearchEngine::makeFullPath(record.path, record.name);
-            bool didIndex = contentIndex->indexFile(i, fullPath);
+            bool didIndex = contentIndex->indexFile(static_cast<uint32_t>(i), fullPath);
 
             if (didIndex && contentPersistence) {
                 ContentFileInfo info;
-                if (contentIndex->getFileInfo(i, info)) {
-                    contentPersistence->walAppendAdd(i, info.contentHash, info.trigrams);
+                if (contentIndex->getFileInfo(static_cast<uint32_t>(i), info)) {
+                    contentPersistence->walAppendAdd(static_cast<uint32_t>(i), info.contentHash, info.trigrams);
                 }
             }
 
-            uint32_t current = indexed.fetch_add(1, std::memory_order_relaxed) + 1;
+            uint32_t current = indexed->fetch_add(1, std::memory_order_relaxed) + 1;
 
             // Report progress every 500 files
-            if (current - lastReported.load(std::memory_order_relaxed) >= 500) {
-                lastReported.store(current, std::memory_order_relaxed);
+            if (current - lastReported->load(std::memory_order_relaxed) >= 500) {
+                lastReported->store(current, std::memory_order_relaxed);
                 uint32_t c = current;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     MacSearchBridge *strongSelf = weakSelf;
@@ -52,7 +56,7 @@
                     }
                 });
             }
-        }
+        });
 
         uint32_t totalIndexed = contentIndex->indexedFileCount();
 
@@ -208,9 +212,15 @@
         }
     }
 
+    // H8 fix: Stop old persistence's auto-compaction timer before replacing,
+    // to prevent timer firing into a dangling reference.
+    if (_contentPersistence) {
+        _contentPersistence->stopAutoCompactionAndWait();
+        _contentPersistence.reset();
+    }
+
     // Clear old content index data
     {
-        // Remove all indexed files from ContentIndex
         auto exts = _contentIndex->getExtensions();
         auto maxSize = _contentIndex->getMaxFileSize();
 

@@ -14,7 +14,7 @@
 @interface MacSearchBridge () {
 @public
     std::shared_ptr<SearchEngine> _engine;
-    std::unique_ptr<FileSystemWatcher> _watcher;
+    std::shared_ptr<FileSystemWatcher> _watcher; // H9: shared_ptr so compaction timer can safely reference
     std::shared_ptr<IndexPersistence> _persistence;
     std::shared_ptr<ContentIndex> _contentIndex;
     std::shared_ptr<ContentIndexPersistence> _contentPersistence;

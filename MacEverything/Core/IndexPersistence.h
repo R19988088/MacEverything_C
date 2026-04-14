@@ -35,7 +35,8 @@ public:
     void setContentIndex(std::shared_ptr<ContentIndex> ci) { contentIndex_ = std::move(ci); }
 
     /// Start a GCD timer that compacts every `intervalSec` seconds.
-    void startAutoCompaction(double intervalSec, FileSystemWatcher* watcher);
+    /// H9: Takes shared_ptr to prevent use-after-free if watcher is destroyed before timer fires.
+    void startAutoCompaction(double intervalSec, std::shared_ptr<FileSystemWatcher> watcher);
 
     /// Stop auto-compaction and wait for in-flight compaction to finish.
     void stopAutoCompactionAndWait();

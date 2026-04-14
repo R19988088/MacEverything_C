@@ -57,7 +57,7 @@
     self = [super init];
     if (self) {
         _engine = std::make_shared<SearchEngine>();
-        _watcher = std::make_unique<FileSystemWatcher>();
+        _watcher = std::make_shared<FileSystemWatcher>();
         _contentIndex = std::make_shared<ContentIndex>();
         _isScanning.store(false, std::memory_order_relaxed);
         _isMonitoring.store(false, std::memory_order_relaxed);
@@ -251,7 +251,7 @@
 
                     [self startMonitoringFrom:root];
 
-                    self->_persistence->startAutoCompaction(300.0, self->_watcher.get());
+                    self->_persistence->startAutoCompaction(300.0, self->_watcher);
 
                     // Start content indexing in background
                     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
@@ -283,7 +283,7 @@
                 self->_persistence->attachWAL();
                 // H-1: Set content index so compaction can propagate remap
                 self->_persistence->setContentIndex(self->_contentIndex);
-                self->_persistence->startAutoCompaction(300.0, self->_watcher.get());
+                self->_persistence->startAutoCompaction(300.0, self->_watcher);
 
                 uint64_t eventId = self->_watcher ? self->_watcher->getLastEventId() : 0;
                 IndexMetadata meta;

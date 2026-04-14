@@ -14,7 +14,7 @@ static void runDestructorSafetyTest() {
         std::string walPath = tmpDir + "/idx.wal";
         auto persistence = std::make_unique<IndexPersistence>(engine, basePath, walPath);
         persistence->attachWAL();
-        persistence->startAutoCompaction(0.1, nullptr);  // 100ms interval
+        persistence->startAutoCompaction(0.1, std::shared_ptr<FileSystemWatcher>(nullptr));  // 100ms interval
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         persistence.reset();  // Should not crash — destructor waits for in-flight compaction
     }

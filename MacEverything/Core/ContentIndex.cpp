@@ -46,14 +46,24 @@ uint64_t ContentIndex::getMaxFileSize() const {
 // --- Helpers ---
 
 std::string ContentIndex::toLower(const std::string& s) {
-    // H-5: Unicode-aware lowercasing via CoreFoundation
+    // H1 fix: ASCII fast-path — skip CoreFoundation for pure-ASCII strings
+    bool allAscii = true;
+    for (unsigned char c : s) {
+        if (c >= 128) { allAscii = false; break; }
+    }
+    if (allAscii) {
+        std::string result(s.size(), '\0');
+        for (size_t i = 0; i < s.size(); i++)
+            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+        return result;
+    }
+
+    // Unicode-aware lowercasing via CoreFoundation (non-ASCII only)
     CFStringRef cfStr = CFStringCreateWithBytes(kCFAllocatorDefault,
         reinterpret_cast<const UInt8*>(s.data()), static_cast<CFIndex>(s.size()),
         kCFStringEncodingUTF8, false);
     if (!cfStr) {
-        // Fallback to ASCII tolower for invalid UTF-8
-        std::string result;
-        result.resize(s.size());
+        std::string result(s.size(), '\0');
         for (size_t i = 0; i < s.size(); i++)
             result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
         return result;
@@ -209,49 +219,79 @@ std::string ContentIndex::generateSnippet(const std::string& path,
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return {};
 
-    // Read up to 1MB for snippet search
     fseek(f, 0, SEEK_END);
     long fileSize = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (fileSize <= 0) { fclose(f); return {}; }
 
-    size_t readSize = std::min(static_cast<size_t>(fileSize), size_t(1024 * 1024));
-    std::string content(readSize, '\0');
-    size_t bytesRead = fread(content.data(), 1, readSize, f);
-    fclose(f);
-    content.resize(bytesRead);
+    // H5 fix: Read in 64KB chunks instead of 1MB at once.
+    // Most matches are in the first chunk, reducing average I/O by ~16x.
+    static constexpr size_t kChunkSize = 64 * 1024;
+    size_t maxRead = std::min(static_cast<size_t>(fileSize), size_t(1024 * 1024));
+    size_t overlapSize = keyword.size() > 1 ? keyword.size() - 1 : 0;
 
-    // Case-insensitive search
-    std::string lowerContent;
-    lowerContent.resize(content.size());
-    for (size_t i = 0; i < content.size(); i++) {
-        lowerContent[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(content[i])));
-    }
-
-    std::string lowerKey;
-    lowerKey.resize(keyword.size());
+    // Pre-compute lowercase keyword once
+    std::string lowerKey(keyword.size(), '\0');
     for (size_t i = 0; i < keyword.size(); i++) {
         lowerKey[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(keyword[i])));
     }
 
-    size_t pos = lowerContent.find(lowerKey);
-    if (pos == std::string::npos) return {};
+    std::string chunk(kChunkSize, '\0');
+    std::string lowerChunk(kChunkSize, '\0');
+    size_t fileOffset = 0;    // absolute position in file of current chunk start
+    size_t globalMatchPos = std::string::npos;
+    // Content around the match for snippet extraction
+    std::string matchContent;
+    size_t matchContentOffset = 0; // file offset where matchContent starts
 
-    outOffset = static_cast<uint32_t>(pos);
+    while (fileOffset < maxRead) {
+        size_t toRead = std::min(kChunkSize, maxRead - fileOffset);
+        chunk.resize(toRead);
+        size_t bytesRead = fread(chunk.data(), 1, toRead, f);
+        if (bytesRead == 0) break;
+        chunk.resize(bytesRead);
 
-    // Extract context around the match
-    size_t start = (pos > contextChars) ? pos - contextChars : 0;
-    size_t end = std::min(pos + keyword.size() + contextChars, content.size());
+        // Lowercase the chunk
+        lowerChunk.resize(bytesRead);
+        for (size_t i = 0; i < bytesRead; i++) {
+            lowerChunk[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(chunk[i])));
+        }
+
+        size_t pos = lowerChunk.find(lowerKey);
+        if (pos != std::string::npos) {
+            globalMatchPos = fileOffset + pos;
+            matchContent = std::move(chunk);
+            matchContentOffset = fileOffset;
+            break;
+        }
+
+        // Advance with overlap to catch keywords spanning chunk boundaries
+        if (bytesRead < kChunkSize) break; // last chunk, no more data
+        size_t advance = bytesRead - overlapSize;
+        fileOffset += advance;
+        fseek(f, static_cast<long>(fileOffset), SEEK_SET);
+    }
+
+    fclose(f);
+
+    if (globalMatchPos == std::string::npos) return {};
+
+    outOffset = static_cast<uint32_t>(globalMatchPos);
+
+    // Extract context around the match (positions relative to matchContent)
+    size_t localPos = globalMatchPos - matchContentOffset;
+    size_t start = (localPos > contextChars) ? localPos - contextChars : 0;
+    size_t end = std::min(localPos + keyword.size() + contextChars, matchContent.size());
 
     // Adjust start to a line boundary or word boundary if possible
     if (start > 0) {
-        size_t newlinePos = content.rfind('\n', pos);
+        size_t newlinePos = matchContent.rfind('\n', localPos);
         if (newlinePos != std::string::npos && newlinePos >= start) {
             start = newlinePos + 1;
         }
     }
 
-    std::string snippet = content.substr(start, end - start);
+    std::string snippet = matchContent.substr(start, end - start);
 
     // Replace newlines with spaces for single-line display
     for (char& ch : snippet) {
@@ -270,9 +310,11 @@ std::string ContentIndex::generateSnippet(const std::string& path,
 
     // Add ellipsis indicators
     std::string result;
-    if (start > 0) result += "...";
+    size_t globalStart = matchContentOffset + start;
+    if (globalStart > 0) result += "...";
     result += snippet;
-    if (end < content.size()) result += "...";
+    size_t globalEnd = matchContentOffset + end;
+    if (globalEnd < static_cast<size_t>(fileSize)) result += "...";
 
     return result;
 }
@@ -667,13 +709,10 @@ bool ContentIndex::loadFromFile(const std::string& path) {
             return false;
         }
 
-        // Build inverted index (sorted insertion)
+        // H4 fix: Use push_back during bulk load — O(1) per insert instead of
+        // O(N) sorted insertion. Final sort+dedup happens below after all entries.
         for (Trigram tri : trigrams) {
-            auto& list = newInvertedIndex[tri];
-            auto pos = std::lower_bound(list.begin(), list.end(), fileIndex);
-            if (pos == list.end() || *pos != fileIndex) {
-                list.insert(pos, fileIndex);
-            }
+            newInvertedIndex[tri].push_back(fileIndex);
         }
 
         ContentFileInfo info;

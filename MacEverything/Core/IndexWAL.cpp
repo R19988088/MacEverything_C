@@ -1,6 +1,7 @@
 #include "IndexWAL.h"
 #include <cstring>
 #include <unistd.h>
+#include <array>
 
 // ── CRC32 (ISO 3309 / zlib polynomial 0xEDB88320) ──
 static constexpr uint32_t makeCRC32Table(uint32_t idx) {
@@ -11,14 +12,15 @@ static constexpr uint32_t makeCRC32Table(uint32_t idx) {
     return c;
 }
 
+// C4 fix: Use C++11 function-local static for thread-safe initialization
+// (guaranteed by §6.7/4 — "magic statics")
 static const uint32_t* getCRC32Table() {
-    static uint32_t table[256] = {};
-    static bool inited = false;
-    if (!inited) {
-        for (uint32_t i = 0; i < 256; i++) table[i] = makeCRC32Table(i);
-        inited = true;
-    }
-    return table;
+    static const auto table = []() {
+        std::array<uint32_t, 256> t{};
+        for (uint32_t i = 0; i < 256; i++) t[i] = makeCRC32Table(i);
+        return t;
+    }();
+    return table.data();
 }
 
 uint32_t IndexWAL::crc32(const void* data, size_t len) {

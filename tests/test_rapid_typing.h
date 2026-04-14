@@ -248,6 +248,46 @@ inline void runRapidTypingTest() {
               "Scenario 4: Baseline CPU < 2s (20 queries)");
     }
 
+    // ── Scenario 5: Cool-down CPU utilization (idle after queries stop) ──
+    {
+        std::cout << "\n  Scenario 5: Cool-down CPU utilization\n";
+
+        // Phase 1: Fire a burst of 50 queries to warm everything up
+        {
+            std::vector<std::thread> burst;
+            for (int i = 0; i < 50; i++) {
+                burst.emplace_back([&engine, i] {
+                    engine.query("burst_query_" + std::to_string(i), 100);
+                });
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            for (auto& t : burst) t.join();
+        }
+
+        // Phase 2: All queries done. Measure CPU during a quiet 500ms window.
+        constexpr int IDLE_MS = 500;
+        auto idleBefore = ResourceSnapshot::take();
+        std::this_thread::sleep_for(std::chrono::milliseconds(IDLE_MS));
+        auto idleAfter = ResourceSnapshot::take();
+
+        double idleCpuMs = idleAfter.cpu.totalMs() - idleBefore.cpu.totalMs();
+        // CPU utilization = CPU time consumed / wall time elapsed
+        // On an N-core machine, max utilization is N * 100%.
+        // We want near 0% — allow up to 5% of a single core.
+        double utilizationPct = (idleCpuMs / IDLE_MS) * 100.0;
+
+        std::cout << "    Idle window: " << IDLE_MS << " ms\n";
+        std::cout << "    CPU consumed during idle: " << std::fixed << std::setprecision(1)
+                  << idleCpuMs << " ms\n";
+        std::cout << "    CPU utilization: " << std::fixed << std::setprecision(1)
+                  << utilizationPct << "% (of 1 core)\n";
+
+        check(utilizationPct < 5.0,
+              "Scenario 5: CPU utilization < 5% after queries stop");
+        check(idleCpuMs < 25.0,
+              "Scenario 5: CPU time < 25ms during 500ms idle window");
+    }
+
     // ── Overall resource summary ──
     {
         auto testEnd = ResourceSnapshot::take();

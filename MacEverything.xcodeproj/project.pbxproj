@@ -33,6 +33,8 @@
 		A1000018 /* IndexRefreshThrottle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025; };
 		A1000019 /* TextHighlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026; };
 		A100001A /* StringUtils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000028; };
+		A100001B /* Logger.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200002A; };
+		A100001C /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002B; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -77,6 +79,9 @@
 		A2000026 /* TextHighlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextHighlight.swift; sourceTree = "<group>"; };
 		A2000027 /* StringUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = StringUtils.h; sourceTree = "<group>"; };
 		A2000028 /* StringUtils.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = StringUtils.cpp; sourceTree = "<group>"; };
+		A2000029 /* Logger.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Logger.h; sourceTree = "<group>"; };
+		A200002A /* Logger.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Logger.cpp; sourceTree = "<group>"; };
+		A200002B /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -141,6 +146,7 @@
 				A2000020 /* ContentSettingsView.swift */,
 				A2000025 /* IndexRefreshThrottle.swift */,
 				A2000026 /* TextHighlight.swift */,
+				A200002B /* AppLogger.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -177,6 +183,8 @@
 				A2000024 /* SearchEnginePersistence.cpp */,
 				A2000027 /* StringUtils.h */,
 				A2000028 /* StringUtils.cpp */,
+				A2000029 /* Logger.h */,
+				A200002A /* Logger.cpp */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -274,6 +282,8 @@
 				A1000018 /* IndexRefreshThrottle.swift in Sources */,
 				A1000019 /* TextHighlight.swift in Sources */,
 				A100001A /* StringUtils.cpp in Sources */,
+				A100001B /* Logger.cpp in Sources */,
+				A100001C /* AppLogger.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

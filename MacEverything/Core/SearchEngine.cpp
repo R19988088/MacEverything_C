@@ -1,6 +1,7 @@
 #include "SearchEngine.h"
 #include "StringUtils.h"
 #include "IndexWAL.h"
+#include "Logger.h"
 #include <algorithm>
 #include <thread>
 #include <atomic>
@@ -175,6 +176,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (keyword.empty()) return {};
 
+    auto queryStart = std::chrono::steady_clock::now();
     std::string lowerKey = me::toLower(keyword);
     bool useGlob = isGlobPattern(lowerKey);
 
@@ -420,6 +422,12 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     result.reserve(resultCount);
     for (size_t i = 0; i < resultCount; i++) {
         result.push_back(merged[i].idx);
+    }
+
+    auto elapsed = std::chrono::steady_clock::now() - queryStart;
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    if (ms > 100) {
+        LOG_INFO("SearchEngine", "Query \"" << keyword << "\" took " << ms << "ms, " << result.size() << " results");
     }
 
     return result;

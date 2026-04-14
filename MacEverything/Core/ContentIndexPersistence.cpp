@@ -1,5 +1,5 @@
 #include "ContentIndexPersistence.h"
-#include <iostream>
+#include "Logger.h"
 #include <unistd.h>
 
 // ============================================================
@@ -164,8 +164,8 @@ std::vector<ContentIndexWAL::Entry> ContentIndexWAL::readAll(const std::string& 
         uint32_t computedCRC = IndexWAL::crc32(rawBuf.data(), rawBuf.size());
         if (computedCRC != storedCRC) {
             // H-4: Log CRC mismatch location for diagnostics
-            std::cerr << "[ContentIndexWAL] CRC mismatch at offset " << startPos
-                      << ", recovered " << entries.size() << " entries\n";
+            LOG_ERROR("ContentIndexWAL", "CRC mismatch at offset " << startPos
+                      << ", recovered " << entries.size() << " entries");
             break;
         }
 
@@ -228,16 +228,16 @@ bool ContentIndexPersistence::load() {
     // 1. Load base index
     bool loaded = index_->loadFromFile(basePath_);
     if (loaded) {
-        std::cout << "[ContentIndexPersistence] Loaded base content index, files="
-                  << index_->indexedFileCount() << "\n";
+        LOG_INFO("ContentIndexPersistence", "Loaded base content index, files="
+                  << index_->indexedFileCount());
     } else {
-        std::cout << "[ContentIndexPersistence] No base content index found at " << basePath_ << "\n";
+        LOG_INFO("ContentIndexPersistence", "No base content index found at " << basePath_);
     }
 
     // 2. Replay WAL entries
     auto entries = ContentIndexWAL::readAll(walPath_);
     if (!entries.empty()) {
-        std::cout << "[ContentIndexPersistence] Replaying " << entries.size() << " content WAL entries\n";
+        LOG_INFO("ContentIndexPersistence", "Replaying " << entries.size() << " content WAL entries");
         for (auto& entry : entries) {
             switch (entry.op) {
                 case ContentIndexWAL::Entry::Add:
@@ -248,8 +248,8 @@ bool ContentIndexPersistence::load() {
                     break;
             }
         }
-        std::cout << "[ContentIndexPersistence] Content WAL replay done, indexed files="
-                  << index_->indexedFileCount() << "\n";
+        LOG_INFO("ContentIndexPersistence", "Content WAL replay done, indexed files="
+                  << index_->indexedFileCount());
     }
 
     return loaded || !entries.empty();
@@ -258,9 +258,9 @@ bool ContentIndexPersistence::load() {
 void ContentIndexPersistence::attachWAL() {
     wal_ = std::make_shared<ContentIndexWAL>();
     if (wal_->open(walPath_)) {
-        std::cout << "[ContentIndexPersistence] Content WAL attached at " << walPath_ << "\n";
+        LOG_INFO("ContentIndexPersistence", "Content WAL attached at " << walPath_);
     } else {
-        std::cerr << "[ContentIndexPersistence] Failed to open content WAL at " << walPath_ << "\n";
+        LOG_ERROR("ContentIndexPersistence", "Failed to open content WAL at " << walPath_);
         wal_.reset();
     }
 }
@@ -270,7 +270,7 @@ void ContentIndexPersistence::compact() {
     auto newWal = std::make_shared<ContentIndexWAL>();
     std::string newWalPath = walPath_ + ".new";
     if (!newWal->open(newWalPath)) {
-        std::cerr << "[ContentIndexPersistence] Failed to open new content WAL for compaction\n";
+        LOG_ERROR("ContentIndexPersistence", "Failed to open new content WAL for compaction");
         return;
     }
 
@@ -284,15 +284,15 @@ void ContentIndexPersistence::compact() {
 
     // 3. Write new base file BEFORE deleting old WAL (crash-safety: C-1 fix)
     if (index_->saveToFile(basePath_)) {
-        std::cout << "[ContentIndexPersistence] Compacted content index, files="
-                  << index_->indexedFileCount() << "\n";
+        LOG_INFO("ContentIndexPersistence", "Compacted content index, files="
+                  << index_->indexedFileCount());
         // 4. Only delete old WAL after base file is safely written
         if (oldWal) {
             oldWal->closeAndDelete();
         }
     } else {
-        std::cerr << "[ContentIndexPersistence] Failed to write content base index"
-                  << " — keeping old WAL for recovery\n";
+        LOG_ERROR("ContentIndexPersistence", "Failed to write content base index"
+                  << " — keeping old WAL for recovery");
         // Keep old WAL alive for crash recovery; close without deleting
         if (oldWal) {
             oldWal->close();
@@ -301,7 +301,7 @@ void ContentIndexPersistence::compact() {
 
     // 5. Rename new WAL to standard path
     if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
-        std::cerr << "[ContentIndexPersistence] Failed to rename WAL: " << newWalPath << " -> " << walPath_ << "\n";
+        LOG_ERROR("ContentIndexPersistence", "Failed to rename WAL: " << newWalPath << " -> " << walPath_);
     }
 }
 
@@ -323,7 +323,7 @@ void ContentIndexPersistence::startAutoCompaction(double intervalSec) {
     });
 
     dispatch_resume(compactionTimer_);
-    std::cout << "[ContentIndexPersistence] Auto-compaction started (every " << intervalSec << "s)\n";
+    LOG_INFO("ContentIndexPersistence", "Auto-compaction started (every " << intervalSec << "s)");
 }
 
 void ContentIndexPersistence::stopAutoCompactionAndWait() {

@@ -53,6 +53,34 @@
     return instance;
 }
 
++ (void)initializeLogger {
+    NSString *logDir = [NSString stringWithFormat:@"%@/Library/Logs/MacEverything",
+                        NSHomeDirectory()];
+#ifdef DEBUG
+    me::Logger::instance().init(std::string([logDir UTF8String]), me::LogLevel::Debug);
+#else
+    me::Logger::instance().init(std::string([logDir UTF8String]), me::LogLevel::Info);
+#endif
+    LOG_INFO("App", "Logger initialized");
+}
+
++ (void)logMessage:(NSString *)message level:(int)level module:(NSString *)module {
+    me::LogLevel lvl;
+    switch (level) {
+        case 0:  lvl = me::LogLevel::Debug; break;
+        case 1:  lvl = me::LogLevel::Info;  break;
+        case 2:  lvl = me::LogLevel::Warn;  break;
+        case 3:  lvl = me::LogLevel::Error; break;
+        default: lvl = me::LogLevel::Info;  break;
+    }
+    me::Logger::instance().log(lvl, [module UTF8String], [message UTF8String]);
+}
+
++ (NSString *)logFilePath {
+    auto path = me::Logger::instance().getLogFilePath();
+    return [NSString stringWithUTF8String:path.c_str()];
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -122,7 +150,9 @@
 
     NSString *root = [rootPath copy];
 
+    LOG_INFO("Bridge", "startScanFrom: " << [root UTF8String]);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        auto scanStart = std::chrono::steady_clock::now();
         auto scanner = std::make_shared<DirectoryScanner>();
 
         // Start progress polling timer
@@ -149,7 +179,7 @@
                        dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
             auto s = scannerWeak.lock();
             if (s && !s->isCancelled()) {
-                NSLog(@"[MacSearchBridge] Scan timeout (45s) — cancelling scanner");
+                LOG_WARN("Bridge", "Scan timeout (45s) — cancelling scanner");
                 s->cancel();
             }
         });
@@ -164,6 +194,9 @@
         auto engine = std::make_shared<SearchEngine>();
         engine->loadRecords(std::move(results));
         uint32_t count = engine->liveRecordCount();
+
+        auto scanElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - scanStart).count();
+        LOG_INFO("Bridge", "Scan completed: " << count << " records in " << scanElapsed << "s");
 
         dispatch_async(dispatch_get_main_queue(), ^{
             [self setEngine:engine]; // C-4: thread-safe engine swap
@@ -205,13 +238,15 @@
         bool expected = false;
         if (strongSelf->_startupCompleted.compare_exchange_strong(expected, true,
                 std::memory_order_acq_rel)) {
-            NSLog(@"[MacSearchBridge] Startup timeout (60s) — firing completion with 0 records");
+            LOG_WARN("Bridge", "Startup timeout (60s) — firing completion with 0 records");
             strongSelf->_isScanning.store(false, std::memory_order_relaxed);
             if (completion) completion(0, YES);
         }
     });
 
+    LOG_INFO("Bridge", "startIncrementalFrom: " << [root UTF8String]);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        auto incrementalStart = std::chrono::steady_clock::now();
         auto engine = std::make_shared<SearchEngine>();
         auto persistence = std::make_unique<IndexPersistence>(
             engine,
@@ -254,6 +289,8 @@
 
             if (result == 0 && replayDone->load() && !journalTruncated->load()) {
                 // Replay succeeded — use the incrementally-updated index
+                auto incrElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - incrementalStart).count();
+                LOG_INFO("Bridge", "Incremental load succeeded: " << engine->liveRecordCount() << " records in " << incrElapsed << "s");
                 auto sharedPersistence = std::shared_ptr<IndexPersistence>(std::move(persistence));
                 dispatch_async(dispatch_get_main_queue(), ^{
                     bool expected = false;
@@ -288,6 +325,7 @@
                 return;
             }
             // Replay failed or journal truncated — fall through to full scan
+            LOG_WARN("Bridge", "FSEvents replay failed or journal truncated — falling back to full scan");
         }
 
         // Full scan fallback
@@ -330,8 +368,10 @@
 }
 
 - (void)compactIndex {
+    LOG_INFO("Bridge", "compactIndex started");
     auto persistence = [self safePersistence]; // C-2: thread-safe access
     if (persistence && _watcher) {
+        LOG_TIMER("Bridge", "compactIndex");
         uint64_t eventId = _watcher->getLastEventId();
         // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
         persistence->setContentIndex([self safeContentIndex]);
@@ -340,6 +380,7 @@
 }
 
 - (void)prepareForTermination {
+    LOG_INFO("Bridge", "prepareForTermination started");
     // 1. Signal all background work to stop immediately
     _shuttingDown.store(true);
     _cancelContentIndexing.store(true, std::memory_order_relaxed); // C-4: cancel content indexing
@@ -371,6 +412,8 @@
     if (contentPersistence) {
         contentPersistence->compact();
     }
+    LOG_INFO("Bridge", "prepareForTermination completed");
+    me::Logger::instance().shutdown();
 }
 
 /// Check if a path is inside a .app bundle (contains ".app/" as a path component boundary).

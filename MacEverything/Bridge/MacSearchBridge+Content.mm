@@ -16,6 +16,7 @@
     if (!engine || !contentIndex) return;
     _isContentIndexing.store(true, std::memory_order_relaxed);
     _cancelContentIndexing.store(false, std::memory_order_relaxed); // H-8: reset cancel flag
+    LOG_INFO("Bridge", "Content indexing started");
 
     auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
     auto* shuttingDown = &_shuttingDown;
@@ -23,6 +24,7 @@
     __weak MacSearchBridge *weakSelf = self;
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        auto contentStart = std::chrono::steady_clock::now();
         // Build a lightweight list of (index, fullPath) for regular files under one lock,
         // avoiding 4.5M getRecord() copies that each reconstruct path strings.
         struct FileEntry { uint32_t idx; std::string fullPath; };
@@ -79,7 +81,9 @@
             }
         });
 
+        auto contentElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - contentStart).count();
         uint32_t totalIndexed = contentIndex->indexedFileCount();
+        LOG_INFO("Bridge", "Content indexing completed: " << totalIndexed << " files in " << contentElapsed << "s");
 
         dispatch_async(dispatch_get_main_queue(), ^{
             MacSearchBridge *strongSelf = weakSelf;
@@ -109,7 +113,7 @@
                               withIntermediateDirectories:YES
                                                attributes:nil
                                                     error:&dirError]) {
-        NSLog(@"[MacSearchBridge] Failed to create content index directory: %@", dirError);
+        LOG_ERROR("Bridge", "Failed to create content index directory: " << [[dirError localizedDescription] UTF8String]);
         return;
     }
 
@@ -124,6 +128,7 @@
 }
 
 - (NSArray<MEContentResult *> *)queryContent:(NSString *)keyword maxResults:(uint32_t)maxResults {
+    auto queryStart = std::chrono::steady_clock::now();
     auto engine = [self safeEngine]; // C-4
     auto contentIndex = [self safeContentIndex]; // C-3
     if (!engine || !contentIndex) return @[];
@@ -190,6 +195,11 @@
                  matchOffset:snippetResults[i].offset
                     fileType:candidates[i].fileType];
         [results addObject:result];
+    }
+
+    auto queryElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - queryStart).count();
+    if (queryElapsed > 0.1) {
+        LOG_INFO("Bridge", "queryContent(\"" << key << "\") returned " << results.count << " results in " << queryElapsed << "s");
     }
 
     return results;

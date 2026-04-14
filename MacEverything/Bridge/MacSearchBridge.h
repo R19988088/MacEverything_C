@@ -119,6 +119,17 @@ NS_ASSUME_NONNULL_BEGIN
 /// Whether file system monitoring is active.
 @property (nonatomic, readonly) BOOL isMonitoring;
 
+// --- Logging ---
+
+/// Initialize the logging system. Call once at app startup.
++ (void)initializeLogger;
+
+/// Write a log message (for Swift callers). Level: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR.
++ (void)logMessage:(NSString *)message level:(int)level module:(NSString *)module;
+
+/// Get the current log file path.
++ (NSString *)logFilePath;
+
 /// Called on the main queue when file system changes are applied to the index.
 @property (nonatomic, copy, nullable) void (^onIndexChanged)(void);
 

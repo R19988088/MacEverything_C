@@ -1,5 +1,5 @@
 #include "IndexPersistence.h"
-#include <iostream>
+#include "Logger.h"
 #include <chrono>
 
 IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
@@ -25,21 +25,21 @@ uint64_t IndexPersistence::load() {
     // 1. Load base index
     bool loaded = engine_->loadFromFile(basePath_, &lastEventId);
     if (loaded) {
-        std::cout << "[IndexPersistence] Loaded base index, lastEventId=" << lastEventId
-                  << ", records=" << engine_->liveRecordCount() << "\n";
+        LOG_INFO("IndexPersistence", "Loaded base index, lastEventId=" << lastEventId
+                  << ", records=" << engine_->liveRecordCount());
     } else {
-        std::cout << "[IndexPersistence] No base index found at " << basePath_ << "\n";
+        LOG_INFO("IndexPersistence", "No base index found at " << basePath_);
     }
 
     // 2. Replay WAL entries on top (with 15s timeout)
     auto entries = IndexWAL::readAll(walPath_);
     if (!entries.empty()) {
-        std::cout << "[IndexPersistence] Replaying " << entries.size() << " WAL entries\n";
+        LOG_INFO("IndexPersistence", "Replaying " << entries.size() << " WAL entries");
         auto replayStart = std::chrono::steady_clock::now();
         bool timedOut = false;
         for (auto& entry : entries) {
             if (std::chrono::steady_clock::now() - replayStart > std::chrono::seconds(15)) {
-                std::cout << "[IndexPersistence] WAL replay timeout (15s) — forcing full scan\n";
+                LOG_WARN("IndexPersistence", "WAL replay timeout (15s) — forcing full scan");
                 timedOut = true;
                 break;
             }
@@ -60,7 +60,7 @@ uint64_t IndexPersistence::load() {
             engine_->loadRecords({});
             return 0;
         }
-        std::cout << "[IndexPersistence] WAL replay done, live records=" << engine_->liveRecordCount() << "\n";
+        LOG_INFO("IndexPersistence", "WAL replay done, live records=" << engine_->liveRecordCount());
     }
 
     return lastEventId;
@@ -74,9 +74,9 @@ void IndexPersistence::attachWAL() {
             wal_ = newWal;
         }
         engine_->attachWAL(newWal);
-        std::cout << "[IndexPersistence] WAL attached at " << walPath_ << "\n";
+        LOG_INFO("IndexPersistence", "WAL attached at " << walPath_);
     } else {
-        std::cerr << "[IndexPersistence] Failed to open WAL at " << walPath_ << "\n";
+        LOG_ERROR("IndexPersistence", "Failed to open WAL at " << walPath_);
     }
 }
 
@@ -92,7 +92,7 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
     auto newWal = std::make_shared<IndexWAL>();
     std::string newWalPath = walPath_ + ".new";
     if (!newWal->open(newWalPath)) {
-        std::cerr << "[IndexPersistence] Failed to open new WAL for compaction\n";
+        LOG_ERROR("IndexPersistence", "Failed to open new WAL for compaction");
         return;
     }
 
@@ -115,14 +115,14 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
     // 4. Write base file BEFORE deleting old WAL (C-2 fix: crash-safe ordering).
     //    If saveToFile fails, old WAL is preserved so no data is lost.
     if (engine_->saveToFile(basePath_, metadata)) {
-        std::cout << "[IndexPersistence] Compacted base index, lastEventId=" << metadata.lastEventId
-                  << ", records=" << engine_->liveRecordCount() << "\n";
+        LOG_INFO("IndexPersistence", "Compacted base index, lastEventId=" << metadata.lastEventId
+                  << ", records=" << engine_->liveRecordCount());
         // 5. Only delete old WAL after base file is successfully written
         if (oldWal) {
             oldWal->closeAndDelete();
         }
     } else {
-        std::cerr << "[IndexPersistence] Failed to write base index — keeping old WAL for recovery\n";
+        LOG_ERROR("IndexPersistence", "Failed to write base index — keeping old WAL for recovery");
         // Old WAL is preserved; on next startup, its entries will be replayed
         if (oldWal) {
             oldWal->close();
@@ -131,7 +131,7 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
 
     // 6. Rename new WAL to standard path
     if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
-        std::cerr << "[IndexPersistence] Failed to rename WAL: " << newWalPath << " -> " << walPath_ << "\n";
+        LOG_ERROR("IndexPersistence", "Failed to rename WAL: " << newWalPath << " -> " << walPath_);
     }
 }
 
@@ -156,7 +156,7 @@ void IndexPersistence::startAutoCompaction(double intervalSec, std::shared_ptr<F
     });
 
     dispatch_resume(compactionTimer_);
-    std::cout << "[IndexPersistence] Auto-compaction started (every " << intervalSec << "s)\n";
+    LOG_INFO("IndexPersistence", "Auto-compaction started (every " << intervalSec << "s)");
 }
 
 void IndexPersistence::stopAutoCompactionAndWait() {

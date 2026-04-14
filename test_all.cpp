@@ -11,6 +11,7 @@
 #include "MacEverything/Core/IndexPersistence.h"
 #include "MacEverything/Core/ContentIndexPersistence.h"
 #include "MacEverything/Core/FileSystemWatcher.h"
+#include "MacEverything/Core/Logger.h"
 #include <chrono>
 #include <iostream>
 #include <iomanip>
@@ -65,6 +66,7 @@ namespace fs = std::filesystem;
 #include "tests/test_batch_rescan.h"
 #include "tests/test_wal_race_indexpersistence.h"
 #include "tests/test_p2_fixes.h"
+#include "tests/test_logger.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -88,7 +90,7 @@ static void printUsage(const char* prog) {
     std::cout << "  15 (WAL CRC), 16 (recent cache), 17 (query cancel), 18 (critical/high fixes),\n";
     std::cout << "  19 (rapid typing), 20 (path table), 21 (memory optimizations),\n";
     std::cout << "  22 (batch rescan), 23 (IndexPersistence WAL race),\n";
-    std::cout << "  24 (P2 fixes)\n";
+    std::cout << "  24 (P2 fixes), 25 (logger)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -103,7 +105,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -182,6 +184,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("22")) runBatchRescanTests();
     if (selectedParts.count("23")) runWalRaceIndexPersistenceTest();
     if (selectedParts.count("24")) runP2FixTests();
+    if (selectedParts.count("25")) runLoggerTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

@@ -552,6 +552,7 @@ static bool pathEndsWithApp(const std::string& path) {
         if (!rescanDirs.empty()) {
             for (const auto& dir : rescanDirs) {
                 NSString *dirPath = [NSString stringWithUTF8String:dir.c_str()];
+                if (!dirPath) continue;
                 [strongSelf rescanSubtree:dirPath];
             }
             // rescanSubtree will notify UI on completion, no need to set changed here

@@ -5,8 +5,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotkeyManager: HotkeyManager?
     private var statusItem: NSStatusItem?
     private var launchAtLoginItem: NSMenuItem?
+    private(set) var mainSearchWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Delay by one frame to let SwiftUI create the window
+        DispatchQueue.main.async { [weak self] in
+            self?.mainSearchWindow = NSApp.windows.first { $0.title == "MacEverything" }
+        }
         hotkeyManager = HotkeyManager()
         hotkeyManager?.register()
         setupStatusBar()
@@ -48,7 +53,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         if let item = menu.items.first {
-            let isVisible = NSApp.windows.first { $0.isVisible && !($0 is NSPanel) } != nil
+            let isVisible = mainSearchWindow?.isVisible ?? false
             item.title = isVisible ? "Hide MacEverything" : "Show MacEverything"
         }
         launchAtLoginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -57,21 +62,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Menu Actions
 
     @objc private func toggleWindow() {
-        if let window = NSApp.windows.first(where: { !($0 is NSPanel) }), window.isVisible {
+        if let window = mainSearchWindow, window.isVisible {
             NSApp.hide(nil)
         } else {
             NSApp.activate(ignoringOtherApps: true)
-            if let window = NSApp.windows.first(where: { !($0 is NSPanel) }) {
-                window.makeKeyAndOrderFront(nil)
-            }
+            mainSearchWindow?.makeKeyAndOrderFront(nil)
         }
     }
 
     @objc private func rebuildIndex() {
         NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { !($0 is NSPanel) }) {
-            window.makeKeyAndOrderFront(nil)
-        }
+        mainSearchWindow?.makeKeyAndOrderFront(nil)
         NotificationCenter.default.post(name: .rebuildIndex, object: nil)
     }
 

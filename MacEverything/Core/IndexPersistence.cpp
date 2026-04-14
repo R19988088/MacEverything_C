@@ -101,7 +101,11 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
     }
 
     // 4. Compact in-memory records (remove tombstones) before saving
-    engine_->compactRecords();
+    auto remap = engine_->compactRecords();
+    // H-1: Propagate index remap to ContentIndex
+    if (!remap.empty() && contentIndex_) {
+        contentIndex_->remapFileIndices(remap);
+    }
 
     // 5. Write new base file with metadata (uses atomic rename internally)
     if (engine_->saveToFile(basePath_, metadata)) {
@@ -118,7 +122,7 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
 }
 
 void IndexPersistence::startAutoCompaction(double intervalSec, FileSystemWatcher* watcher) {
-    stopAutoCompaction();
+    stopAutoCompactionAndWait();
 
     // Use a dedicated serial queue so we can dispatch_sync to drain in-flight work
     compactionQueue_ = dispatch_queue_create("com.maceverything.index.compaction", DISPATCH_QUEUE_SERIAL);
@@ -139,18 +143,6 @@ void IndexPersistence::startAutoCompaction(double intervalSec, FileSystemWatcher
 
     dispatch_resume(compactionTimer_);
     std::cout << "[IndexPersistence] Auto-compaction started (every " << intervalSec << "s)\n";
-}
-
-void IndexPersistence::stopAutoCompaction() {
-    if (compactionTimer_) {
-        dispatch_source_cancel(compactionTimer_);
-        dispatch_release(compactionTimer_);
-        compactionTimer_ = nullptr;
-    }
-    if (compactionQueue_) {
-        dispatch_release(compactionQueue_);
-        compactionQueue_ = nullptr;
-    }
 }
 
 void IndexPersistence::stopAutoCompactionAndWait() {

@@ -1,9 +1,11 @@
 #pragma once
 #include "ContentIndex.h"
+#include "IndexWAL.h" // for IndexWAL::crc32()
 #include <string>
 #include <memory>
 #include <mutex>
 #include <cstdio>
+#include <sys/stat.h>
 #include <dispatch/dispatch.h>
 
 /// WAL for content index mutations.
@@ -44,6 +46,9 @@ public:
     void closeAndDelete();
     bool isOpen() const { return file_ != nullptr; }
 
+    /// Maximum WAL file size (20 MB).
+    static constexpr size_t kMaxWALSize = 20 * 1024 * 1024;
+
 private:
     FILE* file_ = nullptr;
     std::string path_;
@@ -74,9 +79,6 @@ public:
 
     /// Start a GCD timer that compacts every intervalSec seconds.
     void startAutoCompaction(double intervalSec);
-
-    /// Stop auto-compaction timer.
-    void stopAutoCompaction();
 
     /// Stop auto-compaction and wait for in-flight compaction to finish.
     void stopAutoCompactionAndWait();

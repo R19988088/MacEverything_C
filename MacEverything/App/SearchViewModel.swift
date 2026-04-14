@@ -2,7 +2,8 @@ import Foundation
 import Combine
 
 struct FileItem: Identifiable {
-    let id: UInt32      // index in the engine
+    let id: String      // path-based stable ID
+    let index: UInt32   // engine index for record lookup
     let name: String
     let path: String
     let type: UInt8
@@ -11,7 +12,7 @@ struct FileItem: Identifiable {
 }
 
 struct ContentFileItem: Identifiable {
-    let id = UUID()
+    let id: String      // stable ID: filePath + ":" + matchOffset
     let fileName: String
     let filePath: String
     let snippet: String
@@ -36,6 +37,7 @@ class SearchViewModel: ObservableObject {
     @Published var contentResults: [ContentFileItem] = []
     @Published var isContentIndexing: Bool = false
     @Published var contentIndexProgress: (indexed: UInt32, total: UInt32)?
+    @Published var contentIndexedCount: UInt32 = 0
 
     private let bridge = MacSearchBridge.shared()
     private var searchTask: Task<Void, Never>?
@@ -97,6 +99,7 @@ class SearchViewModel: ObservableObject {
                 guard let self = self else { return }
                 self.isContentIndexing = false
                 self.contentIndexProgress = nil
+                self.contentIndexedCount = totalIndexed
                 // Auto-refresh content search results after indexing completes
                 if self.isContentSearch && !self.contentKeyword.isEmpty {
                     self.performContentSearch(self.contentKeyword)
@@ -148,6 +151,7 @@ class SearchViewModel: ObservableObject {
         searchTask?.cancel()
         recentTask?.cancel()
         searchGeneration &+= 1
+        isLoadingMore = false
         let text = searchText
 
         if text.isEmpty {
@@ -219,7 +223,8 @@ class SearchViewModel: ObservableObject {
                 let idx = indices[i].uint32Value
                 if let r = bridge.record(at: idx) {
                     items.append(FileItem(
-                        id: idx, name: r.name, path: r.path,
+                        id: "\(r.path)/\(r.name)", index: idx,
+                        name: r.name, path: r.path,
                         type: r.type, size: r.size, modTime: r.modTime
                     ))
                 }
@@ -248,6 +253,7 @@ class SearchViewModel: ObservableObject {
             items.reserveCapacity(results.count)
             for r in results {
                 items.append(ContentFileItem(
+                    id: "\(r.filePath):\(r.matchOffset)",
                     fileName: r.fileName,
                     filePath: r.filePath,
                     snippet: r.snippet,
@@ -284,7 +290,8 @@ class SearchViewModel: ObservableObject {
                 let idx = indices[i].uint32Value
                 if let r = bridge.record(at: idx) {
                     newItems.append(FileItem(
-                        id: idx, name: r.name, path: r.path,
+                        id: "\(r.path)/\(r.name)", index: idx,
+                        name: r.name, path: r.path,
                         type: r.type, size: r.size, modTime: r.modTime
                     ))
                 }
@@ -312,7 +319,8 @@ class SearchViewModel: ObservableObject {
                 let idx = num.uint32Value
                 if let r = bridge.record(at: idx) {
                     items.append(FileItem(
-                        id: idx, name: r.name, path: r.path,
+                        id: "\(r.path)/\(r.name)", index: idx,
+                        name: r.name, path: r.path,
                         type: r.type, size: r.size, modTime: r.modTime
                     ))
                 }
@@ -347,20 +355,12 @@ class SearchViewModel: ObservableObject {
     private func performIndexRefresh() {
         totalRecords = bridge.liveRecordCount()
         isMonitoring = bridge.isMonitoring
+        contentIndexedCount = bridge.contentIndexedFileCount()
 
-        if !searchText.isEmpty {
-            let bridge = self.bridge
-            let keyword = searchText
-            let maxResults = Self.maxResults
-            let gen = searchGeneration
-            Task.detached { [weak self] in
-                let indices = bridge.queryIndices(keyword, maxResults: maxResults)
-                await MainActor.run { [weak self] in
-                    guard let self, self.searchGeneration == gen else { return }
-                    self.cachedIndices = indices
-                    self.totalMatches = indices.count
-                }
-            }
+        if !searchText.isEmpty && !isContentSearch {
+            performSearch(searchText)
+        } else if isContentSearch && !contentKeyword.isEmpty {
+            performContentSearch(contentKeyword)
         } else if showingRecent {
             loadRecentFiles()
         }

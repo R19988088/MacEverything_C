@@ -1,5 +1,6 @@
 #pragma once
 #include "SearchEngine.h"
+#include "ContentIndex.h"
 #include "IndexWAL.h"
 #include "FileSystemWatcher.h"
 #include <string>
@@ -30,11 +31,11 @@ public:
     /// Write a new base snapshot with full metadata, clear WAL.
     void compact(const IndexMetadata& metadata);
 
+    /// Set the ContentIndex so compaction can propagate index remapping.
+    void setContentIndex(std::shared_ptr<ContentIndex> ci) { contentIndex_ = std::move(ci); }
+
     /// Start a GCD timer that compacts every `intervalSec` seconds.
     void startAutoCompaction(double intervalSec, FileSystemWatcher* watcher);
-
-    /// Stop auto-compaction timer.
-    void stopAutoCompaction();
 
     /// Stop auto-compaction and wait for in-flight compaction to finish.
     void stopAutoCompactionAndWait();
@@ -44,6 +45,7 @@ public:
 
 private:
     std::shared_ptr<SearchEngine> engine_;
+    std::shared_ptr<ContentIndex> contentIndex_;
     std::shared_ptr<IndexWAL> wal_;
     std::string basePath_;
     std::string walPath_;

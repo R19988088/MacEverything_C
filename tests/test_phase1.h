@@ -190,7 +190,7 @@ static void runC3_WALThreadSafetyTest() {
     std::cout << "    Readable WAL entries: " << entries.size() << "\n";
 
     // Cleanup
-    persistence.stopAutoCompaction();
+    persistence.stopAutoCompactionAndWait();
     fs::remove(cBase);
     fs::remove(cWal);
 

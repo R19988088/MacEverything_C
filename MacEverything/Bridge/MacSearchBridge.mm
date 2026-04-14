@@ -1,12 +1,5 @@
-#import "MacSearchBridge.h"
+#import "MacSearchBridge_Internal.h"
 #include "DirectoryScanner.h"
-#include "SearchEngine.h"
-#include "FileSystemWatcher.h"
-#include "IndexPersistence.h"
-#include "ContentIndex.h"
-#include "ContentIndexPersistence.h"
-#include <memory>
-#include <atomic>
 #include <sys/stat.h>
 
 @implementation MEFileResult
@@ -49,18 +42,7 @@
 
 @end
 
-@implementation MacSearchBridge {
-    std::shared_ptr<SearchEngine> _engine;
-    std::unique_ptr<FileSystemWatcher> _watcher;
-    std::shared_ptr<IndexPersistence> _persistence;
-    std::shared_ptr<ContentIndex> _contentIndex;
-    std::shared_ptr<ContentIndexPersistence> _contentPersistence;
-    std::atomic<bool> _isScanning;
-    std::atomic<bool> _isMonitoring;
-    std::atomic<bool> _isContentIndexing;
-    std::atomic<bool> _shuttingDown;
-    std::atomic<bool> _startupCompleted;
-}
+@implementation MacSearchBridge
 
 + (instancetype)shared {
     static MacSearchBridge *instance = nil;
@@ -81,8 +63,22 @@
         _isMonitoring.store(false, std::memory_order_relaxed);
         _isContentIndexing.store(false, std::memory_order_relaxed);
         _shuttingDown.store(false, std::memory_order_relaxed);
+        _cancelContentIndexing.store(false, std::memory_order_relaxed);
+        // H-7: Serial queue for mutations
+        _mutationQueue = dispatch_queue_create("com.maceverything.mutation", DISPATCH_QUEUE_SERIAL);
     }
     return self;
+}
+
+// C-4: Thread-safe engine accessors
+- (std::shared_ptr<SearchEngine>)safeEngine {
+    std::shared_lock lock(_engineMutex);
+    return _engine;
+}
+
+- (void)setEngine:(std::shared_ptr<SearchEngine>)engine {
+    std::unique_lock lock(_engineMutex);
+    _engine = engine;
 }
 
 - (BOOL)isScanning {
@@ -146,7 +142,7 @@
         uint32_t count = engine->liveRecordCount();
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            self->_engine = engine;
+            [self setEngine:engine]; // C-4: thread-safe engine swap
             self->_isScanning.store(false, std::memory_order_relaxed);
             if (completion) {
                 completion(count);
@@ -242,11 +238,13 @@
                         return; // timeout already fired completion
                     }
 
-                    self->_engine = engine;
+                    [self setEngine:engine]; // C-4: thread-safe engine swap
                     self->_persistence = sharedPersistence;
                     self->_isScanning.store(false, std::memory_order_relaxed);
 
                     self->_persistence->attachWAL();
+                    // H-1: Set content index so compaction can propagate remap
+                    self->_persistence->setContentIndex(self->_contentIndex);
 
                     uint32_t count = engine->liveRecordCount();
                     if (completion) completion(count, NO);
@@ -280,9 +278,11 @@
                 }
 
                 self->_persistence = std::make_shared<IndexPersistence>(
-                    self->_engine, cacheStr, walStr
+                    [self safeEngine], cacheStr, walStr
                 );
                 self->_persistence->attachWAL();
+                // H-1: Set content index so compaction can propagate remap
+                self->_persistence->setContentIndex(self->_contentIndex);
                 self->_persistence->startAutoCompaction(300.0, self->_watcher.get());
 
                 uint64_t eventId = self->_watcher ? self->_watcher->getLastEventId() : 0;
@@ -306,6 +306,8 @@
 - (void)compactIndex {
     if (_persistence && _watcher) {
         uint64_t eventId = _watcher->getLastEventId();
+        // H-1: Set content index so compaction can propagate remap
+        _persistence->setContentIndex(_contentIndex);
         _persistence->compact(eventId);
     }
 }
@@ -322,6 +324,8 @@
 
     // 4. Now safe to compact on main thread — no competing lock holders
     if (_persistence) {
+        // H-1: Set content index so compaction can propagate remap
+        _persistence->setContentIndex(_contentIndex);
         _persistence->compact(lastEventId);
     }
     if (_contentPersistence) {
@@ -365,8 +369,8 @@ static bool pathEndsWithApp(const std::string& path) {
         bool exists = (lstat(path.c_str(), &st) == 0);
 
         if (itemRemoved || (itemRenamed && !exists)) {
-            // B2: Update content index before removing from metadata index
-            [self updateContentIndexForPath:path removed:YES];
+            // C-5: Pass engine to avoid re-reading stale _engine
+            [self updateContentIndexForPath:path removed:YES engine:engine];
             engine->removeByPath(path);
         } else if (exists) {
             std::string dirPath, fileName;
@@ -398,9 +402,9 @@ static bool pathEndsWithApp(const std::string& path) {
 
             engine->updateByPath(path, std::move(record));
 
-            // B2: Update content index for created/modified regular files
+            // C-5: Pass engine to avoid re-reading stale _engine
             if (type == 1) {
-                [self updateContentIndexForPath:path removed:NO];
+                [self updateContentIndexForPath:path removed:NO engine:engine];
             }
         }
     }
@@ -422,7 +426,8 @@ static bool pathEndsWithApp(const std::string& path) {
         MacSearchBridge *strongSelf = weakSelf;
         if (!strongSelf) return;
 
-        auto engine = strongSelf->_engine;
+        // C-4: Thread-safe engine access
+        auto engine = [strongSelf safeEngine];
         if (!engine) return;
 
         // Collect directories that need a full rescan (MustScanSubDirs)
@@ -454,8 +459,8 @@ static bool pathEndsWithApp(const std::string& path) {
 
             if (itemRemoved || (itemRenamed && !exists)) {
                 // File was removed or renamed away
-                // Update content index before removing from metadata index
-                [strongSelf updateContentIndexForPath:path removed:YES];
+                // C-5: Pass engine to avoid re-reading stale _engine
+                [strongSelf updateContentIndexForPath:path removed:YES engine:engine];
                 if (engine->removeByPath(path)) {
                     changed = true;
                 }
@@ -492,9 +497,9 @@ static bool pathEndsWithApp(const std::string& path) {
                 engine->updateByPath(path, std::move(record));
                 changed = true;
 
-                // Update content index for modified/created files
+                // C-5: Pass engine to avoid re-reading stale _engine
                 if (type == 1) { // regular file
-                    [strongSelf updateContentIndexForPath:path removed:NO];
+                    [strongSelf updateContentIndexForPath:path removed:NO engine:engine];
                 }
             }
         }
@@ -538,10 +543,11 @@ static bool pathEndsWithApp(const std::string& path) {
 
 - (NSArray<NSNumber *> *)queryIndices:(NSString *)keyword
                            maxResults:(uint32_t)maxResults {
-    if (!_engine) return @[];
+    auto engine = [self safeEngine]; // C-4
+    if (!engine) return @[];
 
     std::string key([keyword UTF8String]);
-    auto indices = _engine->query(key, maxResults);
+    auto indices = engine->query(key, maxResults);
 
     NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:indices.size()];
     for (uint32_t idx : indices) {
@@ -551,9 +557,10 @@ static bool pathEndsWithApp(const std::string& path) {
 }
 
 - (MEFileResult *)recordAtIndex:(uint32_t)index {
-    if (!_engine || index >= _engine->recordCount()) return nil;
+    auto engine = [self safeEngine]; // C-4
+    if (!engine || index >= engine->recordCount()) return nil;
 
-    const auto& r = _engine->getRecord(index);
+    const auto& r = engine->getRecord(index);
     // Skip tombstoned records
     if (r.type == 0) return nil;
 
@@ -565,7 +572,8 @@ static bool pathEndsWithApp(const std::string& path) {
 }
 
 - (NSArray<MEFileResult *> *)recordsAtIndices:(NSArray<NSNumber *> *)indices {
-    if (!_engine) return @[];
+    auto engine = [self safeEngine]; // C-4
+    if (!engine) return @[];
 
     NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.count];
     for (NSNumber *num in indices) {
@@ -577,11 +585,10 @@ static bool pathEndsWithApp(const std::string& path) {
 }
 
 - (NSArray<NSNumber *> *)recentIndices:(uint32_t)count {
-    if (!_engine) return @[];
+    auto engine = [self safeEngine]; // C-4
+    if (!engine) return @[];
 
-    // Use SearchEngine::recentIndices which accesses records_ directly under
-    // a single shared lock, avoiding N full FileRecord copies via getRecord.
-    auto indices = _engine->recentIndices(count);
+    auto indices = engine->recentIndices(count);
 
     NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:indices.size()];
     for (uint32_t idx : indices) {
@@ -591,14 +598,16 @@ static bool pathEndsWithApp(const std::string& path) {
 }
 
 - (void)rescanSubtree:(NSString *)dirPath {
-    if (!_engine) return;
+    // C-4: Thread-safe engine access
+    auto engine = [self safeEngine];
+    if (!engine) return;
 
     std::string dir([dirPath UTF8String]);
-    auto engine = _engine;
     auto* shuttingDown = &_shuttingDown;
     __weak MacSearchBridge *weakSelf = self;
 
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // H-7: Dispatch to serial mutation queue to prevent concurrent index mutations
+    dispatch_async(_mutationQueue, ^{
         if (shuttingDown->load(std::memory_order_relaxed)) return;
 
         // Scan the subtree using DirectoryScanner
@@ -631,16 +640,18 @@ static bool pathEndsWithApp(const std::string& path) {
 }
 
 - (uint32_t)recordCount {
-    return _engine ? _engine->recordCount() : 0;
+    auto engine = [self safeEngine]; // C-4
+    return engine ? engine->recordCount() : 0;
 }
 
 - (uint32_t)liveRecordCount {
-    return _engine ? _engine->liveRecordCount() : 0;
+    auto engine = [self safeEngine]; // C-4
+    return engine ? engine->liveRecordCount() : 0;
 }
 
 - (BOOL)saveIndexToFile:(NSString *)path {
-    if (!_engine) return NO;
-    // B3: Preserve metadata (event ID, scan root, versions) when saving
+    auto engine = [self safeEngine]; // C-4
+    if (!engine) return NO;
     IndexMetadata meta;
     meta.lastEventId = _watcher ? _watcher->getLastEventId() : 0;
     meta.extra[IndexMetadata::kAppVersion] = "1.1.0";
@@ -648,249 +659,13 @@ static bool pathEndsWithApp(const std::string& path) {
     meta.extra[IndexMetadata::kOSVersion] = [[NSString stringWithFormat:@"%ld.%ld.%ld",
         (long)osVer.majorVersion, (long)osVer.minorVersion, (long)osVer.patchVersion] UTF8String];
     meta.extra[IndexMetadata::kRecordFormat] = "v3_inode";
-    return _engine->saveToFile(std::string([path UTF8String]), meta) ? YES : NO;
+    return engine->saveToFile(std::string([path UTF8String]), meta) ? YES : NO;
 }
 
 - (BOOL)loadIndexFromFile:(NSString *)path {
-    if (!_engine) return NO;
-    return _engine->loadFromFile(std::string([path UTF8String])) ? YES : NO;
-}
-
-// --- Content search ---
-
-- (void)startContentIndexing {
-    if (!_engine || !_contentIndex) return;
-    _isContentIndexing.store(true, std::memory_order_relaxed);
-
-    auto engine = _engine;
-    auto contentIndex = _contentIndex;
-    auto contentPersistence = _contentPersistence;
-    auto* shuttingDown = &_shuttingDown;
-    __weak MacSearchBridge *weakSelf = self;
-
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        uint32_t total = engine->recordCount();
-        std::atomic<uint32_t> indexed{0};
-        std::atomic<uint32_t> lastReported{0};
-
-        for (uint32_t i = 0; i < total; i++) {
-            // Bail out immediately if the app is shutting down
-            if (shuttingDown->load(std::memory_order_relaxed)) return;
-
-            auto record = engine->getRecord(i);
-            if (record.type != 1) continue; // only regular files
-
-            std::string fullPath = SearchEngine::fullPathForRecord(record.path, record.name);
-            bool didIndex = contentIndex->indexFile(i, fullPath);
-
-            if (didIndex && contentPersistence) {
-                ContentFileInfo info;
-                if (contentIndex->getFileInfo(i, info)) {
-                    contentPersistence->walAppendAdd(i, info.contentHash, info.trigrams);
-                }
-            }
-
-            uint32_t current = indexed.fetch_add(1, std::memory_order_relaxed) + 1;
-
-            // Report progress every 500 files
-            if (current - lastReported.load(std::memory_order_relaxed) >= 500) {
-                lastReported.store(current, std::memory_order_relaxed);
-                uint32_t c = current;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    MacSearchBridge *strongSelf = weakSelf;
-                    if (strongSelf && strongSelf.onContentIndexProgress) {
-                        strongSelf.onContentIndexProgress(c, total);
-                    }
-                });
-            }
-        }
-
-        uint32_t totalIndexed = contentIndex->indexedFileCount();
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            MacSearchBridge *strongSelf = weakSelf;
-            if (strongSelf) {
-                strongSelf->_isContentIndexing.store(false, std::memory_order_relaxed);
-                if (strongSelf.onContentIndexComplete) {
-                    strongSelf.onContentIndexComplete(totalIndexed);
-                }
-            }
-        });
-    });
-}
-
-- (void)setupContentPersistence {
-    if (!_contentIndex) return;
-
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-    NSString *cachesDir = [paths firstObject];
-    NSString *appCacheDir = [cachesDir stringByAppendingPathComponent:@"com.maceverything.app"];
-
-    // Ensure directory exists
-    NSError *dirError = nil;
-    if (![[NSFileManager defaultManager] createDirectoryAtPath:appCacheDir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:&dirError]) {
-        NSLog(@"[MacSearchBridge] Failed to create content index directory: %@", dirError);
-        return;
-    }
-
-    std::string basePath = std::string([[appCacheDir stringByAppendingPathComponent:@"content_index.bin"] UTF8String]);
-    std::string walPath = std::string([[appCacheDir stringByAppendingPathComponent:@"content_index.wal"] UTF8String]);
-
-    _contentPersistence = std::make_shared<ContentIndexPersistence>(_contentIndex, basePath, walPath);
-    _contentPersistence->load();
-    _contentPersistence->attachWAL();
-    _contentPersistence->startAutoCompaction(300.0);
-}
-
-- (NSArray<MEContentResult *> *)queryContent:(NSString *)keyword maxResults:(uint32_t)maxResults {
-    if (!_engine || !_contentIndex) return @[];
-
-    std::string key([keyword UTF8String]);
-    if (key.empty()) return @[];
-
-    auto matches = _contentIndex->query(key, maxResults);
-    if (matches.empty()) return @[];
-
-    // Pre-resolve file paths (needs engine lock, do it once)
-    struct CandidateInfo {
-        uint32_t fileIndex;
-        std::string name;
-        std::string fullPath;
-        uint8_t fileType;
-    };
-    std::vector<CandidateInfo> candidates;
-    candidates.reserve(matches.size());
-    for (const auto& match : matches) {
-        auto record = _engine->getRecord(match.fileIndex);
-        if (record.type == 0) continue; // skip tombstones
-        CandidateInfo info;
-        info.fileIndex = match.fileIndex;
-        info.name = std::move(record.name);
-        info.fullPath = SearchEngine::fullPathForRecord(record.path, info.name);
-        info.fileType = record.type;
-        candidates.push_back(std::move(info));
-    }
-
-    if (candidates.empty()) return @[];
-
-    // Parallel snippet generation using dispatch_apply
-    struct SnippetResult {
-        std::string snippet;
-        uint32_t offset = 0;
-        bool valid = false;
-    };
-    __block std::vector<SnippetResult> snippetResults(candidates.size());
-
-    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
-    dispatch_apply(candidates.size(), queue, ^(size_t i) {
-        uint32_t offset = 0;
-        std::string snippet = ContentIndex::generateSnippet(candidates[i].fullPath, key, offset);
-        if (!snippet.empty()) {
-            snippetResults[i].snippet = std::move(snippet);
-            snippetResults[i].offset = offset;
-            snippetResults[i].valid = true;
-        }
-    });
-
-    // Collect valid results (single-threaded, no lock needed)
-    NSMutableArray<MEContentResult *> *results = [NSMutableArray arrayWithCapacity:candidates.size()];
-    for (size_t i = 0; i < candidates.size(); i++) {
-        if (!snippetResults[i].valid) continue;
-        MEContentResult *result = [[MEContentResult alloc]
-            initWithFileName:[NSString stringWithUTF8String:candidates[i].name.c_str()]
-                    filePath:[NSString stringWithUTF8String:candidates[i].fullPath.c_str()]
-                     snippet:[NSString stringWithUTF8String:snippetResults[i].snippet.c_str()]
-                 matchOffset:snippetResults[i].offset
-                    fileType:candidates[i].fileType];
-        [results addObject:result];
-    }
-
-    return results;
-}
-
-- (void)setContentExtensions:(NSArray<NSString *> *)extensions {
-    if (!_contentIndex) return;
-    std::vector<std::string> exts;
-    exts.reserve(extensions.count);
-    for (NSString *ext in extensions) {
-        exts.push_back(std::string([ext UTF8String]));
-    }
-    _contentIndex->setExtensions(exts);
-}
-
-- (void)setContentMaxFileSize:(uint64_t)bytes {
-    if (_contentIndex) {
-        _contentIndex->setMaxFileSize(bytes);
-    }
-}
-
-- (uint32_t)contentIndexedFileCount {
-    return _contentIndex ? _contentIndex->indexedFileCount() : 0;
-}
-
-- (NSArray<NSString *> *)contentGetExtensions {
-    if (!_contentIndex) return @[];
-    auto exts = _contentIndex->getExtensions();
-    NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:exts.size()];
-    for (const auto& ext : exts) {
-        [result addObject:[NSString stringWithUTF8String:ext.c_str()]];
-    }
-    return result;
-}
-
-- (uint64_t)contentGetMaxFileSize {
-    return _contentIndex ? _contentIndex->getMaxFileSize() : (1 * 1024 * 1024);
-}
-
-- (void)rebuildContentIndex {
-    if (!_engine || !_contentIndex) return;
-    if (_isContentIndexing.load(std::memory_order_relaxed)) return; // already running
-
-    // Clear old content index data
-    {
-        // Remove all indexed files from ContentIndex
-        auto exts = _contentIndex->getExtensions();
-        auto maxSize = _contentIndex->getMaxFileSize();
-
-        // Re-create content index to clear all data
-        _contentIndex = std::make_shared<ContentIndex>();
-        _contentIndex->setExtensions(exts);
-        _contentIndex->setMaxFileSize(maxSize);
-    }
-
-    // Re-setup persistence with fresh index
-    [self setupContentPersistence];
-
-    // Re-index all files
-    [self startContentIndexing];
-}
-
-- (void)updateContentIndexForPath:(const std::string&)fullPath removed:(BOOL)removed {
-    if (!_engine || !_contentIndex) return;
-
-    if (removed) {
-        uint32_t fileIndex = _engine->indexForPath(fullPath);
-        if (fileIndex != UINT32_MAX) {
-            _contentIndex->removeFile(fileIndex);
-            if (_contentPersistence) {
-                _contentPersistence->walAppendRemove(fileIndex);
-            }
-        }
-    } else {
-        uint32_t fileIndex = _engine->indexForPath(fullPath);
-        if (fileIndex != UINT32_MAX) {
-            bool didIndex = _contentIndex->indexFile(fileIndex, fullPath);
-            if (didIndex && _contentPersistence) {
-                ContentFileInfo info;
-                if (_contentIndex->getFileInfo(fileIndex, info)) {
-                    _contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams);
-                }
-            }
-        }
-    }
+    auto engine = [self safeEngine]; // C-4
+    if (!engine) return NO;
+    return engine->loadFromFile(std::string([path UTF8String])) ? YES : NO;
 }
 
 @end

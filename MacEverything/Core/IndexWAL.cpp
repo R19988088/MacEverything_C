@@ -2,6 +2,35 @@
 #include <cstring>
 #include <unistd.h>
 
+// ── CRC32 (ISO 3309 / zlib polynomial 0xEDB88320) ──
+static constexpr uint32_t makeCRC32Table(uint32_t idx) {
+    uint32_t c = idx;
+    for (int k = 0; k < 8; k++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+    }
+    return c;
+}
+
+static const uint32_t* getCRC32Table() {
+    static uint32_t table[256] = {};
+    static bool inited = false;
+    if (!inited) {
+        for (uint32_t i = 0; i < 256; i++) table[i] = makeCRC32Table(i);
+        inited = true;
+    }
+    return table;
+}
+
+uint32_t IndexWAL::crc32(const void* data, size_t len) {
+    const uint32_t* table = getCRC32Table();
+    auto* p = static_cast<const uint8_t*>(data);
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+    }
+    return crc ^ 0xFFFFFFFF;
+}
+
 IndexWAL::~IndexWAL() {
     close();
 }
@@ -22,17 +51,43 @@ bool IndexWAL::append(WALOp op, const std::string& fullPath, const FileRecord& r
     std::lock_guard<std::mutex> lock(mutex_);
     if (!file_) return false;
 
-    // Entry format: op(1) + pathLen(4) + path + [record fields if Add/Update]
+    // H-6: Check WAL file size limit before writing
+    struct stat st;
+    if (fstat(fileno(file_), &st) == 0 && static_cast<size_t>(st.st_size) >= kMaxWALSize) {
+        return false;
+    }
+
+    // Build entry into a buffer for CRC32 computation
+    std::string buf;
     uint8_t opByte = static_cast<uint8_t>(op);
-    if (fwrite(&opByte, 1, 1, file_) != 1) return false;
+    buf.append(reinterpret_cast<const char*>(&opByte), 1);
 
     uint32_t pathLen = static_cast<uint32_t>(fullPath.size());
-    if (fwrite(&pathLen, sizeof(uint32_t), 1, file_) != 1) return false;
-    if (pathLen > 0 && fwrite(fullPath.data(), 1, pathLen, file_) != pathLen) return false;
+    buf.append(reinterpret_cast<const char*>(&pathLen), sizeof(uint32_t));
+    if (pathLen > 0) buf.append(fullPath.data(), pathLen);
 
     if (op == WALOp::Add || op == WALOp::Update) {
-        if (!writeRecord(file_, record)) return false;
+        // Serialize record fields into buffer
+        uint32_t nameLen = static_cast<uint32_t>(record.name.size());
+        buf.append(reinterpret_cast<const char*>(&nameLen), sizeof(uint32_t));
+        if (nameLen > 0) buf.append(record.name.data(), nameLen);
+
+        uint32_t rpathLen = static_cast<uint32_t>(record.path.size());
+        buf.append(reinterpret_cast<const char*>(&rpathLen), sizeof(uint32_t));
+        if (rpathLen > 0) buf.append(record.path.data(), rpathLen);
+
+        buf.append(reinterpret_cast<const char*>(&record.type), sizeof(uint8_t));
+        buf.append(reinterpret_cast<const char*>(&record.size), sizeof(uint64_t));
+        int64_t mod = static_cast<int64_t>(record.modTime);
+        buf.append(reinterpret_cast<const char*>(&mod), sizeof(int64_t));
+        buf.append(reinterpret_cast<const char*>(&record.inode), sizeof(uint64_t));
+        buf.append(reinterpret_cast<const char*>(&record.devId), sizeof(int32_t));
     }
+
+    // Write entry + CRC32
+    if (fwrite(buf.data(), 1, buf.size(), file_) != buf.size()) return false;
+    uint32_t checksum = crc32(buf.data(), buf.size());
+    if (fwrite(&checksum, sizeof(uint32_t), 1, file_) != 1) return false;
 
     fflush(file_);
     entryCount_++;
@@ -54,6 +109,10 @@ std::vector<WALEntry> IndexWAL::readAll(const std::string& walPath) {
     if (!f) return entries;
 
     while (true) {
+        // Record the start position to re-read the raw bytes for CRC verification
+        long startPos = ftell(f);
+        if (startPos < 0) break;
+
         WALEntry entry;
 
         uint8_t opByte;
@@ -70,6 +129,24 @@ std::vector<WALEntry> IndexWAL::readAll(const std::string& walPath) {
         if (entry.op == WALOp::Add || entry.op == WALOp::Update) {
             if (!readRecord(f, entry.record)) break;
         }
+
+        // Read and verify CRC32
+        long endPos = ftell(f);
+        if (endPos < 0) break;
+        size_t entryLen = static_cast<size_t>(endPos - startPos);
+
+        uint32_t storedCRC;
+        if (fread(&storedCRC, sizeof(uint32_t), 1, f) != 1) break;
+
+        // Re-read entry bytes for CRC computation
+        std::vector<uint8_t> rawBuf(entryLen);
+        long afterCRC = ftell(f);
+        fseek(f, startPos, SEEK_SET);
+        if (fread(rawBuf.data(), 1, entryLen, f) != entryLen) break;
+        fseek(f, afterCRC, SEEK_SET);
+
+        uint32_t computedCRC = crc32(rawBuf.data(), rawBuf.size());
+        if (computedCRC != storedCRC) break; // CRC mismatch — stop at corrupt entry
 
         entries.push_back(std::move(entry));
     }

@@ -27,6 +27,9 @@
 		A1000012 /* ContentIndexPersistence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200001E; };
 		A1000013 /* ContentResultRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001F; };
 		A1000014 /* ContentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020; };
+		A1000015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000021; };
+		A1000016 /* MacSearchBridge+Content.mm in Sources */ = {isa = PBXBuildFile; fileRef = A2000023; };
+		A1000017 /* SearchEnginePersistence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000024; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -63,7 +66,22 @@
 		A200001E /* ContentIndexPersistence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ContentIndexPersistence.cpp; sourceTree = "<group>"; };
 		A200001F /* ContentResultRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentResultRow.swift; sourceTree = "<group>"; };
 		A2000020 /* ContentSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSettingsView.swift; sourceTree = "<group>"; };
+		A2000021 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A2000022 /* MacSearchBridge_Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MacSearchBridge_Internal.h; sourceTree = "<group>"; };
+		A2000023 /* MacSearchBridge+Content.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = "MacSearchBridge+Content.mm"; sourceTree = "<group>"; };
+		A2000024 /* SearchEnginePersistence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEnginePersistence.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A3000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000015 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A3000001 /* Frameworks */ = {
@@ -93,6 +111,7 @@
 				A4000003 /* App */,
 				A4000004 /* Bridge */,
 				A4000005 /* Core */,
+				A2000021 /* Assets.xcassets */,
 				A2000010 /* MacEverything-Bridging-Header.h */,
 				A2000011 /* Info.plist */,
 				A2000012 /* MacEverything.entitlements */,
@@ -121,7 +140,9 @@
 			isa = PBXGroup;
 			children = (
 				A2000008 /* MacSearchBridge.h */,
+				A2000022 /* MacSearchBridge_Internal.h */,
 				A2000009 /* MacSearchBridge.mm */,
+				A2000023 /* MacSearchBridge+Content.mm */,
 			);
 			path = Bridge;
 			sourceTree = "<group>";
@@ -144,6 +165,7 @@
 				A200001C /* ContentIndex.cpp */,
 				A200001D /* ContentIndexPersistence.h */,
 				A200001E /* ContentIndexPersistence.cpp */,
+				A2000024 /* SearchEnginePersistence.cpp */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -174,6 +196,7 @@
 			buildPhases = (
 				A6000001 /* Sources */,
 				A3000001 /* Frameworks */,
+				A3000002 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -235,6 +258,8 @@
 				A1000012 /* ContentIndexPersistence.cpp in Sources */,
 				A1000013 /* ContentResultRow.swift in Sources */,
 				A1000014 /* ContentSettingsView.swift in Sources */,
+				A1000016 /* MacSearchBridge+Content.mm in Sources */,
+				A1000017 /* SearchEnginePersistence.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

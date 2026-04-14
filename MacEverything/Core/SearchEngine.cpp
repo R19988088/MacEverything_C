@@ -6,15 +6,34 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
 #include <unordered_set>
 #include <dispatch/dispatch.h>
+#include <CoreFoundation/CoreFoundation.h>
 
 std::string SearchEngine::toLower(const std::string& s) {
-    std::string result;
-    result.resize(s.size());
-    for (size_t i = 0; i < s.size(); i++) {
-        result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+    // H-5: Unicode-aware lowercasing via CoreFoundation
+    CFStringRef cfStr = CFStringCreateWithBytes(kCFAllocatorDefault,
+        reinterpret_cast<const UInt8*>(s.data()), static_cast<CFIndex>(s.size()),
+        kCFStringEncodingUTF8, false);
+    if (!cfStr) {
+        // Fallback to ASCII tolower for invalid UTF-8
+        std::string result;
+        result.resize(s.size());
+        for (size_t i = 0; i < s.size(); i++)
+            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+        return result;
     }
+    CFMutableStringRef mutable_ = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, cfStr);
+    CFRelease(cfStr);
+    CFStringLowercase(mutable_, CFLocaleGetSystem());
+
+    CFIndex len = CFStringGetLength(mutable_);
+    CFIndex maxBuf = CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
+    std::string result(static_cast<size_t>(maxBuf), '\0');
+    CFStringGetCString(mutable_, result.data(), maxBuf, kCFStringEncodingUTF8);
+    CFRelease(mutable_);
+    result.resize(std::strlen(result.c_str()));
     return result;
 }
 
@@ -255,7 +274,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         // Build a set of name-matched indices to skip (trigramCandidates is sorted)
         const auto* candidatesPtr = &trigramCandidates;
 
-        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
+        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
         dispatch_apply(numThreads, queue, ^(size_t t) {
             size_t start = t * chunkSize;
             size_t end = std::min(start + chunkSize, totalSize);
@@ -305,7 +324,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         const auto* recordsPtr = &records_;
         const auto* lowerNamesPtr = &lowerNames_;
 
-        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
+        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
         dispatch_apply(numThreads, queue, ^(size_t t) {
             size_t start = t * chunkSize;
             size_t end = std::min(start + chunkSize, totalSize);
@@ -447,6 +466,13 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
             path.compare(0, lowerPrefix.size(), lowerPrefix) == 0 &&
             (path.size() == lowerPrefix.size() || path[lowerPrefix.size()] == '/')) {
             uint32_t idx = it->second;
+
+            // H-4: Write WAL entry for each removed path
+            if (wal_) {
+                std::string fullPath = makeFullPath(records_[idx].path, records_[idx].name);
+                wal_->append(WALOp::Remove, fullPath);
+            }
+
             records_[idx].type = 0;
             records_[idx].name.clear();
             records_[idx].path.clear();
@@ -531,6 +557,8 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     // Rebuild trigram index from scratch
     buildTrigramIndex();
 
+    compactionGen_.fetch_add(1, std::memory_order_relaxed);
+
     return remap;
 }
 
@@ -542,190 +570,6 @@ void SearchEngine::attachWAL(std::shared_ptr<IndexWAL> wal) {
 void SearchEngine::detachWAL() {
     std::unique_lock lock(mutex_);
     wal_.reset();
-}
-
-// --- Persistence ---
-
-static constexpr char MAGIC[4] = {'M', 'E', 'I', 'D'};
-static constexpr uint32_t FORMAT_VERSION_V1 = 1;
-static constexpr uint32_t FORMAT_VERSION_V2 = 2;
-static constexpr uint32_t FORMAT_VERSION_V3 = 3;
-
-// --- Helper: write/read a length-prefixed string ---
-static bool writeString(FILE* f, const std::string& s) {
-    uint32_t len = static_cast<uint32_t>(s.size());
-    if (fwrite(&len, sizeof(uint32_t), 1, f) != 1) return false;
-    if (len > 0 && fwrite(s.data(), 1, len, f) != len) return false;
-    return true;
-}
-
-static bool readString(FILE* f, std::string& s) {
-    uint32_t len;
-    if (fread(&len, sizeof(uint32_t), 1, f) != 1) return false;
-    if (len > 65536) return false; // sanity limit matching WAL reader
-    s.resize(len);
-    if (len > 0 && fread(s.data(), 1, len, f) != len) return false;
-    return true;
-}
-
-// --- Write a single record (v2/v3 format with inode+devId) ---
-static bool writeRecord(FILE* f, const FileRecord& r) {
-    if (!writeString(f, r.name)) return false;
-    if (!writeString(f, r.path)) return false;
-    if (fwrite(&r.type, sizeof(uint8_t), 1, f) != 1) return false;
-    if (fwrite(&r.size, sizeof(uint64_t), 1, f) != 1) return false;
-    int64_t mod = static_cast<int64_t>(r.modTime);
-    if (fwrite(&mod, sizeof(int64_t), 1, f) != 1) return false;
-    if (fwrite(&r.inode, sizeof(uint64_t), 1, f) != 1) return false;
-    if (fwrite(&r.devId, sizeof(int32_t), 1, f) != 1) return false;
-    return true;
-}
-
-// --- Read a single record, version-aware ---
-static bool readRecordFromFile(FILE* f, FileRecord& r, uint32_t version) {
-    if (!readString(f, r.name)) return false;
-    if (!readString(f, r.path)) return false;
-    if (fread(&r.type, sizeof(uint8_t), 1, f) != 1) return false;
-    if (fread(&r.size, sizeof(uint64_t), 1, f) != 1) return false;
-    int64_t mod;
-    if (fread(&mod, sizeof(int64_t), 1, f) != 1) return false;
-    r.modTime = static_cast<time_t>(mod);
-    if (version >= FORMAT_VERSION_V2) {
-        if (fread(&r.inode, sizeof(uint64_t), 1, f) != 1) return false;
-        if (fread(&r.devId, sizeof(int32_t), 1, f) != 1) return false;
-    }
-    return true;
-}
-
-// --- v3 save: extensible metadata ---
-bool SearchEngine::saveToFile(const std::string& filePath, const IndexMetadata& metadata) const {
-    std::shared_lock lock(mutex_);
-
-    std::string tmpPath = filePath + ".tmp";
-    FILE* f = fopen(tmpPath.c_str(), "wb");
-    if (!f) return false;
-
-    // Helper to check fwrite return values
-    bool writeOk = true;
-    auto safeWrite = [&](const void* ptr, size_t size, size_t count) {
-        if (writeOk && fwrite(ptr, size, count, f) != count) writeOk = false;
-    };
-
-    // Header: MAGIC(4) + version(4) + timestamp(8) + lastEventId(8)
-    safeWrite(MAGIC, 1, 4);
-    uint32_t version = FORMAT_VERSION_V3;
-    safeWrite(&version, sizeof(uint32_t), 1);
-    int64_t ts = metadata.timestamp > 0 ? metadata.timestamp : static_cast<int64_t>(time(nullptr));
-    safeWrite(&ts, sizeof(int64_t), 1);
-    safeWrite(&metadata.lastEventId, sizeof(uint64_t), 1);
-
-    // Metadata section: metadataCount(4) + [keyLen(4) + key + valueLen(4) + value] ...
-    uint32_t metaCount = static_cast<uint32_t>(metadata.extra.size());
-    safeWrite(&metaCount, sizeof(uint32_t), 1);
-    for (const auto& [key, value] : metadata.extra) {
-        if (!writeOk) break;
-        if (!writeString(f, key) || !writeString(f, value)) writeOk = false;
-    }
-
-    // Record count — count actual live records to ensure consistency
-    uint32_t liveCount = 0;
-    for (size_t i = 0; i < records_.size(); i++) {
-        if (records_[i].type != 0) liveCount++;
-    }
-    safeWrite(&liveCount, sizeof(uint32_t), 1);
-
-    if (!writeOk) {
-        fclose(f);
-        remove(tmpPath.c_str());
-        return false;
-    }
-
-    // Records (same binary layout as v2)
-    for (size_t i = 0; i < records_.size(); i++) {
-        const auto& r = records_[i];
-        if (r.type == 0) continue;
-        if (!writeRecord(f, r)) {
-            fclose(f);
-            remove(tmpPath.c_str());
-            return false;
-        }
-    }
-
-    fclose(f);
-
-    if (rename(tmpPath.c_str(), filePath.c_str()) != 0) {
-        remove(tmpPath.c_str());
-        return false;
-    }
-    return true;
-}
-
-// --- Legacy save overload ---
-bool SearchEngine::saveToFile(const std::string& filePath, uint64_t lastEventId) const {
-    IndexMetadata meta;
-    meta.lastEventId = lastEventId;
-    return saveToFile(filePath, meta);
-}
-
-// --- Load: supports v1, v2, and v3 ---
-bool SearchEngine::loadFromFile(const std::string& filePath, IndexMetadata* outMetadata) {
-    FILE* f = fopen(filePath.c_str(), "rb");
-    if (!f) return false;
-
-    // Read & verify magic
-    char magic[4];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, MAGIC, 4) != 0) {
-        fclose(f);
-        return false;
-    }
-
-    uint32_t version;
-    if (fread(&version, sizeof(uint32_t), 1, f) != 1) { fclose(f); return false; }
-    if (version < FORMAT_VERSION_V1 || version > FORMAT_VERSION_V3) {
-        fclose(f);
-        return false;
-    }
-
-    IndexMetadata meta;
-    meta.formatVersion = version;
-
-    // Timestamp (all versions)
-    if (fread(&meta.timestamp, sizeof(int64_t), 1, f) != 1) { fclose(f); return false; }
-
-    // lastEventId (v2+)
-    if (version >= FORMAT_VERSION_V2) {
-        if (fread(&meta.lastEventId, sizeof(uint64_t), 1, f) != 1) { fclose(f); return false; }
-    }
-
-    // Extended metadata (v3+)
-    if (version >= FORMAT_VERSION_V3) {
-        uint32_t metaCount;
-        if (fread(&metaCount, sizeof(uint32_t), 1, f) != 1) { fclose(f); return false; }
-        for (uint32_t m = 0; m < metaCount; m++) {
-            std::string key, value;
-            if (!readString(f, key) || !readString(f, value)) { fclose(f); return false; }
-            meta.extra[key] = value;
-        }
-    }
-
-    // Record count
-    uint32_t count;
-    if (fread(&count, sizeof(uint32_t), 1, f) != 1) { fclose(f); return false; }
-
-    std::vector<FileRecord> records;
-    records.reserve(count);
-
-    for (uint32_t i = 0; i < count; i++) {
-        FileRecord r;
-        if (!readRecordFromFile(f, r, version)) { fclose(f); return false; }
-        records.push_back(std::move(r));
-    }
-
-    fclose(f);
-
-    if (outMetadata) *outMetadata = std::move(meta);
-    loadRecords(std::move(records));
-    return true;
 }
 
 std::vector<uint32_t> SearchEngine::recentIndices(uint32_t count) const {
@@ -756,17 +600,4 @@ uint32_t SearchEngine::indexForPath(const std::string& fullPath) const {
     std::shared_lock lock(mutex_);
     auto it = pathIndex_.find(toLower(fullPath));
     return (it != pathIndex_.end()) ? it->second : UINT32_MAX;
-}
-
-std::string SearchEngine::fullPathForRecord(const std::string& path, const std::string& name) {
-    if (path.empty() || path.back() == '/') return path + name;
-    return path + "/" + name;
-}
-
-// --- Legacy load overload ---
-bool SearchEngine::loadFromFile(const std::string& filePath, uint64_t* outLastEventId) {
-    IndexMetadata meta;
-    bool ok = loadFromFile(filePath, &meta);
-    if (ok && outLastEventId) *outLastEventId = meta.lastEventId;
-    return ok;
 }

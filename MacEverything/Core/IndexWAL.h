@@ -5,6 +5,7 @@
 #include <mutex>
 #include <cstdio>
 #include <cstdint>
+#include <sys/stat.h>
 
 enum class WALOp : uint8_t {
     Add    = 1,
@@ -52,6 +53,12 @@ public:
     void closeAndDelete();
 
     bool isOpen() const { return file_ != nullptr; }
+
+    /// CRC32 utility (ISO 3309 / zlib polynomial).
+    static uint32_t crc32(const void* data, size_t len);
+
+    /// Maximum WAL file size (50 MB). append() returns false when exceeded.
+    static constexpr size_t kMaxWALSize = 50 * 1024 * 1024;
 
 private:
     FILE* file_ = nullptr;

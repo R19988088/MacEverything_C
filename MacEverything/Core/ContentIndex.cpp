@@ -5,7 +5,9 @@
 #include <cstring>
 #include <atomic>
 #include <thread>
+#include <unistd.h>
 #include <dispatch/dispatch.h>
+#include <CoreFoundation/CoreFoundation.h>
 
 // --- Magic and version for binary persistence ---
 static constexpr char CONTENT_MAGIC[4] = {'M', 'E', 'C', 'I'};
@@ -44,11 +46,28 @@ uint64_t ContentIndex::getMaxFileSize() const {
 // --- Helpers ---
 
 std::string ContentIndex::toLower(const std::string& s) {
-    std::string result;
-    result.resize(s.size());
-    for (size_t i = 0; i < s.size(); i++) {
-        result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+    // H-5: Unicode-aware lowercasing via CoreFoundation
+    CFStringRef cfStr = CFStringCreateWithBytes(kCFAllocatorDefault,
+        reinterpret_cast<const UInt8*>(s.data()), static_cast<CFIndex>(s.size()),
+        kCFStringEncodingUTF8, false);
+    if (!cfStr) {
+        // Fallback to ASCII tolower for invalid UTF-8
+        std::string result;
+        result.resize(s.size());
+        for (size_t i = 0; i < s.size(); i++)
+            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+        return result;
     }
+    CFMutableStringRef mutable_ = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, cfStr);
+    CFRelease(cfStr);
+    CFStringLowercase(mutable_, CFLocaleGetSystem());
+
+    CFIndex len = CFStringGetLength(mutable_);
+    CFIndex maxBuf = CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
+    std::string result(static_cast<size_t>(maxBuf), '\0');
+    CFStringGetCString(mutable_, result.data(), maxBuf, kCFStringEncodingUTF8);
+    CFRelease(mutable_);
+    result.resize(std::strlen(result.c_str()));
     return result;
 }
 
@@ -153,9 +172,15 @@ std::string ContentIndex::readFileIfText(const std::string& path, uint64_t maxSi
 std::vector<Trigram> ContentIndex::extractTrigrams(const std::string& text) {
     if (text.size() < 3) return {};
 
-    // Bitmap dedup: 2^24 = 16M bits = 2MB, much faster than unordered_set for large texts
+    // C-1: thread_local bitmap avoids 2MB allocation per call.
+    // Only the dirty bits are cleared each call — O(unique_trigrams) instead of O(2^24).
     static constexpr size_t kBitmapSize = 1 << 24;
-    std::vector<bool> seen(kBitmapSize, false);
+    thread_local std::vector<bool> seen(kBitmapSize, false);
+    thread_local std::vector<Trigram> dirty;
+
+    for (auto t : dirty) seen[t] = false;
+    dirty.clear();
+
     std::vector<Trigram> result;
 
     for (size_t i = 0; i + 2 < text.size(); i++) {
@@ -165,6 +190,7 @@ std::vector<Trigram> ContentIndex::extractTrigrams(const std::string& text) {
         Trigram t = makeTrigram(a, b, c);
         if (!seen[t]) {
             seen[t] = true;
+            dirty.push_back(t);
             result.push_back(t);
         }
     }
@@ -354,6 +380,33 @@ void ContentIndex::removeFileInternal(uint32_t fileIndex) {
     }
 
     fileInfos_.erase(it);
+}
+
+void ContentIndex::remapFileIndices(const std::unordered_map<uint32_t, uint32_t>& remap) {
+    std::unique_lock lock(mutex_);
+
+    // Rebuild fileInfos_ with new indices
+    std::unordered_map<uint32_t, ContentFileInfo> newFileInfos;
+    for (auto& [oldIdx, info] : fileInfos_) {
+        auto it = remap.find(oldIdx);
+        if (it != remap.end()) {
+            newFileInfos[it->second] = std::move(info);
+        }
+        // If not in remap, the record was tombstoned — drop it
+    }
+    fileInfos_ = std::move(newFileInfos);
+
+    // Rebuild inverted index from scratch
+    invertedIndex_.clear();
+    for (auto& [fileIdx, info] : fileInfos_) {
+        for (Trigram tri : info.trigrams) {
+            auto& list = invertedIndex_[tri];
+            auto pos = std::lower_bound(list.begin(), list.end(), fileIdx);
+            if (pos == list.end() || *pos != fileIdx) {
+                list.insert(pos, fileIdx);
+            }
+        }
+    }
 }
 
 bool ContentIndex::isFileIndexed(uint32_t fileIndex) const {
@@ -548,6 +601,8 @@ bool ContentIndex::saveToFile(const std::string& path) const {
         }
     }
 
+    // H-2: fsync before close to ensure data reaches disk before rename
+    if (ok) fsync(fileno(f));
     fclose(f);
 
     if (!ok) {

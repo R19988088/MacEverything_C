@@ -24,14 +24,29 @@ bool ContentIndexWAL::appendAdd(uint32_t fileIndex, uint64_t contentHash,
     std::lock_guard<std::mutex> lock(mutex_);
     if (!file_) return false;
 
+    // H-6: Check WAL file size limit
+    struct stat st;
+    if (fstat(fileno(file_), &st) == 0 && static_cast<size_t>(st.st_size) >= kMaxWALSize) {
+        return false;
+    }
+
+    // Build entry into buffer for CRC32
+    std::string buf;
     uint8_t op = Entry::Add;
-    if (fwrite(&op, 1, 1, file_) != 1) return false;
-    if (fwrite(&fileIndex, sizeof(uint32_t), 1, file_) != 1) return false;
-    if (fwrite(&contentHash, sizeof(uint64_t), 1, file_) != 1) return false;
+    buf.append(reinterpret_cast<const char*>(&op), 1);
+    buf.append(reinterpret_cast<const char*>(&fileIndex), sizeof(uint32_t));
+    buf.append(reinterpret_cast<const char*>(&contentHash), sizeof(uint64_t));
 
     uint32_t triCount = static_cast<uint32_t>(trigrams.size());
-    if (fwrite(&triCount, sizeof(uint32_t), 1, file_) != 1) return false;
-    if (triCount > 0 && fwrite(trigrams.data(), sizeof(Trigram), triCount, file_) != triCount) return false;
+    buf.append(reinterpret_cast<const char*>(&triCount), sizeof(uint32_t));
+    if (triCount > 0) {
+        buf.append(reinterpret_cast<const char*>(trigrams.data()), sizeof(Trigram) * triCount);
+    }
+
+    // Write entry + CRC32
+    if (fwrite(buf.data(), 1, buf.size(), file_) != buf.size()) return false;
+    uint32_t checksum = IndexWAL::crc32(buf.data(), buf.size());
+    if (fwrite(&checksum, sizeof(uint32_t), 1, file_) != 1) return false;
 
     fflush(file_);
     unflushedCount_++;
@@ -48,9 +63,22 @@ bool ContentIndexWAL::appendRemove(uint32_t fileIndex) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!file_) return false;
 
+    // H-6: Check WAL file size limit
+    struct stat st;
+    if (fstat(fileno(file_), &st) == 0 && static_cast<size_t>(st.st_size) >= kMaxWALSize) {
+        return false;
+    }
+
+    // Build entry into buffer for CRC32
+    std::string buf;
     uint8_t op = Entry::Remove;
-    if (fwrite(&op, 1, 1, file_) != 1) return false;
-    if (fwrite(&fileIndex, sizeof(uint32_t), 1, file_) != 1) return false;
+    buf.append(reinterpret_cast<const char*>(&op), 1);
+    buf.append(reinterpret_cast<const char*>(&fileIndex), sizeof(uint32_t));
+
+    // Write entry + CRC32
+    if (fwrite(buf.data(), 1, buf.size(), file_) != buf.size()) return false;
+    uint32_t checksum = IndexWAL::crc32(buf.data(), buf.size());
+    if (fwrite(&checksum, sizeof(uint32_t), 1, file_) != 1) return false;
 
     fflush(file_);
     unflushedCount_++;
@@ -70,6 +98,9 @@ std::vector<ContentIndexWAL::Entry> ContentIndexWAL::readAll(const std::string& 
     if (!f) return entries;
 
     while (true) {
+        long startPos = ftell(f);
+        if (startPos < 0) break;
+
         Entry entry;
 
         uint8_t opByte;
@@ -89,6 +120,24 @@ std::vector<ContentIndexWAL::Entry> ContentIndexWAL::readAll(const std::string& 
             entry.trigrams.resize(triCount);
             if (triCount > 0 && fread(entry.trigrams.data(), sizeof(Trigram), triCount, f) != triCount) break;
         }
+
+        // Read and verify CRC32
+        long endPos = ftell(f);
+        if (endPos < 0) break;
+        size_t entryLen = static_cast<size_t>(endPos - startPos);
+
+        uint32_t storedCRC;
+        if (fread(&storedCRC, sizeof(uint32_t), 1, f) != 1) break;
+
+        // Re-read entry bytes for CRC computation
+        std::vector<uint8_t> rawBuf(entryLen);
+        long afterCRC = ftell(f);
+        fseek(f, startPos, SEEK_SET);
+        if (fread(rawBuf.data(), 1, entryLen, f) != entryLen) break;
+        fseek(f, afterCRC, SEEK_SET);
+
+        uint32_t computedCRC = IndexWAL::crc32(rawBuf.data(), rawBuf.size());
+        if (computedCRC != storedCRC) break; // CRC mismatch — stop at corrupt entry
 
         entries.push_back(std::move(entry));
     }
@@ -223,7 +272,7 @@ void ContentIndexPersistence::compact() {
 }
 
 void ContentIndexPersistence::startAutoCompaction(double intervalSec) {
-    stopAutoCompaction();
+    stopAutoCompactionAndWait();
 
     // Use a dedicated serial queue so we can dispatch_sync to drain in-flight work
     compactionQueue_ = dispatch_queue_create("com.maceverything.content.compaction", DISPATCH_QUEUE_SERIAL);
@@ -241,18 +290,6 @@ void ContentIndexPersistence::startAutoCompaction(double intervalSec) {
 
     dispatch_resume(compactionTimer_);
     std::cout << "[ContentIndexPersistence] Auto-compaction started (every " << intervalSec << "s)\n";
-}
-
-void ContentIndexPersistence::stopAutoCompaction() {
-    if (compactionTimer_) {
-        dispatch_source_cancel(compactionTimer_);
-        dispatch_release(compactionTimer_);
-        compactionTimer_ = nullptr;
-    }
-    if (compactionQueue_) {
-        dispatch_release(compactionQueue_);
-        compactionQueue_ = nullptr;
-    }
 }
 
 void ContentIndexPersistence::stopAutoCompactionAndWait() {

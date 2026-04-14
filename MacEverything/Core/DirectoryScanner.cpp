@@ -104,6 +104,11 @@ void DirectoryScanner::workerThread(int threadIndex) {
 
             dirPath = std::move(workQueue_.front());
             workQueue_.pop();
+            // INVARIANT: activeTasks_ is incremented inside queueMutex_ (before
+            // popping work), and decremented outside the lock (after scanDirectory
+            // returns and any new work has been pushed under queueMutex_). This
+            // ensures the termination condition (activeTasks_==0 && workQueue_.empty())
+            // cannot fire while discoverable work remains.
             activeTasks_.fetch_add(1, std::memory_order_acq_rel);
         }
 

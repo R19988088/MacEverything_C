@@ -90,6 +90,9 @@ public:
     /// Directly remove file info and update inverted index.
     void removeFileInternal(uint32_t fileIndex);
 
+    /// Remap fileIndices after SearchEngine compaction. Thread-safe.
+    void remapFileIndices(const std::unordered_map<uint32_t, uint32_t>& remap);
+
     // --- Helpers (public for testing) ---
 
     /// Check if a file appears to be binary (NUL byte in first 8KB).

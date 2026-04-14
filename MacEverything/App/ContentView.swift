@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = SearchViewModel()
-    private let bridge = MacSearchBridge.shared()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -122,7 +121,7 @@ struct ContentView: View {
                                 .padding(.bottom, 4)
                             Text("No content matches found")
                                 .foregroundColor(.secondary)
-                            if bridge.contentIndexedFileCount() == 0 {
+                            if viewModel.contentIndexedCount == 0 {
                                 Text("No files indexed. Configure extensions in Content Settings.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)

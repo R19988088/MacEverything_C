@@ -5,7 +5,7 @@ struct MacEverythingApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        WindowGroup {
+        Window("MacEverything", id: "main") {
             ContentView()
         }
         .windowStyle(.titleBar)

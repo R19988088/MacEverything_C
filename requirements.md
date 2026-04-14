@@ -203,3 +203,31 @@
     6.  **[A6] performIndexRefresh 过期结果防护**: 新增 generation guard，防止 FSEvents 触发的刷新覆盖用户正在进行的新搜索。
     7.  **[A7] cacheDir force-unwrap 修复**: `NSSearchPathForDirectoriesInDomains` 结果从 `first!` 改为 `first ?? NSTemporaryDirectory()`，防止极端情况下崩溃。
     8.  **[A8] indexChangeTask 强引用**: 节流任务闭包添加 `[weak self]`，防止 throttle 等待期间阻止 ViewModel 释放。
+* **Phase 5 — 全面质量审计修复 (22 项)**:
+  * **Critical 修复 (7 项)**:
+    1.  **[C-1] extractTrigrams 2MB 分配优化**: 使用 `thread_local` 位图 + dirty tracking，每次调用仅清除上次设置的位（O(unique_trigrams)），而非重新分配 2MB `vector<bool>`。
+    2.  **[C-2] WAL per-entry CRC32 校验**: `IndexWAL` 和 `ContentIndexWAL` 每条 entry 末尾追加 4 字节 CRC32；读取时验证校验和，损坏处立即停止回放。
+    3.  **[C-3] DirectoryScanner activeTasks_ 不变量文档**: 添加注释说明 `activeTasks_` 在 `queueMutex_` 内递增、锁外递减的设计，确保终止条件不会在可发现工作存在时触发。
+    4.  **[C-4] _engine shared_ptr 线程安全**: 使用 `std::shared_mutex` 保护 `_engine` 共享指针，新增 `safeEngine`/`setEngine:` 方法，所有直接访问改为安全访问器。
+    5.  **[C-5] updateContentIndexForPath 接受 engine 参数**: 方法签名添加 `engine:` 参数，避免在 FSEvents 回调中读取可能已被 swap 的 `_engine`。
+    6.  **[C-6] performIndexRefresh 重建 displayItems**: 改为调用 `performSearch(searchText)` / `performContentSearch(contentKeyword)` / `loadRecentFiles()`，完整重建显示数据而非仅更新 `cachedIndices`。
+    7.  **[C-7] ContentView 移除直接 bridge 引用**: 删除 `ContentView` 中的 `MacSearchBridge.shared()` 引用，新增 `ViewModel.contentIndexedCount` 属性，所有 bridge 访问通过 ViewModel 进行。
+  * **High 修复 (15 项)**:
+    1.  **[H-1] Compaction remap 传播到 ContentIndex**: `IndexPersistence` 新增 `setContentIndex()` 方法，compaction 后将 remap 传播到 `ContentIndex::remapFileIndices()`，防止内容索引 fileIndex 失效。
+    2.  **[H-2] saveToFile fsync before rename**: `SearchEngine::saveToFile` 和 `ContentIndex::saveToFile` 在 `fclose` 前添加 `fsync(fileno(f))`，确保数据落盘后再原子重命名。
+    3.  **[H-3] compactionGeneration 计数器**: `SearchEngine` 新增 `std::atomic<uint64_t> compactionGen_`，每次 `compactRecords()` 递增，支持外部检测索引是否发生过 compaction。
+    4.  **[H-4] removeByPathPrefix 写 WAL**: 按前缀批量删除时，对每个被删除路径写入 WAL Remove 条目，防止 crash 后数据回滚导致"复活"。
+    5.  **[H-5] toLower Unicode 支持**: 使用 CoreFoundation `CFStringLowercase` 替代逐字节 `tolower`，正确处理 UTF-8 多字节字符（如 Ä→ä）。
+    6.  **[H-6] WAL 大小上限**: `IndexWAL` 限制 50MB、`ContentIndexWAL` 限制 20MB，写入前检查文件大小，超限返回 false。
+    7.  **[H-7] rescanSubtree 串行化**: 新增 `_mutationQueue` 串行派发队列，`rescanSubtree:` 和 FSEvents 回调中的 mutation 统一在串行队列执行，防止并发修改引擎状态。
+    8.  **[H-8] 内容索引可取消**: 新增 `_cancelContentIndexing` 原子标志，`startContentIndexing` 循环中检查取消标志，`rebuildContentIndex` 设置标志并等待旧索引停止后再启动新索引。
+    9.  **[H-9] FileItem.id 稳定标识**: `FileItem.id` 从 `UInt32` 引擎索引改为 `String`（path-based），compaction 后 SwiftUI diff 不会错误复用 cell。
+    10. **[H-11] ContentFileItem.id 稳定标识**: `ContentFileItem.id` 从 `UUID()` 改为 `filePath + ":" + matchOffset` 字符串，确保内容搜索结果 ID 稳定。
+    11. **[H-13] 禁止多窗口**: `WindowGroup` 改为 `Window("MacEverything", id: "main")`，防止 Cmd+N 创建多个主窗口导致资源重复。
+    12. **[H-14] query() QOS 降级**: `SearchEngine::query()` 中 GCD 并行搜索从 `QOS_CLASS_USER_INTERACTIVE` 降为 `QOS_CLASS_USER_INITIATED`，避免抢占 UI 线程。
+    13. **[H-15] 移除非等待 stopAutoCompaction**: 删除 `IndexPersistence` 和 `ContentIndexPersistence` 的 `stopAutoCompaction()` 方法，统一使用 `stopAutoCompactionAndWait()`，避免析构期间 in-flight compaction 未完成。
+    14. **[H-10] performIndexRefresh generation guard**: 已被 C-6 修复覆盖（改为调用 `performSearch`，自带 generation guard）。
+    15. **[H-12] 键盘导航**: 延迟至后续版本实现（TODO）。
+  * **附带修复**:
+    - `onSearchTextChanged` 重置 `isLoadingMore = false`，防止搜索词变更后分页加载状态卡住。
+    - `setContentIndex()` 在 4 个持久化初始化路径中调用，确保 compaction remap 在所有场景下传播。

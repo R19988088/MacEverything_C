@@ -84,6 +84,9 @@ public:
     /// Detach the WAL (e.g. before compaction).
     void detachWAL();
 
+    /// Monotonically increasing generation counter, incremented on each compaction.
+    uint64_t compactionGeneration() const { return compactionGen_.load(std::memory_order_relaxed); }
+
     /// Return indices of the most recently modified live records, sorted by modTime descending.
     /// Accesses records_ directly under the lock to avoid per-record copy overhead.
     std::vector<uint32_t> recentIndices(uint32_t count) const;
@@ -92,7 +95,7 @@ public:
     uint32_t indexForPath(const std::string& fullPath) const;
 
     /// Build the full path from a record's path and name components.
-    static std::string fullPathForRecord(const std::string& path, const std::string& name);
+    static std::string makeFullPath(const std::string& path, const std::string& name);
 
 private:
     std::vector<FileRecord> records_;
@@ -113,9 +116,9 @@ private:
     void removeTrigramsForRecord(uint32_t idx);
 
     static std::string toLower(const std::string& s);
-    static std::string makeFullPath(const std::string& path, const std::string& name);
     static bool isGlobPattern(const std::string& s);
     static bool globMatch(const std::string& pattern, const std::string& text);
 
     std::shared_ptr<IndexWAL> wal_;
+    std::atomic<uint64_t> compactionGen_{0};
 };

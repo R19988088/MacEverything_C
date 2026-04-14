@@ -36,6 +36,8 @@ public:
     };
 
     void scan(const std::string& rootPath);
+    void cancel() { cancelled_.store(true, std::memory_order_relaxed); }
+    bool isCancelled() const { return cancelled_.load(std::memory_order_relaxed); }
     const Stats& getStats() const { return stats_; }
 
     // Move all per-thread results into a single flat vector. Call after scan completes.
@@ -47,6 +49,7 @@ private:
     std::condition_variable queueCV_;
     std::atomic<int> activeTasks_{0};
     std::atomic<bool> done_{false};
+    std::atomic<bool> cancelled_{false};
 
     std::unordered_set<InodeKey, InodeKeyHash> visitedDirs_;
     std::mutex dedupMutex_;

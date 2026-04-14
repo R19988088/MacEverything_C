@@ -59,6 +59,7 @@
     std::atomic<bool> _isMonitoring;
     std::atomic<bool> _isContentIndexing;
     std::atomic<bool> _shuttingDown;
+    std::atomic<bool> _startupCompleted;
 }
 
 + (instancetype)shared {
@@ -123,6 +124,16 @@
         });
         dispatch_resume(timer);
 
+        // Schedule scan timeout: cancel scanner after 45s
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 45 * NSEC_PER_SEC),
+                       dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+            auto s = scannerWeak.lock();
+            if (s && !s->isCancelled()) {
+                NSLog(@"[MacSearchBridge] Scan timeout (45s) — cancelling scanner");
+                s->cancel();
+            }
+        });
+
         scanner->scan(std::string([root UTF8String]));
 
         // Stop timer
@@ -142,9 +153,13 @@
             }
             // Start file system monitoring after scan completes
             [self startMonitoringFrom:root];
-            // Start content indexing in background
-            [self setupContentPersistence];
-            [self startContentIndexing];
+            // Start content indexing in background (off main thread)
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                [self setupContentPersistence];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self startContentIndexing];
+                });
+            });
         });
     });
 }
@@ -154,11 +169,27 @@
                      walPath:(NSString *)walPath
                   completion:(void (^)(uint32_t totalRecords, BOOL didFullScan))completion {
     _isScanning.store(true, std::memory_order_relaxed);
+    _startupCompleted.store(false, std::memory_order_relaxed);
     [self stopMonitoring];
 
     NSString *root = [rootPath copy];
     NSString *cache = [cachePath copy];
     NSString *wal = [walPath copy];
+
+    // Global startup timeout: guarantee completion fires within 60s
+    __weak MacSearchBridge *weakTimeoutSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
+        MacSearchBridge *strongSelf = weakTimeoutSelf;
+        if (!strongSelf) return;
+        bool expected = false;
+        if (strongSelf->_startupCompleted.compare_exchange_strong(expected, true,
+                std::memory_order_acq_rel)) {
+            NSLog(@"[MacSearchBridge] Startup timeout (60s) — firing completion with 0 records");
+            strongSelf->_isScanning.store(false, std::memory_order_relaxed);
+            if (completion) completion(0, YES);
+        }
+    });
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         auto engine = std::make_shared<SearchEngine>();
@@ -205,6 +236,12 @@
                 // Replay succeeded — use the incrementally-updated index
                 auto sharedPersistence = std::shared_ptr<IndexPersistence>(std::move(persistence));
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    bool expected = false;
+                    if (!self->_startupCompleted.compare_exchange_strong(expected, true,
+                            std::memory_order_acq_rel)) {
+                        return; // timeout already fired completion
+                    }
+
                     self->_engine = engine;
                     self->_persistence = sharedPersistence;
                     self->_isScanning.store(false, std::memory_order_relaxed);
@@ -218,9 +255,13 @@
 
                     self->_persistence->startAutoCompaction(300.0, self->_watcher.get());
 
-                    // Start content indexing
-                    [self setupContentPersistence];
-                    [self startContentIndexing];
+                    // Start content indexing in background
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        [self setupContentPersistence];
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [self startContentIndexing];
+                        });
+                    });
                 });
                 return;
             }
@@ -232,6 +273,12 @@
         std::string walStr([wal UTF8String]);
         dispatch_async(dispatch_get_main_queue(), ^{
             [self startScanFrom:root completion:^(uint32_t count) {
+                bool expected = false;
+                if (!self->_startupCompleted.compare_exchange_strong(expected, true,
+                        std::memory_order_acq_rel)) {
+                    return; // timeout already fired completion
+                }
+
                 self->_persistence = std::make_shared<IndexPersistence>(
                     self->_engine, cacheStr, walStr
                 );

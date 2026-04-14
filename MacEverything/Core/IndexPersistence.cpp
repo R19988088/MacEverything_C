@@ -1,5 +1,6 @@
 #include "IndexPersistence.h"
 #include <iostream>
+#include <chrono>
 
 IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
                                    const std::string& basePath,
@@ -27,11 +28,18 @@ uint64_t IndexPersistence::load() {
         std::cout << "[IndexPersistence] No base index found at " << basePath_ << "\n";
     }
 
-    // 2. Replay WAL entries on top
+    // 2. Replay WAL entries on top (with 15s timeout)
     auto entries = IndexWAL::readAll(walPath_);
     if (!entries.empty()) {
         std::cout << "[IndexPersistence] Replaying " << entries.size() << " WAL entries\n";
+        auto replayStart = std::chrono::steady_clock::now();
+        bool timedOut = false;
         for (auto& entry : entries) {
+            if (std::chrono::steady_clock::now() - replayStart > std::chrono::seconds(15)) {
+                std::cout << "[IndexPersistence] WAL replay timeout (15s) — forcing full scan\n";
+                timedOut = true;
+                break;
+            }
             switch (entry.op) {
                 case WALOp::Add:
                     engine_->addRecord(std::move(entry.record));
@@ -43,6 +51,11 @@ uint64_t IndexPersistence::load() {
                     engine_->updateByPath(entry.fullPath, std::move(entry.record));
                     break;
             }
+        }
+        if (timedOut) {
+            // Reset engine and return 0 to force full scan
+            engine_->loadRecords({});
+            return 0;
         }
         std::cout << "[IndexPersistence] WAL replay done, live records=" << engine_->liveRecordCount() << "\n";
     }

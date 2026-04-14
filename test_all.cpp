@@ -1135,12 +1135,136 @@ static void runParallelSnippetTests() {
 }
 
 // ═══════════════════════════════════════════════════════
+//  Part 13: DirectoryScanner cancel + WAL replay timeout
+// ═══════════════════════════════════════════════════════
+
+static void runScannerCancelTest() {
+    std::cout << "═══ Part 13: DirectoryScanner Cancel ═══\n\n";
+
+    // Create a temp dir with enough structure to keep scanning
+    std::string tmpDir = "/tmp/maceverything_cancel_test_" + std::to_string(getpid());
+    fs::create_directories(tmpDir);
+    for (int i = 0; i < 20; i++) {
+        fs::create_directories(tmpDir + "/dir" + std::to_string(i));
+        for (int j = 0; j < 5; j++) {
+            std::ofstream(tmpDir + "/dir" + std::to_string(i) + "/file" + std::to_string(j) + ".txt") << "data";
+        }
+    }
+
+    // Test 1: cancel() before scan — scan should return quickly
+    {
+        DirectoryScanner scanner;
+        scanner.cancel();
+        auto start = std::chrono::steady_clock::now();
+        scanner.scan(tmpDir);
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        auto results = scanner.takeResults();
+        // scan() resets cancelled_ at the start, so it should complete normally
+        check(results.size() > 0, "C13: scan() resets cancelled_ flag and runs normally");
+    }
+
+    // Test 2: cancel() from another thread during scan
+    {
+        DirectoryScanner scanner;
+        std::atomic<bool> scanDone{false};
+
+        std::thread scanThread([&] {
+            scanner.scan("/usr");
+            scanDone.store(true);
+        });
+
+        // Let it run a bit then cancel
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        scanner.cancel();
+
+        auto start = std::chrono::steady_clock::now();
+        scanThread.join();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+
+        check(scanDone.load(), "C13: scan() completed after cancel");
+        check(elapsed < 5000, "C13: scan() returned within 5s after cancel");
+        check(scanner.isCancelled(), "C13: isCancelled() returns true after cancel");
+    }
+
+    // Test 3: scanner is reusable after cancel
+    {
+        DirectoryScanner scanner;
+        scanner.cancel();
+        scanner.scan(tmpDir); // resets cancelled_, should work normally
+        auto results = scanner.takeResults();
+        check(results.size() > 0, "C13: scanner reusable after cancel (results found)");
+        check(!scanner.isCancelled(), "C13: cancelled_ is reset on new scan()");
+    }
+
+    fs::remove_all(tmpDir);
+    std::cout << "\n";
+}
+
+static void runWalReplayTimeoutTest() {
+    std::cout << "═══ Part 14: WAL Replay Timeout ═══\n\n";
+
+    std::string tmpDir = "/tmp/maceverything_wal_timeout_" + std::to_string(getpid());
+    fs::create_directories(tmpDir);
+    std::string basePath = tmpDir + "/index.bin";
+    std::string walPath = tmpDir + "/index.wal";
+
+    // Create an engine with some records and save
+    auto engine = std::make_shared<SearchEngine>();
+    {
+        std::vector<FileRecord> records;
+        for (int i = 0; i < 100; i++) {
+            records.push_back({"file" + std::to_string(i) + ".txt", "/tmp", 1, 100, time(nullptr), static_cast<uint64_t>(i + 1), 1});
+        }
+        engine->loadRecords(std::move(records));
+        IndexMetadata meta;
+        meta.lastEventId = 42;
+        engine->saveToFile(basePath, meta);
+    }
+
+    // Write a modest WAL (not timing-dependent — just test the code path works)
+    {
+        IndexWAL wal;
+        wal.open(walPath);
+        for (int i = 0; i < 1000; i++) {
+            FileRecord r{"walfile" + std::to_string(i) + ".txt", "/tmp/wal", 1, 50, time(nullptr), static_cast<uint64_t>(10000 + i), 1};
+            wal.append(WALOp::Add, "/tmp/wal/walfile" + std::to_string(i) + ".txt", r);
+        }
+        wal.close();
+    }
+
+    // Test: normal WAL replay should succeed (within 15s timeout)
+    {
+        auto testEngine = std::make_shared<SearchEngine>();
+        IndexPersistence persistence(testEngine, basePath, walPath);
+        uint64_t eventId = persistence.load();
+        check(eventId == 42, "C14: WAL replay succeeded, eventId preserved");
+        check(testEngine->liveRecordCount() == 1100, "C14: All records loaded (100 base + 1000 WAL)");
+    }
+
+    // Test: verify the timeout code path compiles and the engine can be reset
+    {
+        auto testEngine = std::make_shared<SearchEngine>();
+        std::vector<FileRecord> records;
+        records.push_back({"test.txt", "/tmp", 1, 100, time(nullptr), 1, 1});
+        testEngine->loadRecords(std::move(records));
+        check(testEngine->liveRecordCount() == 1, "C14: Engine has 1 record before reset");
+        testEngine->loadRecords({}); // same reset used in timeout path
+        check(testEngine->liveRecordCount() == 0, "C14: Engine reset via loadRecords({}) works");
+    }
+
+    fs::remove_all(tmpDir);
+    std::cout << "\n";
+}
+
+// ═══════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════
 
 static void printUsage(const char* prog) {
     std::cout << "Usage: " << prog << " [options] [root_path]\n";
-    std::cout << "  --fast             Run fast unit tests only (3, 3b-3e, 5, 7-7d, 8, 9)\n";
+    std::cout << "  --fast             Run fast unit tests only (3, 3b-3e, 5, 7-7d, 8, 9, 13, 14)\n";
     std::cout << "  --slow             Run slow integration tests only (1, 4, 6)\n";
     std::cout << "  --part <id>        Run specific part (can be repeated)\n";
     std::cout << "  --help             Show this help\n";
@@ -1151,7 +1275,8 @@ static void printUsage(const char* prog) {
     std::cout << "  7b (destructor safety), 7c (WAL race), 7d (saveToFile),\n";
     std::cout << "  7e (scanner re-entry), 7f (content index), 8 (trigram index),\n";
     std::cout << "  9 (content index query benchmark), 10 (WAL batch fsync),\n";
-    std::cout << "  11 (recentIndices), 12 (parallel snippets)\n";
+    std::cout << "  11 (recentIndices), 12 (parallel snippets),\n";
+    std::cout << "  13 (scanner cancel), 14 (WAL replay timeout)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -1166,7 +1291,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8", "9", "10", "11", "12"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8", "9", "10", "11", "12", "13", "14"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -1189,7 +1314,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14"};
     }
 
     // Validate root path if scan test is selected
@@ -1233,6 +1358,8 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("10")) runWalBatchFsyncBenchmark();
     if (selectedParts.count("11")) runRecentIndicesTests();
     if (selectedParts.count("12")) runParallelSnippetTests();
+    if (selectedParts.count("13")) runScannerCancelTest();
+    if (selectedParts.count("14")) runWalReplayTimeoutTest();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

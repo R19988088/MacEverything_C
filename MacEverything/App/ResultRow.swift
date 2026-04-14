@@ -98,6 +98,10 @@ struct ResultRow: View {
             Divider()
             Button("Copy Path") { copyPath(item) }
         }
+        .onDrag {
+            let fullPath = item.path + "/" + item.name
+            return NSItemProvider(object: NSURL(fileURLWithPath: fullPath))
+        }
         .onTapGesture(count: 2) { openFile(item) }
     }
 

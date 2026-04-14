@@ -50,6 +50,9 @@ struct ContentResultRow: View {
             Divider()
             Button("Copy Path") { copyPath() }
         }
+        .onDrag {
+            return NSItemProvider(object: NSURL(fileURLWithPath: item.filePath))
+        }
         .onTapGesture(count: 2) { openFile() }
     }
 

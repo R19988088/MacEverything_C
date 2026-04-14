@@ -1,4 +1,5 @@
 #include "ContentIndex.h"
+#include "StringUtils.h"
 #include <algorithm>
 #include <fstream>
 #include <cctype>
@@ -24,7 +25,7 @@ void ContentIndex::setExtensions(const std::vector<std::string>& exts) {
     std::unique_lock lock(mutex_);
     extensions_.clear();
     for (const auto& ext : exts) {
-        extensions_.insert(toLower(ext));
+        extensions_.insert(me::toLower(ext));
     }
 }
 
@@ -44,42 +45,6 @@ uint64_t ContentIndex::getMaxFileSize() const {
 }
 
 // --- Helpers ---
-
-std::string ContentIndex::toLower(const std::string& s) {
-    // H1 fix: ASCII fast-path — skip CoreFoundation for pure-ASCII strings
-    bool allAscii = true;
-    for (unsigned char c : s) {
-        if (c >= 128) { allAscii = false; break; }
-    }
-    if (allAscii) {
-        std::string result(s.size(), '\0');
-        for (size_t i = 0; i < s.size(); i++)
-            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
-        return result;
-    }
-
-    // Unicode-aware lowercasing via CoreFoundation (non-ASCII only)
-    CFStringRef cfStr = CFStringCreateWithBytes(kCFAllocatorDefault,
-        reinterpret_cast<const UInt8*>(s.data()), static_cast<CFIndex>(s.size()),
-        kCFStringEncodingUTF8, false);
-    if (!cfStr) {
-        std::string result(s.size(), '\0');
-        for (size_t i = 0; i < s.size(); i++)
-            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
-        return result;
-    }
-    CFMutableStringRef mutable_ = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, cfStr);
-    CFRelease(cfStr);
-    CFStringLowercase(mutable_, CFLocaleGetSystem());
-
-    CFIndex len = CFStringGetLength(mutable_);
-    CFIndex maxBuf = CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
-    std::string result(static_cast<size_t>(maxBuf), '\0');
-    CFStringGetCString(mutable_, result.data(), maxBuf, kCFStringEncodingUTF8);
-    CFRelease(mutable_);
-    result.resize(std::strlen(result.c_str()));
-    return result;
-}
 
 uint64_t ContentIndex::hashContent(const std::string& content) {
     // FNV-1a hash
@@ -115,11 +80,11 @@ bool ContentIndex::hasAllowedExtensionLocked(const std::string& filename) const 
     size_t dotPos = filename.rfind('.');
     if (dotPos == std::string::npos || dotPos == filename.size() - 1) {
         // No extension — check if "makefile" etc. is in extensions
-        std::string lowerName = toLower(filename);
+        std::string lowerName = me::toLower(filename);
         return extensions_.count(lowerName) > 0;
     }
 
-    std::string ext = toLower(filename.substr(dotPos + 1));
+    std::string ext = me::toLower(filename.substr(dotPos + 1));
     return extensions_.count(ext) > 0;
 }
 
@@ -490,7 +455,7 @@ bool ContentIndex::getFileInfo(uint32_t fileIndex, ContentFileInfo& info) const 
 std::vector<ContentMatch> ContentIndex::query(const std::string& keyword, uint32_t maxResults) const {
     if (keyword.empty()) return {};
 
-    std::string lowerKey = toLower(keyword);
+    std::string lowerKey = me::toLower(keyword);
 
     std::shared_lock lock(mutex_);
 

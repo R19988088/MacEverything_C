@@ -141,9 +141,6 @@ private:
     // Returns empty string if binary or unreadable.
     static std::string readFileIfText(const std::string& path, uint64_t maxSize);
 
-    // Internal: toLower for matching
-    static std::string toLower(const std::string& s);
-
     // Internal: compute a simple hash of content
     static uint64_t hashContent(const std::string& content);
 };

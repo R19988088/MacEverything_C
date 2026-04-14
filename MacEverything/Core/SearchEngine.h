@@ -178,7 +178,6 @@ private:
     /// Remove trigrams for a single record from the index
     void removeTrigramsForRecord(uint32_t idx);
 
-    static std::string toLower(const std::string& s);
     static bool isGlobPattern(const std::string& s);
     static bool globMatch(const std::string& pattern, const std::string& text);
 

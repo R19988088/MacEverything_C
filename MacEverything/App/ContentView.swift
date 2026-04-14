@@ -11,11 +11,11 @@ struct ContentView: View {
             // Search bar (Alfred-style)
             HStack(spacing: 12) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundColor(.accentColor)
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundColor(.blue)
                 TextField("Search files... (infile: for content search)", text: $viewModel.searchText)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 22))
+                    .font(.system(size: 26))
                     .onChange(of: viewModel.searchText) {
                         viewModel.onSearchTextChanged()
                     }
@@ -25,15 +25,22 @@ struct ContentView: View {
                         viewModel.onSearchTextChanged()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 16))
+                            .font(.system(size: 18))
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            .padding(.vertical, 16)
             .background(.ultraThinMaterial)
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.blue, lineWidth: 2)
+            )
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
 
             Divider()
 

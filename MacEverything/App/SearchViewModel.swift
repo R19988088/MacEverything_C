@@ -48,10 +48,11 @@ class SearchViewModel: ObservableObject {
 
     private static let pageSize: Int = 100
     private static let maxResults: UInt32 = 10000
-    private static let indexChangeThrottleNs: UInt64 = 2_000_000_000 // 2 seconds
+    private static let indexChangeThrottleNs: UInt64 = 5_000_000_000 // 5 seconds
 
     private var indexChangeTask: Task<Void, Never>?
     private var indexChangePending = false
+    var isWindowFocused: Bool = true
 
     static var cacheDir: String {
         let base = NSSearchPathForDirectoriesInDomains(
@@ -340,6 +341,11 @@ class SearchViewModel: ObservableObject {
     }
 
     private func onIndexChanged() {
+        // Window not focused: accumulate changes, refresh on focus regain
+        guard isWindowFocused else {
+            indexChangePending = true
+            return
+        }
         // Throttle: if a refresh is already scheduled, just mark pending
         if indexChangeTask != nil {
             indexChangePending = true
@@ -355,6 +361,14 @@ class SearchViewModel: ObservableObject {
                 self.indexChangePending = false
                 self.performIndexRefresh()
             }
+        }
+    }
+
+    func onWindowFocusChanged(_ focused: Bool) {
+        isWindowFocused = focused
+        if focused && indexChangePending {
+            indexChangePending = false
+            performIndexRefresh()
         }
     }
 

@@ -354,6 +354,9 @@
     if (_isContentIndexing.load(std::memory_order_relaxed)) {
         dispatch_semaphore_wait(_contentIndexingSemaphore,
                                 dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+        // C-2: Reset semaphore to drain accumulated signals from previous
+        // startContentIndexing completions.
+        _contentIndexingSemaphore = dispatch_semaphore_create(0);
     }
 
     // 4. Now safe to compact on main thread — no competing lock holders

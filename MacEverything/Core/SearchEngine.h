@@ -29,7 +29,10 @@ public:
     }
 
     /// Resolve an index back to its path string.
+    /// Returns empty string if index is out of range.
     const std::string& resolve(uint32_t index) const {
+        static const std::string empty;
+        if (index >= paths_.size()) return empty;
         return paths_[index];
     }
 
@@ -140,8 +143,11 @@ public:
     /// Build the full path from a record's path and name components.
     static std::string makeFullPath(const std::string& path, const std::string& name);
 
-    /// Resolve a record's path via PathTable. Thread-safe (caller should hold lock or use externally).
-    const std::string& resolveRecordPath(uint32_t index) const {
+    /// Resolve a record's path via PathTable. Thread-safe (acquires shared_lock).
+    /// Returns by value to prevent dangling references during concurrent compaction.
+    std::string resolveRecordPath(uint32_t index) const {
+        std::shared_lock lock(mutex_);
+        if (index >= pathIndices_.size()) return {};
         return pathTable_.resolve(pathIndices_[index]);
     }
 
@@ -156,10 +162,16 @@ public:
         }
     }
 
-    /// Access to PathTable for external callers that need path resolution.
-    const PathTable& pathTable() const { return pathTable_; }
+    /// Thread-safe snapshot of PathTable. Returns a copy under shared_lock.
+    PathTable pathTableSnapshot() const {
+        std::shared_lock lock(mutex_);
+        return pathTable_;
+    }
 
 private:
+    /// Internal access — callers that need thread-safe access should use pathTableSnapshot().
+    const PathTable& pathTable() const { return pathTable_; }
+
     std::vector<FileRecord> records_;
     std::vector<std::string> lowerNames_; // pre-computed lowercase filenames
     std::vector<uint32_t> pathIndices_;    // per-record index into pathTable_

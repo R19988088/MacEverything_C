@@ -29,7 +29,7 @@ static void runMemoryOptimizationTests() {
 
         check(engine.recordCount() == 150, "PathDedup: 150 records loaded");
         check(engine.liveRecordCount() == 150, "PathDedup: 150 live records");
-        check(engine.pathTable().size() == 2, "PathDedup: only 2 unique paths in PathTable");
+        check(engine.pathTableSnapshot().size() == 2, "PathDedup: only 2 unique paths in PathTable");
 
         // Verify getRecord reconstructs path correctly
         auto r0 = engine.getRecord(0);
@@ -132,7 +132,7 @@ static void runMemoryOptimizationTests() {
                                1, static_cast<uint64_t>(i * 100), static_cast<time_t>(i)});
         }
         engine.loadRecords(std::move(records));
-        check(engine.pathTable().size() == 3, "Compact: 3 unique paths before");
+        check(engine.pathTableSnapshot().size() == 3, "Compact: 3 unique paths before");
 
         // Remove all files in /dir_0
         for (int i = 0; i < 10; i += 3) {
@@ -244,7 +244,7 @@ static void runMemoryOptimizationTests() {
                   "Persistence: extra metadata preserved");
 
             check(engine.recordCount() == 3, "Persistence: 3 records loaded");
-            check(engine.pathTable().size() == 2, "Persistence: 2 unique paths after load");
+            check(engine.pathTableSnapshot().size() == 2, "Persistence: 2 unique paths after load");
 
             auto r0 = engine.getRecord(0);
             check(r0.name == "persist_a.txt", "Persistence: record[0].name correct");
@@ -397,6 +397,34 @@ static void runMemoryOptimizationTests() {
 
         idx = engine.indexForPath("/nonexistent/path.txt");
         check(idx == UINT32_MAX, "indexForPath: returns UINT32_MAX for missing");
+    }
+
+    // -- Test 13: PathTable::resolve bounds check --
+    std::cout << "\n  --- PathTable bounds check ---\n";
+    {
+        PathTable pt;
+        pt.intern("/a");
+        pt.intern("/b");
+        check(pt.size() == 2, "PathTable bounds: 2 entries");
+        check(pt.resolve(0) == "/a", "PathTable bounds: resolve(0) works");
+        check(pt.resolve(1) == "/b", "PathTable bounds: resolve(1) works");
+        check(pt.resolve(999).empty(), "PathTable bounds: out-of-range returns empty");
+        check(pt.resolve(UINT32_MAX).empty(), "PathTable bounds: UINT32_MAX returns empty");
+    }
+
+    // -- Test 14: resolveRecordPath returns value copy, bounds safe --
+    std::cout << "\n  --- resolveRecordPath value copy + bounds ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"x.txt", "/val/copy", 1, 100, 1000});
+        engine.loadRecords(std::move(records));
+
+        std::string path = engine.resolveRecordPath(0);
+        check(path == "/val/copy", "resolveRecordPath: valid index returns correct path");
+
+        std::string oob = engine.resolveRecordPath(9999);
+        check(oob.empty(), "resolveRecordPath: out-of-bounds returns empty");
     }
 
     std::cout << "\n";

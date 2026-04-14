@@ -45,6 +45,10 @@ public:
         return journalTruncated_.load(std::memory_order_relaxed);
     }
 
+    /// Set paths to exclude from FSEvents monitoring.
+    /// Must be called before start(). Paths are matched as prefixes.
+    void setExclusionPaths(std::vector<std::string> paths);
+
 private:
     FSEventStreamRef stream_ = nullptr;
     dispatch_queue_t queue_ = nullptr;
@@ -52,6 +56,7 @@ private:
     ReplayDoneCallback onReplayDone_;
     std::atomic<FSEventStreamEventId> lastEventId_{0};
     std::atomic<bool> journalTruncated_{false};
+    std::vector<std::string> exclusionPaths_;
 
     void startInternal(const std::string& rootPath, FSEventStreamEventId sinceEventId);
 

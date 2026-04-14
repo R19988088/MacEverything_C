@@ -92,6 +92,12 @@ public:
     /// Returns the number of records removed.
     uint32_t removeByPathPrefix(const std::string& pathPrefix);
 
+    /// Batch-replace all records under pathPrefix with freshRecords.
+    /// Tombstones old records, adds fresh records, and rebuilds trigram index once.
+    /// Returns the number of old records removed. Thread-safe.
+    uint32_t batchRescanPrefix(const std::string& pathPrefix,
+                               std::vector<FileRecord>&& freshRecords);
+
     /// Number of live (non-tombstoned) records.
     uint32_t liveRecordCount() const { return liveCount_.load(std::memory_order_relaxed); }
 

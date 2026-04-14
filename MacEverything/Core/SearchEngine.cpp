@@ -569,6 +569,66 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
     return removed;
 }
 
+uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
+                                         std::vector<FileRecord>&& freshRecords) {
+    std::unique_lock lock(mutex_);
+
+    // ── Phase 1: Tombstone old records matching prefix ──
+    // Same prefix-match logic as removeByPathPrefix, but skip removeTrigramsForRecord
+    // because we rebuild the entire trigram index at the end.
+    std::string lowerPrefix = toLower(pathPrefix);
+    uint32_t removed = 0;
+    for (auto it = pathIndex_.begin(); it != pathIndex_.end(); ) {
+        const auto& path = it->first;
+        if (path.size() >= lowerPrefix.size() &&
+            path.compare(0, lowerPrefix.size(), lowerPrefix) == 0 &&
+            (path.size() == lowerPrefix.size() || path[lowerPrefix.size()] == '/')) {
+            uint32_t idx = it->second;
+
+            // Write WAL Remove entry for each removed path
+            if (wal_) {
+                std::string fullPath = makeFullPath(pathTable_.resolve(pathIndices_[idx]), records_[idx].name);
+                wal_->append(WALOp::Remove, fullPath);
+            }
+
+            records_[idx].type = 0;
+            records_[idx].name.clear();
+            records_[idx].size = 0;
+            records_[idx].modTime = 0;
+            lowerNames_[idx].clear();
+            liveCount_.fetch_sub(1, std::memory_order_relaxed);
+            it = pathIndex_.erase(it);
+            removed++;
+        } else {
+            ++it;
+        }
+    }
+
+    // ── Phase 2: Add fresh records (skip per-record trigram insertion) ──
+    for (auto& record : freshRecords) {
+        uint32_t newIdx = static_cast<uint32_t>(records_.size());
+        std::string fullPath = makeFullPath(record.path, record.name);
+        std::string lower = toLower(record.name);
+
+        if (wal_) wal_->append(WALOp::Update, fullPath, record);
+
+        uint32_t pIdx = pathTable_.intern(record.path);
+        record.path.clear();
+        record.path.shrink_to_fit();
+
+        records_.push_back(std::move(record));
+        lowerNames_.push_back(lower);
+        pathIndices_.push_back(pIdx);
+        pathIndex_[toLower(fullPath)] = newIdx;
+        liveCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // ── Phase 3: Bulk rebuild trigram index + recent cache ──
+    buildTrigramIndex();
+    rebuildRecentCache();
+
+    return removed;
+}
 
 void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& updated) {
     std::unique_lock lock(mutex_);

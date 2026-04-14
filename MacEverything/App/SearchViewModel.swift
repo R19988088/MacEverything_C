@@ -161,8 +161,16 @@ class SearchViewModel: ObservableObject {
             loadedCount = 0
             isContentSearch = false
             contentResults = []
+            // Bump C++ query generation to cancel any in-flight dispatch_apply scan
+            _ = bridge.queryIndices("", maxResults: 0)
             if scanComplete {
-                loadRecentFiles()
+                // Slight delay so the stale query's dispatch_apply threads
+                // detect the generation change and exit before we compete for the thread pool
+                recentTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
+                    guard !Task.isCancelled, let self else { return }
+                    self.loadRecentFiles()
+                }
             } else {
                 displayItems = []
                 showingRecent = false

@@ -123,6 +123,9 @@ private:
     std::shared_ptr<IndexWAL> wal_;
     std::atomic<uint64_t> compactionGen_{0};
 
+    // Query cancellation: incremented on each query(), checked in scan loops
+    mutable std::atomic<uint64_t> queryGeneration_{0};
+
     // Recent files cache: top-K records by modTime, maintained incrementally
     static constexpr uint32_t kRecentCacheSize = 200;
     struct RecentEntry {

@@ -135,6 +135,10 @@ class SearchViewModel: ObservableObject {
 
     func rebuildIndex() {
         guard !isScanning else { return }
+        searchTask?.cancel()
+        recentTask?.cancel()
+        indexChangeTask?.cancel()
+        searchGeneration &+= 1
         scanComplete = false
         displayItems = []
         totalMatches = 0

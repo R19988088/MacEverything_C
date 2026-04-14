@@ -56,9 +56,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSArray<NSNumber *> *)queryIndices:(NSString *)keyword
                            maxResults:(uint32_t)maxResults;
 
-/// Fetch a single record by index.
-- (nullable MEFileResult *)recordAtIndex:(uint32_t)index;
-
 /// Fetch multiple records by indices (batch).
 - (NSArray<MEFileResult *> *)recordsAtIndices:(NSArray<NSNumber *> *)indices;
 

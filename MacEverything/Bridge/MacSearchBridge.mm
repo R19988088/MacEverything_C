@@ -602,25 +602,6 @@ static bool pathEndsWithApp(const std::string& path) {
     return result;
 }
 
-- (MEFileResult *)recordAtIndex:(uint32_t)index {
-    auto engine = [self safeEngine]; // C-4
-    if (!engine || index >= engine->recordCount()) return nil;
-
-    const auto& r = engine->getRecord(index);
-    // Skip tombstoned records
-    if (r.type == 0) return nil;
-
-    NSString *nsName = [NSString stringWithUTF8String:r.name.c_str()];
-    NSString *nsPath = [NSString stringWithUTF8String:r.path.c_str()];
-    if (!nsName || !nsPath) return nil; // H-1: skip non-UTF-8 file names
-
-    return [[MEFileResult alloc] initWithName:nsName
-                                        path:nsPath
-                                        type:r.type
-                                        size:r.size
-                                     modTime:r.modTime];
-}
-
 // P-3: Single engine lock for all indices instead of N+1 safeEngine calls
 - (NSArray<MEFileResult *> *)recordsAtIndices:(NSArray<NSNumber *> *)indices {
     auto engine = [self safeEngine]; // C-4

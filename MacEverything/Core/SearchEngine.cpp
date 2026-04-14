@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <unordered_set>
 #include <dispatch/dispatch.h>
 
 std::string SearchEngine::toLower(const std::string& s) {
@@ -22,14 +23,73 @@ std::string SearchEngine::makeFullPath(const std::string& path, const std::strin
     return path + "/" + name;
 }
 
+void SearchEngine::buildTrigramIndex() {
+    nameTrigramIndex_.clear();
+    recordTrigrams_.resize(lowerNames_.size());
+
+    for (size_t i = 0; i < lowerNames_.size(); i++) {
+        if (records_[i].type == 0) {
+            recordTrigrams_[i].clear();
+            continue;
+        }
+        auto trigrams = ContentIndex::extractTrigrams(lowerNames_[i]);
+        // Deduplicate trigrams for this record
+        std::unordered_set<Trigram> seen(trigrams.begin(), trigrams.end());
+        recordTrigrams_[i].assign(seen.begin(), seen.end());
+        for (Trigram t : recordTrigrams_[i]) {
+            nameTrigramIndex_[t].push_back(static_cast<uint32_t>(i));
+        }
+    }
+
+    // Sort posting lists for efficient set_intersection during query
+    for (auto& [trigram, list] : nameTrigramIndex_) {
+        std::sort(list.begin(), list.end());
+    }
+}
+
+void SearchEngine::addTrigramsForRecord(uint32_t idx, const std::string& lowerName) {
+    auto trigrams = ContentIndex::extractTrigrams(lowerName);
+    std::unordered_set<Trigram> seen(trigrams.begin(), trigrams.end());
+
+    if (idx >= recordTrigrams_.size()) {
+        recordTrigrams_.resize(idx + 1);
+    }
+    recordTrigrams_[idx].assign(seen.begin(), seen.end());
+
+    for (Trigram t : recordTrigrams_[idx]) {
+        auto& list = nameTrigramIndex_[t];
+        // Insert in sorted position to maintain sorted posting lists
+        auto pos = std::lower_bound(list.begin(), list.end(), idx);
+        list.insert(pos, idx);
+    }
+}
+
+void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
+    if (idx >= recordTrigrams_.size()) return;
+    for (Trigram t : recordTrigrams_[idx]) {
+        auto it = nameTrigramIndex_.find(t);
+        if (it != nameTrigramIndex_.end()) {
+            auto& list = it->second;
+            // Binary search in sorted list
+            auto pos = std::lower_bound(list.begin(), list.end(), idx);
+            if (pos != list.end() && *pos == idx) {
+                list.erase(pos);
+            }
+            if (list.empty()) {
+                nameTrigramIndex_.erase(it);
+            }
+        }
+    }
+    recordTrigrams_[idx].clear();
+}
+
 void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     std::unique_lock lock(mutex_);
 
     records_ = std::move(records);
     lowerNames_.resize(records_.size());
-    lowerPaths_.resize(records_.size());
 
-    // Parallelize lowercase pre-computation
+    // Parallelize lowercase name pre-computation
     unsigned numThreads = std::thread::hardware_concurrency();
     if (numThreads < 1) numThreads = 1;
     if (numThreads > 32) numThreads = 32;
@@ -46,7 +106,6 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
         threads.emplace_back([this, start, end] {
             for (size_t i = start; i < end; i++) {
                 lowerNames_[i] = toLower(records_[i].name);
-                lowerPaths_[i] = toLower(makeFullPath(records_[i].path, records_[i].name));
             }
         });
     }
@@ -59,6 +118,9 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     for (size_t i = 0; i < records_.size(); i++) {
         pathIndex_[toLower(makeFullPath(records_[i].path, records_[i].name))] = static_cast<uint32_t>(i);
     }
+
+    // Build trigram index for fast filename search
+    buildTrigramIndex();
 
     liveCount_.store(static_cast<uint32_t>(records_.size()), std::memory_order_relaxed);
 }
@@ -100,86 +162,215 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     std::string lowerKey = toLower(keyword);
     bool useGlob = isGlobPattern(lowerKey);
 
-    unsigned numThreads = std::thread::hardware_concurrency();
-    if (numThreads < 1) numThreads = 1;
-    if (numThreads > 32) numThreads = 32;
+    // --- Trigram-accelerated path for non-glob queries with keyword >= 3 chars ---
+    // Use trigram index to narrow down candidates for name matching,
+    // then fall back to linear scan for path-only matches.
+    bool useTrigramIndex = !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
 
-    size_t totalSize = records_.size();
-    size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+    std::vector<uint32_t> trigramCandidates;
+    if (useTrigramIndex) {
+        // Extract trigrams from keyword
+        auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
+        std::unordered_set<Trigram> uniqueKeyTrigrams(keyTrigrams.begin(), keyTrigrams.end());
 
-    // Per-thread result buffers: pair<index, priority>
-    // Priority: 0=name exact match, 1=name starts with, 2=name contains, 3=path-only match
-    std::vector<std::vector<std::pair<uint32_t, uint8_t>>> threadResults(numThreads);
-
-    auto* threadResultsPtr = &threadResults;
-    const auto* recordsPtr = &records_;
-    const auto* lowerNamesPtr = &lowerNames_;
-    const auto* lowerPathsPtr = &lowerPaths_;
-
-    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
-    dispatch_apply(numThreads, queue, ^(size_t t) {
-        size_t start = t * chunkSize;
-        size_t end = std::min(start + chunkSize, totalSize);
-        if (start >= end) return;
-
-        auto& local = (*threadResultsPtr)[t];
-        for (size_t i = start; i < end; i++) {
-            // Skip tombstoned records
-            if ((*recordsPtr)[i].type == 0) continue;
-
-            const auto& lowerName = (*lowerNamesPtr)[i];
-            const auto& lowerPath = (*lowerPathsPtr)[i];
-
-            bool nameMatch = useGlob ? globMatch(lowerKey, lowerName)
-                                     : (lowerName.find(lowerKey) != std::string::npos);
-            bool pathMatch = !nameMatch && (useGlob ? globMatch(lowerKey, lowerPath)
-                                                    : (lowerPath.find(lowerKey) != std::string::npos));
-
-            if (nameMatch || pathMatch) {
-                uint8_t priority;
-                if (nameMatch) {
-                    if (lowerName == lowerKey) {
-                        priority = 0; // exact match
-                    } else if (lowerName.size() >= lowerKey.size() &&
-                               lowerName.compare(0, lowerKey.size(), lowerKey) == 0) {
-                        priority = 1; // starts with
-                    } else {
-                        priority = 2; // contains
-                    }
-                } else {
-                    priority = 3; // path-only match
+        if (!uniqueKeyTrigrams.empty()) {
+            // Collect posting lists sorted by size (smallest first)
+            std::vector<const std::vector<uint32_t>*> postingLists;
+            bool allFound = true;
+            for (Trigram t : uniqueKeyTrigrams) {
+                auto it = nameTrigramIndex_.find(t);
+                if (it == nameTrigramIndex_.end()) {
+                    allFound = false;
+                    break;
                 }
-
-                local.emplace_back(static_cast<uint32_t>(i), priority);
+                postingLists.push_back(&it->second);
             }
+
+            if (allFound && !postingLists.empty()) {
+                std::sort(postingLists.begin(), postingLists.end(),
+                    [](const auto* a, const auto* b) { return a->size() < b->size(); });
+
+                // Start with the shortest list (already sorted during build)
+                trigramCandidates = *postingLists[0];
+
+                // Intersect with remaining lists using sorted merge
+                for (size_t li = 1; li < postingLists.size() && !trigramCandidates.empty(); li++) {
+                    const auto& other = *postingLists[li];
+                    std::vector<uint32_t> intersection;
+                    intersection.reserve(std::min(trigramCandidates.size(), other.size()));
+                    std::set_intersection(trigramCandidates.begin(), trigramCandidates.end(),
+                                          other.begin(), other.end(),
+                                          std::back_inserter(intersection));
+                    trigramCandidates = std::move(intersection);
+                }
+            }
+        } else {
+            // Keyword < 3 chars can't produce trigrams, fall back to linear scan
+            useTrigramIndex = false;
         }
-    });
-
-    // Merge all thread results
-    size_t total = 0;
-    for (auto& v : threadResults) total += v.size();
-
-    std::vector<std::pair<uint32_t, uint8_t>> merged;
-    merged.reserve(total);
-    for (auto& v : threadResults) {
-        merged.insert(merged.end(), v.begin(), v.end());
     }
 
-    // Sort by priority, then by path length (shorter = shallower = better)
-    std::sort(merged.begin(), merged.end(),
-        [this](const std::pair<uint32_t, uint8_t>& a, const std::pair<uint32_t, uint8_t>& b) {
-            if (a.second != b.second) return a.second < b.second;
-            return lowerPaths_[a.first].size() < lowerPaths_[b.first].size();
+    // Collect results: (index, priority, pathLen) so sorting doesn't need records_ access.
+    // Priority: 0=name exact match, 1=name starts with, 2=name contains, 3=path-only match
+    struct Match { uint32_t idx; uint8_t priority; uint32_t pathLen; };
+    std::vector<Match> merged;
+
+    if (useTrigramIndex) {
+        // Phase 1: Check trigram candidates for name matches (fast, only a subset)
+        for (uint32_t idx : trigramCandidates) {
+            if (records_[idx].type == 0) continue;
+            const auto& lowerName = lowerNames_[idx];
+            if (lowerName.find(lowerKey) != std::string::npos) {
+                uint8_t priority;
+                if (lowerName == lowerKey) {
+                    priority = 0;
+                } else if (lowerName.size() >= lowerKey.size() &&
+                           lowerName.compare(0, lowerKey.size(), lowerKey) == 0) {
+                    priority = 1;
+                } else {
+                    priority = 2;
+                }
+                uint32_t pLen = static_cast<uint32_t>(records_[idx].path.size() + 1 + records_[idx].name.size());
+                merged.push_back({idx, priority, pLen});
+            }
+        }
+
+        // Phase 2: Linear scan for path-only matches (skip if maxResults already satisfied)
+        if (maxResults > 0 && merged.size() >= maxResults) {
+            // Already have enough results from trigram name matches, skip path scan
+        } else {
+        // Use parallel scan for path matches
+        unsigned numThreads = std::thread::hardware_concurrency();
+        if (numThreads < 1) numThreads = 1;
+        if (numThreads > 32) numThreads = 32;
+
+        size_t totalSize = records_.size();
+        size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+
+        std::vector<std::vector<Match>> threadResults(numThreads);
+        auto* threadResultsPtr = &threadResults;
+        const auto* recordsPtr = &records_;
+        const auto* lowerNamesPtr = &lowerNames_;
+
+        // Build a set of name-matched indices to skip (trigramCandidates is sorted)
+        const auto* candidatesPtr = &trigramCandidates;
+
+        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
+        dispatch_apply(numThreads, queue, ^(size_t t) {
+            size_t start = t * chunkSize;
+            size_t end = std::min(start + chunkSize, totalSize);
+            if (start >= end) return;
+
+            auto& local = (*threadResultsPtr)[t];
+            for (size_t i = start; i < end; i++) {
+                if ((*recordsPtr)[i].type == 0) continue;
+                // Skip indices already handled by trigram phase
+                if (std::binary_search(candidatesPtr->begin(), candidatesPtr->end(), static_cast<uint32_t>(i))) continue;
+
+                // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
+                std::string lowerPath = toLower(makeFullPath((*recordsPtr)[i].path, (*recordsPtr)[i].name));
+                if (lowerPath.find(lowerKey) != std::string::npos) {
+                    const auto& lowerName = (*lowerNamesPtr)[i];
+                    uint32_t pLen = static_cast<uint32_t>((*recordsPtr)[i].path.size() + 1 + (*recordsPtr)[i].name.size());
+                    if (lowerName.find(lowerKey) != std::string::npos) {
+                        uint8_t priority;
+                        if (lowerName == lowerKey) priority = 0;
+                        else if (lowerName.size() >= lowerKey.size() &&
+                                 lowerName.compare(0, lowerKey.size(), lowerKey) == 0) priority = 1;
+                        else priority = 2;
+                        local.push_back({static_cast<uint32_t>(i), priority, pLen});
+                    } else {
+                        local.push_back({static_cast<uint32_t>(i), uint8_t(3), pLen});
+                    }
+                }
+            }
         });
 
-    // Extract indices, truncated to maxResults
+        for (auto& v : threadResults) {
+            merged.insert(merged.end(), v.begin(), v.end());
+        }
+        } // end Phase 2 maxResults check
+    } else {
+        // Original linear scan path (for glob patterns or short keywords)
+        unsigned numThreads = std::thread::hardware_concurrency();
+        if (numThreads < 1) numThreads = 1;
+        if (numThreads > 32) numThreads = 32;
+
+        size_t totalSize = records_.size();
+        size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+
+        std::vector<std::vector<Match>> threadResults(numThreads);
+
+        auto* threadResultsPtr = &threadResults;
+        const auto* recordsPtr = &records_;
+        const auto* lowerNamesPtr = &lowerNames_;
+
+        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
+        dispatch_apply(numThreads, queue, ^(size_t t) {
+            size_t start = t * chunkSize;
+            size_t end = std::min(start + chunkSize, totalSize);
+            if (start >= end) return;
+
+            auto& local = (*threadResultsPtr)[t];
+            for (size_t i = start; i < end; i++) {
+                if ((*recordsPtr)[i].type == 0) continue;
+
+                const auto& lowerName = (*lowerNamesPtr)[i];
+
+                bool nameMatch = useGlob ? globMatch(lowerKey, lowerName)
+                                         : (lowerName.find(lowerKey) != std::string::npos);
+                bool pathMatch = false;
+                if (!nameMatch) {
+                    // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
+                    std::string lowerPath = toLower(makeFullPath((*recordsPtr)[i].path, (*recordsPtr)[i].name));
+                    pathMatch = useGlob ? globMatch(lowerKey, lowerPath)
+                                        : (lowerPath.find(lowerKey) != std::string::npos);
+                }
+
+                if (nameMatch || pathMatch) {
+                    uint8_t priority;
+                    if (nameMatch) {
+                        if (lowerName == lowerKey) priority = 0;
+                        else if (lowerName.size() >= lowerKey.size() &&
+                                 lowerName.compare(0, lowerKey.size(), lowerKey) == 0) priority = 1;
+                        else priority = 2;
+                    } else {
+                        priority = 3;
+                    }
+                    uint32_t pLen = static_cast<uint32_t>((*recordsPtr)[i].path.size() + 1 + (*recordsPtr)[i].name.size());
+                    local.push_back({static_cast<uint32_t>(i), priority, pLen});
+                }
+            }
+        });
+
+        for (auto& v : threadResults) {
+            merged.insert(merged.end(), v.begin(), v.end());
+        }
+    }
+
+    // Release shared lock before sorting — all needed data is captured in Match structs.
+    // This allows concurrent writers to proceed while we sort/truncate results.
+    lock.unlock();
+
+    // Sort by priority, then by full path length (shorter = shallower = better)
+    auto cmp = [](const Match& a, const Match& b) {
+        if (a.priority != b.priority) return a.priority < b.priority;
+        return a.pathLen < b.pathLen;
+    };
+
     size_t resultCount = merged.size();
     if (maxResults > 0 && resultCount > maxResults) resultCount = maxResults;
+
+    if (resultCount < merged.size()) {
+        std::partial_sort(merged.begin(), merged.begin() + resultCount, merged.end(), cmp);
+    } else {
+        std::sort(merged.begin(), merged.end(), cmp);
+    }
 
     std::vector<uint32_t> result;
     result.reserve(resultCount);
     for (size_t i = 0; i < resultCount; i++) {
-        result.push_back(merged[i].first);
+        result.push_back(merged[i].idx);
     }
 
     return result;
@@ -202,14 +393,16 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     uint32_t idx = static_cast<uint32_t>(records_.size());
     std::string fullPath = makeFullPath(record.path, record.name);
     std::string lower = toLower(record.name);
-    std::string lowerPath = toLower(fullPath);
 
     if (wal_) wal_->append(WALOp::Add, fullPath, record);
 
     records_.push_back(std::move(record));
-    lowerNames_.push_back(std::move(lower));
-    lowerPaths_.push_back(std::move(lowerPath));
+    lowerNames_.push_back(lower);
     pathIndex_[toLower(fullPath)] = idx;
+
+    // Update trigram index
+    addTrigramsForRecord(idx, lower);
+
     liveCount_.fetch_add(1, std::memory_order_relaxed);
 
     return idx;
@@ -230,8 +423,11 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
     records_[idx].size = 0;
     records_[idx].modTime = 0;
     lowerNames_[idx].clear();
-    lowerPaths_[idx].clear();
     pathIndex_.erase(it);
+
+    // Clean up trigram index
+    removeTrigramsForRecord(idx);
+
     liveCount_.fetch_sub(1, std::memory_order_relaxed);
 
     return true;
@@ -242,31 +438,28 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
 
     std::string lowerPrefix = toLower(pathPrefix);
     uint32_t removed = 0;
-    // Collect paths to remove (can't erase from pathIndex_ while iterating)
-    std::vector<std::string> toRemove;
-    for (const auto& [path, idx] : pathIndex_) {
-        // pathIndex_ keys are already lowercase
+    // Single-pass: iterate and erase matching entries using iterator advancement.
+    // unordered_map::erase(iterator) returns the next valid iterator, so this is safe.
+    // pathIndex_ keys are already lowercase.
+    for (auto it = pathIndex_.begin(); it != pathIndex_.end(); ) {
+        const auto& path = it->first;
         if (path.size() >= lowerPrefix.size() &&
             path.compare(0, lowerPrefix.size(), lowerPrefix) == 0 &&
             (path.size() == lowerPrefix.size() || path[lowerPrefix.size()] == '/')) {
-            toRemove.push_back(path);
+            uint32_t idx = it->second;
+            records_[idx].type = 0;
+            records_[idx].name.clear();
+            records_[idx].path.clear();
+            records_[idx].size = 0;
+            records_[idx].modTime = 0;
+            lowerNames_[idx].clear();
+            removeTrigramsForRecord(idx);
+            liveCount_.fetch_sub(1, std::memory_order_relaxed);
+            it = pathIndex_.erase(it);
+            removed++;
+        } else {
+            ++it;
         }
-    }
-
-    for (const auto& path : toRemove) {
-        auto it = pathIndex_.find(path);
-        if (it == pathIndex_.end()) continue;
-        uint32_t idx = it->second;
-        records_[idx].type = 0;
-        records_[idx].name.clear();
-        records_[idx].path.clear();
-        records_[idx].size = 0;
-        records_[idx].modTime = 0;
-        lowerNames_[idx].clear();
-        lowerPaths_[idx].clear();
-        pathIndex_.erase(it);
-        liveCount_.fetch_sub(1, std::memory_order_relaxed);
-        removed++;
     }
 
     return removed;
@@ -288,8 +481,8 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
         records_[idx].size = 0;
         records_[idx].modTime = 0;
         lowerNames_[idx].clear();
-        lowerPaths_[idx].clear();
         pathIndex_.erase(it);
+        removeTrigramsForRecord(idx);
         liveCount_.fetch_sub(1, std::memory_order_relaxed);
     }
 
@@ -297,12 +490,11 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     uint32_t newIdx = static_cast<uint32_t>(records_.size());
     std::string newFullPath = makeFullPath(updated.path, updated.name);
     std::string lower = toLower(updated.name);
-    std::string lowerPath = toLower(newFullPath);
 
     records_.push_back(std::move(updated));
-    lowerNames_.push_back(std::move(lower));
-    lowerPaths_.push_back(std::move(lowerPath));
-    pathIndex_[lowerPath] = newIdx;
+    lowerNames_.push_back(lower);
+    pathIndex_[toLower(newFullPath)] = newIdx;
+    addTrigramsForRecord(newIdx, lower);
     liveCount_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -319,8 +511,6 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     newRecords.reserve(live);
     std::vector<std::string> newLowerNames;
     newLowerNames.reserve(live);
-    std::vector<std::string> newLowerPaths;
-    newLowerPaths.reserve(live);
     std::unordered_map<std::string, uint32_t> newPathIndex;
     newPathIndex.reserve(live);
 
@@ -331,14 +521,15 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         std::string fullPath = toLower(makeFullPath(records_[i].path, records_[i].name));
         newPathIndex[fullPath] = newIdx;
         newLowerNames.push_back(std::move(lowerNames_[i]));
-        newLowerPaths.push_back(std::move(lowerPaths_[i]));
         newRecords.push_back(std::move(records_[i]));
     }
 
     records_ = std::move(newRecords);
     lowerNames_ = std::move(newLowerNames);
-    lowerPaths_ = std::move(newLowerPaths);
     pathIndex_ = std::move(newPathIndex);
+
+    // Rebuild trigram index from scratch
+    buildTrigramIndex();
 
     return remap;
 }
@@ -540,7 +731,7 @@ bool SearchEngine::loadFromFile(const std::string& filePath, IndexMetadata* outM
 std::vector<uint32_t> SearchEngine::recentIndices(uint32_t count) const {
     std::shared_lock lock(mutex_);
 
-    // Collect (index, modTime) for live records under a single lock
+    // Collect (index, modTime) for live records directly — no FileRecord copy
     std::vector<std::pair<uint32_t, time_t>> entries;
     entries.reserve(records_.size());
     for (size_t i = 0; i < records_.size(); i++) {

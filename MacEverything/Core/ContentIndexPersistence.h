@@ -34,6 +34,12 @@ public:
     };
     static std::vector<Entry> readAll(const std::string& walPath);
 
+    /// Force fsync to disk. Call when you need durability guarantees.
+    void sync();
+
+    /// Set the number of entries between automatic fsyncs (0 = never auto-fsync).
+    void setSyncInterval(uint64_t entries) { syncInterval_ = entries; }
+
     void close();
     void closeAndDelete();
     bool isOpen() const { return file_ != nullptr; }
@@ -41,6 +47,8 @@ public:
 private:
     FILE* file_ = nullptr;
     std::string path_;
+    uint64_t unflushedCount_ = 0;
+    uint64_t syncInterval_ = 64;  // fsync every 64 entries by default
     std::mutex mutex_;
 };
 

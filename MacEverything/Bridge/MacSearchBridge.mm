@@ -532,7 +532,8 @@ static bool pathEndsWithApp(const std::string& path) {
 - (NSArray<NSNumber *> *)recentIndices:(uint32_t)count {
     if (!_engine) return @[];
 
-    // B4: Use engine's batch method — single lock, no per-record overhead
+    // Use SearchEngine::recentIndices which accesses records_ directly under
+    // a single shared lock, avoiding N full FileRecord copies via getRecord.
     auto indices = _engine->recentIndices(count);
 
     NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:indices.size()];
@@ -704,27 +705,59 @@ static bool pathEndsWithApp(const std::string& path) {
     if (key.empty()) return @[];
 
     auto matches = _contentIndex->query(key, maxResults);
+    if (matches.empty()) return @[];
 
-    NSMutableArray<MEContentResult *> *results = [NSMutableArray arrayWithCapacity:matches.size()];
-
+    // Pre-resolve file paths (needs engine lock, do it once)
+    struct CandidateInfo {
+        uint32_t fileIndex;
+        std::string name;
+        std::string fullPath;
+        uint8_t fileType;
+    };
+    std::vector<CandidateInfo> candidates;
+    candidates.reserve(matches.size());
     for (const auto& match : matches) {
         auto record = _engine->getRecord(match.fileIndex);
         if (record.type == 0) continue; // skip tombstones
+        CandidateInfo info;
+        info.fileIndex = match.fileIndex;
+        info.name = std::move(record.name);
+        info.fullPath = SearchEngine::fullPathForRecord(record.path, info.name);
+        info.fileType = record.type;
+        candidates.push_back(std::move(info));
+    }
 
-        std::string fullPath = SearchEngine::fullPathForRecord(record.path, record.name);
+    if (candidates.empty()) return @[];
 
-        // Generate snippet on the fly
+    // Parallel snippet generation using dispatch_apply
+    struct SnippetResult {
+        std::string snippet;
         uint32_t offset = 0;
-        std::string snippet = ContentIndex::generateSnippet(fullPath, key, offset);
+        bool valid = false;
+    };
+    std::vector<SnippetResult> snippetResults(candidates.size());
 
-        if (snippet.empty()) continue; // false positive from trigram index
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_apply(candidates.size(), queue, ^(size_t i) {
+        uint32_t offset = 0;
+        std::string snippet = ContentIndex::generateSnippet(candidates[i].fullPath, key, offset);
+        if (!snippet.empty()) {
+            snippetResults[i].snippet = std::move(snippet);
+            snippetResults[i].offset = offset;
+            snippetResults[i].valid = true;
+        }
+    });
 
+    // Collect valid results (single-threaded, no lock needed)
+    NSMutableArray<MEContentResult *> *results = [NSMutableArray arrayWithCapacity:candidates.size()];
+    for (size_t i = 0; i < candidates.size(); i++) {
+        if (!snippetResults[i].valid) continue;
         MEContentResult *result = [[MEContentResult alloc]
-            initWithFileName:[NSString stringWithUTF8String:record.name.c_str()]
-                    filePath:[NSString stringWithUTF8String:fullPath.c_str()]
-                     snippet:[NSString stringWithUTF8String:snippet.c_str()]
-                 matchOffset:offset
-                    fileType:record.type];
+            initWithFileName:[NSString stringWithUTF8String:candidates[i].name.c_str()]
+                    filePath:[NSString stringWithUTF8String:candidates[i].fullPath.c_str()]
+                     snippet:[NSString stringWithUTF8String:snippetResults[i].snippet.c_str()]
+                 matchOffset:snippetResults[i].offset
+                    fileType:candidates[i].fileType];
         [results addObject:result];
     }
 

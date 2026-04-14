@@ -1,5 +1,6 @@
 #pragma once
 #include "FileRecord.h"
+#include "ContentIndex.h" // for Trigram type and extractTrigrams/makeTrigram
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -58,7 +59,7 @@ public:
     uint32_t liveRecordCount() const { return liveCount_.load(std::memory_order_relaxed); }
 
     /// Compact in-memory records by removing tombstoned entries.
-    /// Rebuilds pathIndex_ and lowerNames_/lowerPaths_. Thread-safe.
+    /// Rebuilds pathIndex_ and lowerNames_. Thread-safe.
     /// Returns a mapping from old index → new index for live records.
     /// Returns empty map if nothing was compacted.
     std::unordered_map<uint32_t, uint32_t> compactRecords();
@@ -84,7 +85,7 @@ public:
     void detachWAL();
 
     /// Return indices of the most recently modified live records, sorted by modTime descending.
-    /// Performs the scan under a single shared lock for efficiency.
+    /// Accesses records_ directly under the lock to avoid per-record copy overhead.
     std::vector<uint32_t> recentIndices(uint32_t count) const;
 
     /// Look up the record index for a given full path. Returns UINT32_MAX if not found.
@@ -96,10 +97,20 @@ public:
 private:
     std::vector<FileRecord> records_;
     std::vector<std::string> lowerNames_; // pre-computed lowercase filenames
-    std::vector<std::string> lowerPaths_; // pre-computed lowercase full paths
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> index
     std::atomic<uint32_t> liveCount_{0};
     mutable std::shared_mutex mutex_;
+
+    // Trigram inverted index for fast filename search
+    std::unordered_map<Trigram, std::vector<uint32_t>> nameTrigramIndex_; // trigram -> record indices
+    std::vector<std::vector<Trigram>> recordTrigrams_; // per-record trigram list (for removal)
+
+    /// Build trigram index from lowerNames_ (called inside loadRecords/compactRecords under lock)
+    void buildTrigramIndex();
+    /// Add trigrams for a single record to the index
+    void addTrigramsForRecord(uint32_t idx, const std::string& lowerName);
+    /// Remove trigrams for a single record from the index
+    void removeTrigramsForRecord(uint32_t idx);
 
     static std::string toLower(const std::string& s);
     static std::string makeFullPath(const std::string& path, const std::string& name);

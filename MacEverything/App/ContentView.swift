@@ -187,7 +187,7 @@ struct ContentView: View {
                             ResultRow(item: item, keyword: viewModel.searchText)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 2)
-                                .id("\(item.id)-\(viewModel.searchText)")
+                                .id(item.id)
                         }
                         if viewModel.hasMoreResults {
                             HStack {

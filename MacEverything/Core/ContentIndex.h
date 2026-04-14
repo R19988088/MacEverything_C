@@ -134,6 +134,10 @@ private:
     // Internal: read file content, returns empty string on failure
     static std::string readFileContent(const std::string& path, uint64_t maxSize);
 
+    // Internal: read file and check for binary in a single open/read pass.
+    // Returns empty string if binary or unreadable.
+    static std::string readFileIfText(const std::string& path, uint64_t maxSize);
+
     // Internal: toLower for matching
     static std::string toLower(const std::string& s);
 

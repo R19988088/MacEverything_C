@@ -118,6 +118,36 @@ std::string ContentIndex::readFileContent(const std::string& path, uint64_t maxS
     return content;
 }
 
+std::string ContentIndex::readFileIfText(const std::string& path, uint64_t maxSize) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return {};
+
+    fseek(f, 0, SEEK_END);
+    long fileSize = ftell(f);
+    if (fileSize <= 0 || static_cast<uint64_t>(fileSize) > maxSize) {
+        fclose(f);
+        return {};
+    }
+
+    fseek(f, 0, SEEK_SET);
+    std::string content;
+    content.resize(static_cast<size_t>(fileSize));
+    size_t bytesRead = fread(content.data(), 1, content.size(), f);
+    fclose(f);
+
+    if (bytesRead != content.size()) {
+        content.resize(bytesRead);
+    }
+
+    // Check for binary (NUL byte in first 8KB)
+    size_t checkLen = std::min(bytesRead, size_t(8192));
+    for (size_t i = 0; i < checkLen; i++) {
+        if (content[i] == '\0') return {};
+    }
+
+    return content;
+}
+
 // --- Trigram extraction ---
 
 std::vector<Trigram> ContentIndex::extractTrigrams(const std::string& text) {
@@ -240,7 +270,8 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
         maxSize = maxFileSize_;
     }
 
-    std::string content = readFileContent(fullPath, maxSize);
+    // Single-pass read: open file once, read content, check for binary
+    std::string content = readFileIfText(fullPath, maxSize);
     if (content.empty()) return false;
 
     // Check for NUL bytes (binary detection) in the content we already read
@@ -280,7 +311,7 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
         }
     }
 
-    // Add to inverted index (sorted insertion)
+    // Add to inverted index (sorted insertion for O(n+m) set_intersection)
     for (Trigram tri : trigrams) {
         auto& list = invertedIndex_[tri];
         auto pos = std::lower_bound(list.begin(), list.end(), fileIndex);
@@ -336,7 +367,7 @@ void ContentIndex::insertFileInfo(uint32_t fileIndex, uint64_t contentHash, std:
     // Remove old if exists
     removeFileInternal(fileIndex);
 
-    // Add to inverted index (sorted insertion)
+    // Add to inverted index (sorted insertion for O(n+m) set_intersection)
     for (Trigram tri : trigrams) {
         auto& list = invertedIndex_[tri];
         auto pos = std::lower_bound(list.begin(), list.end(), fileIndex);
@@ -390,29 +421,31 @@ std::vector<ContentMatch> ContentIndex::query(const std::string& keyword, uint32
 
         if (!smallest) return {};
 
-        // Remember which trigram is the smallest so we can skip it during intersection
-        const std::vector<uint32_t>* smallestPtr = smallest;
+        // Collect all posting list pointers, sorted by size (smallest first)
+        struct PostingRef {
+            const std::vector<uint32_t>* list;
+        };
+        std::vector<PostingRef> postings;
+        postings.reserve(keyTrigrams.size());
+        for (Trigram tri : keyTrigrams) {
+            auto it = invertedIndex_.find(tri);
+            if (it == invertedIndex_.end()) return {};
+            postings.push_back({&it->second});
+        }
+        std::sort(postings.begin(), postings.end(),
+                  [](const PostingRef& a, const PostingRef& b) {
+                      return a.list->size() < b.list->size();
+                  });
 
-        // Intersect: start with smallest posting list, check all other trigrams
-        for (uint32_t fileIdx : *smallestPtr) {
-            bool inAll = true;
-            for (Trigram tri : keyTrigrams) {
-                auto it = invertedIndex_.find(tri);
-                if (it == invertedIndex_.end()) { inAll = false; break; }
-
-                // Skip the posting list we're already iterating
-                if (&it->second == smallestPtr) continue;
-
-                // Binary search in sorted posting list
-                const auto& list = it->second;
-                if (!std::binary_search(list.begin(), list.end(), fileIdx)) {
-                    inAll = false;
-                    break;
-                }
-            }
-            if (inAll) {
-                candidates.push_back(fileIdx);
-            }
+        // Sorted set_intersection across all posting lists
+        candidates.assign(postings[0].list->begin(), postings[0].list->end());
+        std::vector<uint32_t> temp;
+        for (size_t i = 1; i < postings.size() && !candidates.empty(); i++) {
+            temp.clear();
+            std::set_intersection(candidates.begin(), candidates.end(),
+                                  postings[i].list->begin(), postings[i].list->end(),
+                                  std::back_inserter(temp));
+            candidates.swap(temp);
         }
     } else {
         // Short keyword: collect all indexed file indices for brute-force
@@ -595,6 +628,11 @@ bool ContentIndex::loadFromFile(const std::string& path) {
     }
 
     fclose(f);
+
+    // Sort all posting lists for binary search during query
+    for (auto& [tri, list] : newInvertedIndex) {
+        std::sort(list.begin(), list.end());
+    }
 
     // Swap into live data
     std::unique_lock lock(mutex_);

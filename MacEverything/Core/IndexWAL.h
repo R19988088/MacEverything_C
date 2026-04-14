@@ -29,11 +29,12 @@ public:
     /// Open WAL file for appending. Creates if not exists.
     bool open(const std::string& walPath);
 
-    /// Append a mutation entry. Thread-safe. Does NOT fsync on each call.
+    /// Append a mutation entry. Thread-safe.
+    /// Data is flushed to OS buffers but fsync is deferred (batched).
     bool append(WALOp op, const std::string& fullPath, const FileRecord& record = {});
 
-    /// Explicitly flush buffered writes to disk (fflush + fsync).
-    void flush();
+    /// Force fsync to disk. Call when you need durability guarantees.
+    void sync();
 
     /// Read all valid entries from a WAL file (stops at first corrupt entry).
     static std::vector<WALEntry> readAll(const std::string& walPath);
@@ -41,7 +42,10 @@ public:
     /// Number of entries written since open.
     uint64_t entryCount() const { return entryCount_; }
 
-    /// Close the WAL file.
+    /// Set the number of entries between automatic fsyncs (0 = never auto-fsync).
+    void setSyncInterval(uint64_t entries) { syncInterval_ = entries; }
+
+    /// Close the WAL file (fsyncs pending data before closing).
     void close();
 
     /// Close and delete the WAL file.
@@ -53,6 +57,8 @@ private:
     FILE* file_ = nullptr;
     std::string path_;
     uint64_t entryCount_ = 0;
+    uint64_t unflushedCount_ = 0;
+    uint64_t syncInterval_ = 64;  // fsync every 64 entries by default
     std::mutex mutex_;
 
     static bool writeRecord(FILE* f, const FileRecord& record);

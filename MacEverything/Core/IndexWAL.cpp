@@ -34,16 +34,17 @@ bool IndexWAL::append(WALOp op, const std::string& fullPath, const FileRecord& r
         if (!writeRecord(file_, record)) return false;
     }
 
+    fflush(file_);
     entryCount_++;
-    return true;
-}
+    unflushedCount_++;
 
-void IndexWAL::flush() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (file_) {
-        fflush(file_);
+    // Batch fsync: only fsync every syncInterval_ entries
+    if (syncInterval_ > 0 && unflushedCount_ >= syncInterval_) {
         fsync(fileno(file_));
+        unflushedCount_ = 0;
     }
+
+    return true;
 }
 
 std::vector<WALEntry> IndexWAL::readAll(const std::string& walPath) {
@@ -77,9 +78,21 @@ std::vector<WALEntry> IndexWAL::readAll(const std::string& walPath) {
     return entries;
 }
 
+void IndexWAL::sync() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (file_ && unflushedCount_ > 0) {
+        fsync(fileno(file_));
+        unflushedCount_ = 0;
+    }
+}
+
 void IndexWAL::close() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (file_) {
+        if (unflushedCount_ > 0) {
+            fsync(fileno(file_));
+            unflushedCount_ = 0;
+        }
         fclose(file_);
         file_ = nullptr;
     }

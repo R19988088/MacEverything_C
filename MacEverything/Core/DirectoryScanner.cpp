@@ -14,6 +14,7 @@ static constexpr size_t ATTR_BUF_SIZE = 1 * 1024 * 1024; // 1 MB per-thread buff
 void DirectoryScanner::scan(const std::string& rootPath) {
     // Reset state so scanner can be reused across multiple scans
     done_.store(false, std::memory_order_relaxed);
+    cancelled_.store(false, std::memory_order_relaxed);
     activeTasks_.store(0, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(dedupMutex_);
@@ -82,8 +83,16 @@ void DirectoryScanner::workerThread(int threadIndex) {
         {
             std::unique_lock<std::mutex> lock(queueMutex_);
             queueCV_.wait(lock, [this] {
-                return !workQueue_.empty() || (activeTasks_.load(std::memory_order_acquire) == 0 && workQueue_.empty());
+                return !workQueue_.empty()
+                    || cancelled_.load(std::memory_order_relaxed)
+                    || (activeTasks_.load(std::memory_order_acquire) == 0 && workQueue_.empty());
             });
+
+            if (cancelled_.load(std::memory_order_relaxed)) {
+                done_ = true;
+                queueCV_.notify_all();
+                return;
+            }
 
             if (workQueue_.empty() && activeTasks_.load(std::memory_order_acquire) == 0) {
                 done_ = true;
@@ -106,6 +115,8 @@ void DirectoryScanner::workerThread(int threadIndex) {
 }
 
 void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, int threadIndex) {
+    if (cancelled_.load(std::memory_order_relaxed)) return;
+
     int dirfd = open(dirPath.c_str(), O_RDONLY | O_DIRECTORY);
     if (dirfd < 0) {
         if (errno == EACCES || errno == EPERM) {
@@ -133,6 +144,8 @@ void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, i
     std::vector<std::string> pendingDirs;
 
     for (;;) {
+        if (cancelled_.load(std::memory_order_relaxed)) break;
+
         int retcount = getattrlistbulk(dirfd, &attrList, buffer, ATTR_BUF_SIZE, FSOPT_NOFOLLOW);
 
         if (retcount == -1) {

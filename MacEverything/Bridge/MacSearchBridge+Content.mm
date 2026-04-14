@@ -240,6 +240,10 @@
         _cancelContentIndexing.store(true, std::memory_order_relaxed);
         dispatch_semaphore_wait(_contentIndexingSemaphore,
                                 dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+        // C-2: Reset semaphore to drain accumulated signals from previous
+        // startContentIndexing completions, preventing future waits from
+        // passing through immediately.
+        _contentIndexingSemaphore = dispatch_semaphore_create(0);
     }
 
     // H8 fix: Stop old persistence's auto-compaction timer before replacing,

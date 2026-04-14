@@ -63,6 +63,7 @@ namespace fs = std::filesystem;
 #include "tests/test_path_table.h"
 #include "tests/test_memory_optimizations.h"
 #include "tests/test_batch_rescan.h"
+#include "tests/test_wal_race_indexpersistence.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -85,7 +86,7 @@ static void printUsage(const char* prog) {
     std::cout << "  13 (scanner cancel), 14 (WAL replay timeout),\n";
     std::cout << "  15 (WAL CRC), 16 (recent cache), 17 (query cancel), 18 (critical/high fixes),\n";
     std::cout << "  19 (rapid typing), 20 (path table), 21 (memory optimizations),\n";
-    std::cout << "  22 (batch rescan)\n";
+    std::cout << "  22 (batch rescan), 23 (IndexPersistence WAL race)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -100,7 +101,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -123,7 +124,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"};
     }
 
     // Validate root path if scan test is selected
@@ -177,6 +178,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("20")) runPathTableTests();
     if (selectedParts.count("21")) runMemoryOptimizationTests();
     if (selectedParts.count("22")) runBatchRescanTests();
+    if (selectedParts.count("23")) runWalRaceIndexPersistenceTest();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

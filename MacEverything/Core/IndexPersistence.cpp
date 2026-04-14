@@ -13,7 +13,10 @@ IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
 IndexPersistence::~IndexPersistence() {
     stopAutoCompactionAndWait();
     if (engine_) engine_->detachWAL();
-    if (wal_) wal_->close();
+    {
+        std::lock_guard<std::mutex> lock(walMutex_);
+        if (wal_) wal_->close();
+    }
 }
 
 uint64_t IndexPersistence::load() {
@@ -64,13 +67,16 @@ uint64_t IndexPersistence::load() {
 }
 
 void IndexPersistence::attachWAL() {
-    wal_ = std::make_shared<IndexWAL>();
-    if (wal_->open(walPath_)) {
-        engine_->attachWAL(wal_);
+    auto newWal = std::make_shared<IndexWAL>();
+    if (newWal->open(walPath_)) {
+        {
+            std::lock_guard<std::mutex> lock(walMutex_);
+            wal_ = newWal;
+        }
+        engine_->attachWAL(newWal);
         std::cout << "[IndexPersistence] WAL attached at " << walPath_ << "\n";
     } else {
         std::cerr << "[IndexPersistence] Failed to open WAL at " << walPath_ << "\n";
-        wal_.reset();
     }
 }
 
@@ -91,8 +97,12 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
     }
 
     // 2. Atomically swap: attach new WAL, get old WAL back
-    auto oldWal = wal_;
-    wal_ = newWal;
+    std::shared_ptr<IndexWAL> oldWal;
+    {
+        std::lock_guard<std::mutex> lock(walMutex_);
+        oldWal = wal_;
+        wal_ = newWal;
+    }
     engine_->attachWAL(newWal);
 
     // 3. Compact in-memory records (remove tombstones) before saving

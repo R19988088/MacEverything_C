@@ -28,7 +28,7 @@ struct ContentResultRow: View {
                         .truncationMode(.middle)
                 }
 
-                highlightedSnippet(item.snippet, keyword: keyword)
+                highlightMatches(in: item.snippet, keyword: keyword, font: .caption, color: .secondary)
                     .lineLimit(2)
             }
 
@@ -58,47 +58,6 @@ struct ContentResultRow: View {
             return String(fullPath[fullPath.startIndex..<range.lowerBound])
         }
         return fullPath
-    }
-
-    private func highlightedSnippet(_ snippet: String, keyword: String) -> Text {
-        guard !keyword.isEmpty else {
-            return Text(snippet).font(.caption).foregroundColor(.secondary)
-        }
-
-        let lowerSnippet = snippet.lowercased()
-        let lowerKey = keyword.lowercased()
-
-        var ranges: [Range<String.Index>] = []
-        var searchStart = lowerSnippet.startIndex
-        while searchStart < lowerSnippet.endIndex,
-              let range = lowerSnippet.range(of: lowerKey, range: searchStart..<lowerSnippet.endIndex) {
-            ranges.append(range)
-            searchStart = range.upperBound
-        }
-
-        if ranges.isEmpty {
-            return Text(snippet).font(.caption).foregroundColor(.secondary)
-        }
-
-        var result = Text("")
-        var currentIndex = snippet.startIndex
-
-        for range in ranges {
-            if currentIndex < range.lowerBound {
-                result = result + Text(snippet[currentIndex..<range.lowerBound])
-                    .font(.caption).foregroundColor(.secondary)
-            }
-            result = result + Text(snippet[range])
-                .font(.caption).foregroundColor(.accentColor).bold()
-            currentIndex = range.upperBound
-        }
-
-        if currentIndex < snippet.endIndex {
-            result = result + Text(snippet[currentIndex..<snippet.endIndex])
-                .font(.caption).foregroundColor(.secondary)
-        }
-
-        return result
     }
 
     private func fileIcon(for path: String) -> Image {

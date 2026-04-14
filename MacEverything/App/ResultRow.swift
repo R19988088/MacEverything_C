@@ -68,9 +68,9 @@ struct ResultRow: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 2) {
-                highlightedText(item.name, keyword: keyword, baseFont: .title3, baseColor: .primary)
+                highlightMatches(in: item.name, keyword: keyword, font: .title3, color: .primary)
                     .lineLimit(1)
-                highlightedText(item.path, keyword: keyword, baseFont: .subheadline, baseColor: .secondary)
+                highlightMatches(in: item.path, keyword: keyword, font: .subheadline, color: .secondary)
                     .lineLimit(1)
             }
 
@@ -99,57 +99,6 @@ struct ResultRow: View {
             Button("Copy Path") { copyPath(item) }
         }
         .onTapGesture(count: 2) { openFile(item) }
-    }
-
-    private func highlightedText(_ text: String, keyword: String, baseFont: Font, baseColor: Color) -> Text {
-        guard !keyword.isEmpty else {
-            return Text(text).font(baseFont).foregroundColor(baseColor)
-        }
-
-        let lowerText = text.lowercased()
-        let lowerKey = keyword.lowercased()
-
-        // For glob patterns, fall back to no highlighting
-        if lowerKey.contains("*") || lowerKey.contains("?") {
-            return Text(text).font(baseFont).foregroundColor(baseColor)
-        }
-
-        // Find all non-overlapping occurrences
-        var ranges: [Range<String.Index>] = []
-        var searchStart = lowerText.startIndex
-        while searchStart < lowerText.endIndex,
-              let range = lowerText.range(of: lowerKey, range: searchStart..<lowerText.endIndex) {
-            ranges.append(range)
-            searchStart = range.upperBound
-        }
-
-        if ranges.isEmpty {
-            return Text(text).font(baseFont).foregroundColor(baseColor)
-        }
-
-        // Build attributed Text by segments
-        var result = Text("")
-        var currentIndex = text.startIndex
-
-        for range in ranges {
-            // Non-matched segment before this match
-            if currentIndex < range.lowerBound {
-                result = result + Text(text[currentIndex..<range.lowerBound])
-                    .font(baseFont).foregroundColor(baseColor)
-            }
-            // Matched segment (use original case from text)
-            result = result + Text(text[range])
-                .font(baseFont).foregroundColor(.accentColor).bold()
-            currentIndex = range.upperBound
-        }
-
-        // Remaining text after last match
-        if currentIndex < text.endIndex {
-            result = result + Text(text[currentIndex..<text.endIndex])
-                .font(baseFont).foregroundColor(baseColor)
-        }
-
-        return result
     }
 
     private func fileIcon(for item: FileItem) -> Image {

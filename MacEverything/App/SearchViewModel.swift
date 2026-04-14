@@ -309,7 +309,10 @@ class SearchViewModel: ObservableObject {
             }
 
             await MainActor.run { [weak self] in
-                guard let self, self.searchGeneration == gen else { return }
+                guard let self, self.searchGeneration == gen else {
+                    self?.isLoadingMore = false
+                    return
+                }
                 self.displayItems.append(contentsOf: newItems)
                 self.loadedCount = nextEnd
                 self.isLoadingMore = false

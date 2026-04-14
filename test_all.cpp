@@ -70,7 +70,7 @@ namespace fs = std::filesystem;
 
 static void printUsage(const char* prog) {
     std::cout << "Usage: " << prog << " [options] [root_path]\n";
-    std::cout << "  --fast             Run fast unit tests only (3, 3b-3e, 5, 7-7d, 8, 9, 13, 14)\n";
+    std::cout << "  --fast             Run fast unit tests only (3, 3b-3e, 5, 7-7f, 8-22)\n";
     std::cout << "  --slow             Run slow integration tests only (1, 4, 6)\n";
     std::cout << "  --part <id>        Run specific part (can be repeated)\n";
     std::cout << "  --help             Show this help\n";
@@ -100,7 +100,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});

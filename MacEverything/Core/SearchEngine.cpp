@@ -1,4 +1,5 @@
 #include "SearchEngine.h"
+#include "StringUtils.h"
 #include "IndexWAL.h"
 #include <algorithm>
 #include <thread>
@@ -10,43 +11,6 @@
 #include <unordered_set>
 #include <dispatch/dispatch.h>
 #include <CoreFoundation/CoreFoundation.h>
-
-std::string SearchEngine::toLower(const std::string& s) {
-    // H1 fix: ASCII fast-path — skip CoreFoundation for pure-ASCII strings
-    // (>95% of filenames on typical systems)
-    bool allAscii = true;
-    for (unsigned char c : s) {
-        if (c >= 128) { allAscii = false; break; }
-    }
-    if (allAscii) {
-        std::string result(s.size(), '\0');
-        for (size_t i = 0; i < s.size(); i++)
-            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
-        return result;
-    }
-
-    // Unicode-aware lowercasing via CoreFoundation (non-ASCII only)
-    CFStringRef cfStr = CFStringCreateWithBytes(kCFAllocatorDefault,
-        reinterpret_cast<const UInt8*>(s.data()), static_cast<CFIndex>(s.size()),
-        kCFStringEncodingUTF8, false);
-    if (!cfStr) {
-        std::string result(s.size(), '\0');
-        for (size_t i = 0; i < s.size(); i++)
-            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
-        return result;
-    }
-    CFMutableStringRef mutable_ = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, cfStr);
-    CFRelease(cfStr);
-    CFStringLowercase(mutable_, CFLocaleGetSystem());
-
-    CFIndex len = CFStringGetLength(mutable_);
-    CFIndex maxBuf = CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
-    std::string result(static_cast<size_t>(maxBuf), '\0');
-    CFStringGetCString(mutable_, result.data(), maxBuf, kCFStringEncodingUTF8);
-    CFRelease(mutable_);
-    result.resize(std::strlen(result.c_str()));
-    return result;
-}
 
 std::string SearchEngine::makeFullPath(const std::string& path, const std::string& name) {
     if (path.empty() || path.back() == '/') return path + name;
@@ -131,7 +95,7 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
 
         threads.emplace_back([this, start, end] {
             for (size_t i = start; i < end; i++) {
-                lowerNames_[i] = toLower(records_[i].name);
+                lowerNames_[i] = me::toLower(records_[i].name);
             }
         });
     }
@@ -159,7 +123,7 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
             if (start >= end) break;
             pathThreads.emplace_back([this, &loweredPaths, start, end] {
                 for (size_t i = start; i < end; i++) {
-                    loweredPaths[i] = toLower(makeFullPath(pathTable_.resolve(pathIndices_[i]), records_[i].name));
+                    loweredPaths[i] = me::toLower(makeFullPath(pathTable_.resolve(pathIndices_[i]), records_[i].name));
                 }
             });
         }
@@ -212,7 +176,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (keyword.empty()) return {};
 
-    std::string lowerKey = toLower(keyword);
+    std::string lowerKey = me::toLower(keyword);
     bool useGlob = isGlobPattern(lowerKey);
 
     // C-1 fix: Hold shared_lock for the entire query to prevent use-after-free.
@@ -339,7 +303,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
                 const auto& rPath = pTable.resolve(pIndices[i]);
                 // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
-                std::string lowerPath = toLower(makeFullPath(rPath, records[i].name));
+                std::string lowerPath = me::toLower(makeFullPath(rPath, records[i].name));
                 if (lowerPath.find(lowerKey) != std::string::npos) {
                     const auto& lowerName = lowerNames[i];
                     uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
@@ -402,7 +366,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 bool pathMatch = false;
                 if (!nameMatch) {
                     // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
-                    std::string lowerPath = toLower(makeFullPath(rPath, records[i].name));
+                    std::string lowerPath = me::toLower(makeFullPath(rPath, records[i].name));
                     pathMatch = useGlob ? globMatch(lowerKey, lowerPath)
                                         : (lowerPath.find(lowerKey) != std::string::npos);
                 }
@@ -483,7 +447,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
 
     uint32_t idx = static_cast<uint32_t>(records_.size());
     std::string fullPath = makeFullPath(record.path, record.name);
-    std::string lower = toLower(record.name);
+    std::string lower = me::toLower(record.name);
 
     if (wal_) wal_->append(WALOp::Add, fullPath, record);
 
@@ -495,7 +459,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     records_.push_back(std::move(record));
     lowerNames_.push_back(lower);
     pathIndices_.push_back(pIdx);
-    pathIndex_[toLower(fullPath)] = idx;
+    pathIndex_[me::toLower(fullPath)] = idx;
 
     // Update trigram index
     addTrigramsForRecord(idx, lower);
@@ -509,7 +473,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
 bool SearchEngine::removeByPath(const std::string& fullPath) {
     std::unique_lock lock(mutex_);
 
-    auto it = pathIndex_.find(toLower(fullPath));
+    auto it = pathIndex_.find(me::toLower(fullPath));
     if (it == pathIndex_.end()) return false;
 
     if (wal_) wal_->append(WALOp::Remove, fullPath);
@@ -534,7 +498,7 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
 uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
     std::unique_lock lock(mutex_);
 
-    std::string lowerPrefix = toLower(pathPrefix);
+    std::string lowerPrefix = me::toLower(pathPrefix);
     uint32_t removed = 0;
     for (auto it = pathIndex_.begin(); it != pathIndex_.end(); ) {
         const auto& path = it->first;
@@ -576,7 +540,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
     // ── Phase 1: Tombstone old records matching prefix ──
     // Same prefix-match logic as removeByPathPrefix, but skip removeTrigramsForRecord
     // because we rebuild the entire trigram index at the end.
-    std::string lowerPrefix = toLower(pathPrefix);
+    std::string lowerPrefix = me::toLower(pathPrefix);
     uint32_t removed = 0;
     for (auto it = pathIndex_.begin(); it != pathIndex_.end(); ) {
         const auto& path = it->first;
@@ -608,7 +572,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
     for (auto& record : freshRecords) {
         uint32_t newIdx = static_cast<uint32_t>(records_.size());
         std::string fullPath = makeFullPath(record.path, record.name);
-        std::string lower = toLower(record.name);
+        std::string lower = me::toLower(record.name);
 
         if (wal_) wal_->append(WALOp::Update, fullPath, record);
 
@@ -619,7 +583,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
         records_.push_back(std::move(record));
         lowerNames_.push_back(lower);
         pathIndices_.push_back(pIdx);
-        pathIndex_[toLower(fullPath)] = newIdx;
+        pathIndex_[me::toLower(fullPath)] = newIdx;
         liveCount_.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -636,7 +600,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     if (wal_) wal_->append(WALOp::Update, fullPath, updated);
 
     // Remove old record if exists (case-insensitive lookup)
-    auto it = pathIndex_.find(toLower(fullPath));
+    auto it = pathIndex_.find(me::toLower(fullPath));
     if (it != pathIndex_.end()) {
         uint32_t idx = it->second;
         time_t oldModTime = records_[idx].modTime;
@@ -655,7 +619,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     // Add new record
     uint32_t newIdx = static_cast<uint32_t>(records_.size());
     std::string newFullPath = makeFullPath(updated.path, updated.name);
-    std::string lower = toLower(updated.name);
+    std::string lower = me::toLower(updated.name);
 
     // Intern path before moving record
     uint32_t pIdx = pathTable_.intern(updated.path);
@@ -665,7 +629,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     records_.push_back(std::move(updated));
     lowerNames_.push_back(lower);
     pathIndices_.push_back(pIdx);
-    pathIndex_[toLower(newFullPath)] = newIdx;
+    pathIndex_[me::toLower(newFullPath)] = newIdx;
     addTrigramsForRecord(newIdx, lower);
     liveCount_.fetch_add(1, std::memory_order_relaxed);
     addToRecentCache(newIdx, records_[newIdx].modTime);
@@ -696,7 +660,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         remap[static_cast<uint32_t>(i)] = newIdx;
         const std::string& origPath = pathTable_.resolve(pathIndices_[i]);
         uint32_t newPIdx = newPathTable.intern(origPath);
-        std::string fullPath = toLower(makeFullPath(origPath, records_[i].name));
+        std::string fullPath = me::toLower(makeFullPath(origPath, records_[i].name));
         newPathIndex[fullPath] = newIdx;
         newLowerNames.push_back(std::move(lowerNames_[i]));
         newPathIndices.push_back(newPIdx);
@@ -775,6 +739,6 @@ void SearchEngine::removeFromRecentCache(uint32_t idx, time_t modTime) {
 
 uint32_t SearchEngine::indexForPath(const std::string& fullPath) const {
     std::shared_lock lock(mutex_);
-    auto it = pathIndex_.find(toLower(fullPath));
+    auto it = pathIndex_.find(me::toLower(fullPath));
     return (it != pathIndex_.end()) ? it->second : UINT32_MAX;
 }

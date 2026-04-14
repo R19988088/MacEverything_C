@@ -173,6 +173,10 @@ bool SearchEngine::globMatch(const std::string& pattern, const std::string& text
 }
 
 std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t maxResults) const {
+    // Increment generation so any in-flight query detects it has been superseded.
+    // Must happen before the empty check so clearing the search box also cancels stale queries.
+    uint64_t myGen = queryGeneration_.fetch_add(1, std::memory_order_relaxed) + 1;
+
     if (keyword.empty()) return {};
 
     std::shared_lock lock(mutex_);
@@ -237,7 +241,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (useTrigramIndex) {
         // Phase 1: Check trigram candidates for name matches (fast, only a subset)
-        for (uint32_t idx : trigramCandidates) {
+        for (size_t ci = 0; ci < trigramCandidates.size(); ci++) {
+            if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+            uint32_t idx = trigramCandidates[ci];
             if (records_[idx].type == 0) continue;
             const auto& lowerName = lowerNames_[idx];
             if (lowerName.find(lowerKey) != std::string::npos) {
@@ -276,6 +282,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         const auto* candidatesPtr = &trigramCandidates;
 
         dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+        const auto* genPtr = &queryGeneration_;
+        uint64_t capturedGen = myGen;
         dispatch_apply(numThreads, queue, ^(size_t t) {
             size_t start = t * chunkSize;
             size_t end = std::min(start + chunkSize, totalSize);
@@ -283,6 +291,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
             auto& local = (*threadResultsPtr)[t];
             for (size_t i = start; i < end; i++) {
+                if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
                 if ((*recordsPtr)[i].type == 0) continue;
                 // Skip indices already handled by trigram phase
                 if (std::binary_search(candidatesPtr->begin(), candidatesPtr->end(), static_cast<uint32_t>(i))) continue;
@@ -306,6 +315,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             }
         });
 
+        // Check if superseded after dispatch_apply
+        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+
         for (auto& v : threadResults) {
             merged.insert(merged.end(), v.begin(), v.end());
         }
@@ -326,6 +338,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         const auto* lowerNamesPtr = &lowerNames_;
 
         dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+        const auto* genPtr = &queryGeneration_;
+        uint64_t capturedGen = myGen;
         dispatch_apply(numThreads, queue, ^(size_t t) {
             size_t start = t * chunkSize;
             size_t end = std::min(start + chunkSize, totalSize);
@@ -333,6 +347,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
             auto& local = (*threadResultsPtr)[t];
             for (size_t i = start; i < end; i++) {
+                if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
                 if ((*recordsPtr)[i].type == 0) continue;
 
                 const auto& lowerName = (*lowerNamesPtr)[i];
@@ -363,6 +378,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             }
         });
 
+        // Check if superseded after dispatch_apply
+        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+
         for (auto& v : threadResults) {
             merged.insert(merged.end(), v.begin(), v.end());
         }
@@ -371,6 +389,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     // Release shared lock before sorting — all needed data is captured in Match structs.
     // This allows concurrent writers to proceed while we sort/truncate results.
     lock.unlock();
+
+    // Final cancellation check before sorting
+    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
 
     // Sort by priority, then by full path length (shorter = shallower = better)
     auto cmp = [](const Match& a, const Match& b) {

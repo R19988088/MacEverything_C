@@ -10,6 +10,7 @@
 #include <atomic>
 #include <memory>
 #include <map>
+#include <set>
 
 class IndexWAL;
 
@@ -121,4 +122,18 @@ private:
 
     std::shared_ptr<IndexWAL> wal_;
     std::atomic<uint64_t> compactionGen_{0};
+
+    // Recent files cache: top-K records by modTime, maintained incrementally
+    static constexpr uint32_t kRecentCacheSize = 200;
+    struct RecentEntry {
+        time_t modTime;
+        uint32_t index;
+        bool operator<(const RecentEntry& o) const {
+            return modTime > o.modTime || (modTime == o.modTime && index > o.index);
+        }
+    };
+    std::set<RecentEntry> recentCache_;
+    void rebuildRecentCache();
+    void addToRecentCache(uint32_t idx, time_t modTime);
+    void removeFromRecentCache(uint32_t idx, time_t modTime);
 };

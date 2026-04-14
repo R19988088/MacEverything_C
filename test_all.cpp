@@ -56,6 +56,7 @@ namespace fs = std::filesystem;
 #include "tests/test_parallel_snippets.h"
 #include "tests/test_scanner_cancel.h"
 #include "tests/test_wal_replay_timeout.h"
+#include "tests/test_recent_cache.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -75,7 +76,8 @@ static void printUsage(const char* prog) {
     std::cout << "  7e (scanner re-entry), 7f (content index), 8 (trigram index),\n";
     std::cout << "  9 (content index query benchmark), 10 (WAL batch fsync),\n";
     std::cout << "  11 (recentIndices), 12 (parallel snippets),\n";
-    std::cout << "  13 (scanner cancel), 14 (WAL replay timeout)\n";
+    std::cout << "  13 (scanner cancel), 14 (WAL replay timeout),\n";
+    std::cout << "  15 (WAL CRC), 16 (recent cache)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -90,7 +92,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8", "9", "10", "11", "12", "13", "14", "15"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "8", "9", "10", "11", "12", "13", "14", "15", "16"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -113,7 +115,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "16"};
     }
 
     // Validate root path if scan test is selected
@@ -160,6 +162,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("13")) runScannerCancelTest();
     if (selectedParts.count("14")) runWalReplayTimeoutTest();
     if (selectedParts.count("15")) runWalCrcTests();
+    if (selectedParts.count("16")) runRecentCacheTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

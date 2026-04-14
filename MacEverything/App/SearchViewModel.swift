@@ -197,8 +197,8 @@ class SearchViewModel: ObservableObject {
             contentResults = []
 
             searchTask = Task { @MainActor in
-                // 150ms debounce
-                try? await Task.sleep(nanoseconds: 150_000_000)
+                // 80ms debounce
+                try? await Task.sleep(nanoseconds: 80_000_000)
                 guard !Task.isCancelled else { return }
                 performSearch(text)
             }

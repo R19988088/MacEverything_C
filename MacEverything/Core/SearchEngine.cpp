@@ -140,6 +140,7 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
 
     // Build trigram index for fast filename search
     buildTrigramIndex();
+    rebuildRecentCache();
 
     liveCount_.store(static_cast<uint32_t>(records_.size()), std::memory_order_relaxed);
 }
@@ -423,6 +424,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     addTrigramsForRecord(idx, lower);
 
     liveCount_.fetch_add(1, std::memory_order_relaxed);
+    addToRecentCache(idx, records_[idx].modTime);
 
     return idx;
 }
@@ -436,6 +438,7 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
     if (wal_) wal_->append(WALOp::Remove, fullPath);
 
     uint32_t idx = it->second;
+    time_t oldModTime = records_[idx].modTime;
     records_[idx].type = 0;
     records_[idx].name.clear();
     records_[idx].path.clear();
@@ -448,6 +451,7 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
     removeTrigramsForRecord(idx);
 
     liveCount_.fetch_sub(1, std::memory_order_relaxed);
+    removeFromRecentCache(idx, oldModTime);
 
     return true;
 }
@@ -473,6 +477,7 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
                 wal_->append(WALOp::Remove, fullPath);
             }
 
+            time_t oldModTime = records_[idx].modTime;
             records_[idx].type = 0;
             records_[idx].name.clear();
             records_[idx].path.clear();
@@ -481,6 +486,7 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
             lowerNames_[idx].clear();
             removeTrigramsForRecord(idx);
             liveCount_.fetch_sub(1, std::memory_order_relaxed);
+            removeFromRecentCache(idx, oldModTime);
             it = pathIndex_.erase(it);
             removed++;
         } else {
@@ -501,6 +507,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     auto it = pathIndex_.find(toLower(fullPath));
     if (it != pathIndex_.end()) {
         uint32_t idx = it->second;
+        time_t oldModTime = records_[idx].modTime;
         records_[idx].type = 0;
         records_[idx].name.clear();
         records_[idx].path.clear();
@@ -510,6 +517,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
         pathIndex_.erase(it);
         removeTrigramsForRecord(idx);
         liveCount_.fetch_sub(1, std::memory_order_relaxed);
+        removeFromRecentCache(idx, oldModTime);
     }
 
     // Add new record
@@ -522,6 +530,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     pathIndex_[toLower(newFullPath)] = newIdx;
     addTrigramsForRecord(newIdx, lower);
     liveCount_.fetch_add(1, std::memory_order_relaxed);
+    addToRecentCache(newIdx, records_[newIdx].modTime);
 }
 
 std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
@@ -556,6 +565,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
 
     // Rebuild trigram index from scratch
     buildTrigramIndex();
+    rebuildRecentCache();
 
     compactionGen_.fetch_add(1, std::memory_order_relaxed);
 
@@ -574,26 +584,36 @@ void SearchEngine::detachWAL() {
 
 std::vector<uint32_t> SearchEngine::recentIndices(uint32_t count) const {
     std::shared_lock lock(mutex_);
-
-    // Collect (index, modTime) for live records directly — no FileRecord copy
-    std::vector<std::pair<uint32_t, time_t>> entries;
-    entries.reserve(records_.size());
-    for (size_t i = 0; i < records_.size(); i++) {
-        if (records_[i].type != 0) {
-            entries.emplace_back(static_cast<uint32_t>(i), records_[i].modTime);
-        }
-    }
-
-    uint32_t n = std::min(count, static_cast<uint32_t>(entries.size()));
-    std::partial_sort(entries.begin(), entries.begin() + n, entries.end(),
-                      [](const auto& a, const auto& b) { return a.second > b.second; });
-
     std::vector<uint32_t> result;
+    uint32_t n = std::min(count, static_cast<uint32_t>(recentCache_.size()));
     result.reserve(n);
-    for (uint32_t i = 0; i < n; i++) {
-        result.push_back(entries[i].first);
+    auto it = recentCache_.begin();
+    for (uint32_t i = 0; i < n; ++i, ++it) {
+        result.push_back(it->index);
     }
     return result;
+}
+
+void SearchEngine::rebuildRecentCache() {
+    recentCache_.clear();
+    for (size_t i = 0; i < records_.size(); i++) {
+        if (records_[i].type == 0) continue;
+        recentCache_.insert({records_[i].modTime, static_cast<uint32_t>(i)});
+        if (recentCache_.size() > kRecentCacheSize) {
+            recentCache_.erase(std::prev(recentCache_.end()));
+        }
+    }
+}
+
+void SearchEngine::addToRecentCache(uint32_t idx, time_t modTime) {
+    recentCache_.insert({modTime, idx});
+    if (recentCache_.size() > kRecentCacheSize) {
+        recentCache_.erase(std::prev(recentCache_.end()));
+    }
+}
+
+void SearchEngine::removeFromRecentCache(uint32_t idx, time_t modTime) {
+    recentCache_.erase({modTime, idx});
 }
 
 uint32_t SearchEngine::indexForPath(const std::string& fullPath) const {

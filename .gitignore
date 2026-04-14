@@ -15,3 +15,5 @@ DerivedData/
 
 # macOS
 .DS_Store
+test_all_master
+.claude/

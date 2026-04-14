@@ -95,9 +95,6 @@ public:
 
     // --- Helpers (public for testing) ---
 
-    /// Check if a file appears to be binary (NUL byte in first 8KB).
-    static bool isBinaryFile(const std::string& path);
-
     /// Check if a filename has an allowed extension.
     bool hasAllowedExtension(const std::string& filename) const;
 

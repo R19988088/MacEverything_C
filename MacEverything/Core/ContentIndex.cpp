@@ -2,6 +2,7 @@
 #include "StringUtils.h"
 #include <algorithm>
 #include <fstream>
+#include <iostream>
 #include <cctype>
 #include <cstring>
 #include <atomic>
@@ -54,20 +55,6 @@ uint64_t ContentIndex::hashContent(const std::string& content) {
         hash *= 1099511628211ULL;
     }
     return hash;
-}
-
-bool ContentIndex::isBinaryFile(const std::string& path) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return true; // can't read = skip
-
-    char buf[8192];
-    size_t bytesRead = fread(buf, 1, sizeof(buf), f);
-    fclose(f);
-
-    for (size_t i = 0; i < bytesRead; i++) {
-        if (buf[i] == '\0') return true;
-    }
-    return false;
 }
 
 bool ContentIndex::hasAllowedExtension(const std::string& filename) const {
@@ -636,6 +623,13 @@ bool ContentIndex::loadFromFile(const std::string& path) {
 
     uint32_t fileCount;
     if (!readU32(f, fileCount)) {
+        fclose(f);
+        return false;
+    }
+
+    constexpr uint32_t kMaxReasonableCount = 50'000'000;
+    if (fileCount > kMaxReasonableCount) {
+        std::cerr << "[ContentIndex] Corrupt index: fileCount=" << fileCount << " exceeds limit\n";
         fclose(f);
         return false;
     }

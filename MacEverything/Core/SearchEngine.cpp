@@ -108,7 +108,6 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     for (size_t i = 0; i < records_.size(); i++) {
         pathIndices_[i] = pathTable_.intern(records_[i].path);
         records_[i].path.clear();
-        records_[i].path.shrink_to_fit(); // release heap allocation
     }
 
     // H6 fix: Parallelize path string computation, insert into map sequentially

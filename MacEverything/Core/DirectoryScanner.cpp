@@ -256,8 +256,10 @@ void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, i
                     // Detect .app bundles — record as type 5, skip recursion
                     size_t nameLen = strlen(name);
                     bool isAppBundle = (nameLen > 4 &&
-                        name[nameLen-4] == '.' && name[nameLen-3] == 'a' &&
-                        name[nameLen-2] == 'p' && name[nameLen-1] == 'p');
+                        name[nameLen-4] == '.' &&
+                        tolower(name[nameLen-3]) == 'a' &&
+                        tolower(name[nameLen-2]) == 'p' &&
+                        tolower(name[nameLen-1]) == 'p');
 
                     if (!isAppBundle) {
                         pendingDirs.push_back(std::move(childPath));

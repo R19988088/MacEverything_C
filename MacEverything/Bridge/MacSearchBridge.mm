@@ -463,13 +463,11 @@ static bool pathEndsWithApp(const std::string& path) {
                           NSHomeDirectory()];
     _watcher->setExclusionPaths({std::string([cacheDir UTF8String])});
 
-    auto* shuttingDownPtr = &_shuttingDown;
-    _watcher->start(root, [weakSelf, shuttingDownPtr](std::vector<FileSystemWatcher::Event> events) {
+    _watcher->start(root, [weakSelf](std::vector<FileSystemWatcher::Event> events) {
         // This runs on the FSEvents serial queue (background)
-        if (shuttingDownPtr->load(std::memory_order_relaxed)) return;
-
         MacSearchBridge *strongSelf = weakSelf;
         if (!strongSelf) return;
+        if (strongSelf->_shuttingDown.load(std::memory_order_relaxed)) return;
 
         // C-4: Thread-safe engine access
         auto engine = [strongSelf safeEngine];

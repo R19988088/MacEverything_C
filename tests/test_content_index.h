@@ -31,8 +31,7 @@ static void runContentIndexTests() {
         fclose(f);
     }
 
-    check(!ContentIndex::isBinaryFile(tmpDir + "/text.txt"), "ContentIndex: text file not detected as binary");
-    check(ContentIndex::isBinaryFile(tmpDir + "/binary.bin"), "ContentIndex: binary file detected correctly");
+    // isBinaryFile was removed — binary detection is handled internally during indexing
 
     // Test indexing and querying
     ContentIndex ci;

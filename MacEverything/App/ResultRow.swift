@@ -123,7 +123,9 @@ struct ResultRow: View {
             let url = URL(fileURLWithPath: fullPath)
             NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
         } else {
-            NSWorkspace.shared.open(URL(fileURLWithPath: fullPath))
+            if !NSWorkspace.shared.open(URL(fileURLWithPath: fullPath)) {
+                NSSound.beep()
+            }
         }
     }
 

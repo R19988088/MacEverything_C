@@ -179,10 +179,14 @@
     NSMutableArray<MEContentResult *> *results = [NSMutableArray arrayWithCapacity:candidates.size()];
     for (size_t i = 0; i < candidates.size(); i++) {
         if (!snippetResults[i].valid) continue;
+        NSString *nsFileName = [NSString stringWithUTF8String:candidates[i].name.c_str()];
+        NSString *nsFilePath = [NSString stringWithUTF8String:candidates[i].fullPath.c_str()];
+        NSString *nsSnippet = [NSString stringWithUTF8String:snippetResults[i].snippet.c_str()];
+        if (!nsFileName || !nsFilePath || !nsSnippet) continue; // H-1: skip non-UTF-8 file names/snippets
         MEContentResult *result = [[MEContentResult alloc]
-            initWithFileName:[NSString stringWithUTF8String:candidates[i].name.c_str()]
-                    filePath:[NSString stringWithUTF8String:candidates[i].fullPath.c_str()]
-                     snippet:[NSString stringWithUTF8String:snippetResults[i].snippet.c_str()]
+            initWithFileName:nsFileName
+                    filePath:nsFilePath
+                     snippet:nsSnippet
                  matchOffset:snippetResults[i].offset
                     fileType:candidates[i].fileType];
         [results addObject:result];

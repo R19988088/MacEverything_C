@@ -607,8 +607,12 @@ static bool pathEndsWithApp(const std::string& path) {
     // Skip tombstoned records
     if (r.type == 0) return nil;
 
-    return [[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
-                                        path:[NSString stringWithUTF8String:r.path.c_str()]
+    NSString *nsName = [NSString stringWithUTF8String:r.name.c_str()];
+    NSString *nsPath = [NSString stringWithUTF8String:r.path.c_str()];
+    if (!nsName || !nsPath) return nil; // H-1: skip non-UTF-8 file names
+
+    return [[MEFileResult alloc] initWithName:nsName
+                                        path:nsPath
                                         type:r.type
                                         size:r.size
                                      modTime:r.modTime];
@@ -628,8 +632,11 @@ static bool pathEndsWithApp(const std::string& path) {
 
     NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.count];
     engine->forEachRecordWithPath(idxVec, [&](uint32_t, const FileRecord& r, const std::string& path) {
-        [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
-                                                        path:[NSString stringWithUTF8String:path.c_str()]
+        NSString *nsName = [NSString stringWithUTF8String:r.name.c_str()];
+        NSString *nsPath = [NSString stringWithUTF8String:path.c_str()];
+        if (!nsName || !nsPath) return; // H-1: skip non-UTF-8 file names
+        [results addObject:[[MEFileResult alloc] initWithName:nsName
+                                                        path:nsPath
                                                         type:r.type
                                                         size:r.size
                                                      modTime:r.modTime]];
@@ -662,8 +669,11 @@ static bool pathEndsWithApp(const std::string& path) {
 
     NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.size()];
     engine->forEachRecordWithPath(indices, [&](uint32_t, const FileRecord& r, const std::string& path) {
-        [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
-                                                        path:[NSString stringWithUTF8String:path.c_str()]
+        NSString *nsName = [NSString stringWithUTF8String:r.name.c_str()];
+        NSString *nsPath = [NSString stringWithUTF8String:path.c_str()];
+        if (!nsName || !nsPath) return; // H-1: skip non-UTF-8 file names
+        [results addObject:[[MEFileResult alloc] initWithName:nsName
+                                                        path:nsPath
                                                         type:r.type
                                                         size:r.size
                                                      modTime:r.modTime]];
@@ -681,8 +691,11 @@ static bool pathEndsWithApp(const std::string& path) {
 
     NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.size()];
     engine->forEachRecordWithPath(indices, [&](uint32_t, const FileRecord& r, const std::string& path) {
-        [results addObject:[[MEFileResult alloc] initWithName:[NSString stringWithUTF8String:r.name.c_str()]
-                                                        path:[NSString stringWithUTF8String:path.c_str()]
+        NSString *nsName = [NSString stringWithUTF8String:r.name.c_str()];
+        NSString *nsPath = [NSString stringWithUTF8String:path.c_str()];
+        if (!nsName || !nsPath) return; // H-1: skip non-UTF-8 file names
+        [results addObject:[[MEFileResult alloc] initWithName:nsName
+                                                        path:nsPath
                                                         type:r.type
                                                         size:r.size
                                                      modTime:r.modTime]];

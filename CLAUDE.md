@@ -28,7 +28,7 @@ hdiutil create -volname MacEverything -srcfolder build/Release/MacEverything.app
 - 所有代码变更必须通过 Git 管理；禁止在未纳入版本控制的路径上长期开发。
 - 保持历史可读：原子提交、信息明确的 commit message（建议说明「做什么」与「为何」）。
 - `master`（或项目约定的主分支）保持稳定、可发布；合入前须通过约定检查（测试、lint 等）。
-- 任何变更开发完成后,确保没有任何未提交修改
+- **任何变更开发完成后需要提交,确保没有任何未提交修改**
 
 ## 1. 变更/功能开发与 Bugfix 流程
 
@@ -37,7 +37,7 @@ hdiutil create -volname MacEverything -srcfolder build/Release/MacEverything.app
 1. **规划**：明确范围、接口/行为变更、风险与回滚方式；复杂任务拆成可验证的小步。
 2. **测试先行**：在实现前写出或补全**可失败**的测试（单元或更上层），用例应描述期望行为与边界；实现应使这些测试通过。
 3. **隔离开发（worktree）**：**所有变更**都在独立 `git worktree` 中开发，避免污染当前检出目录；分支命名清晰（如 `feat/...`、`fix/...`）。
-4. **合回主分支**：开发完成后经 code review（若流程要求）、CI/本地测试通过后，合并回 `master`（优先 merge 或按项目约定 rebase），删除已完成任务的 worktree 与远程分支。 开发完成后**一定要合并回master分支**
+4. **合回主分支**：开发完成后经 code review（若流程要求）、CI/本地测试通过后，合并回 `master`（优先 merge 或按项目约定 rebase），删除已完成任务的 worktree 与远程分支。 开发完成后**一定要提交变更,合并回master分支**
 5. 对于新的功能,可以根据需要,启动subagent并行开发, 提升开发效率
 
 Agent 在接到功能或 bug 任务时，应先输出简短计划与测试清单，再进入实现。

@@ -22,6 +22,10 @@ void FileSystemWatcher::start(const std::string& rootPath,
     startInternal(rootPath, sinceEventId);
 }
 
+void FileSystemWatcher::setExclusionPaths(std::vector<std::string> paths) {
+    exclusionPaths_ = std::move(paths);
+}
+
 void FileSystemWatcher::startInternal(const std::string& rootPath,
                                        FSEventStreamEventId sinceEventId) {
     journalTruncated_.store(false, std::memory_order_relaxed);
@@ -51,6 +55,17 @@ void FileSystemWatcher::startInternal(const std::string& rootPath,
     CFRelease(path);
 
     if (!stream_) return;
+
+    if (!exclusionPaths_.empty()) {
+        CFMutableArrayRef exclusions = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+        for (const auto& p : exclusionPaths_) {
+            CFStringRef cfp = CFStringCreateWithCString(kCFAllocatorDefault, p.c_str(), kCFStringEncodingUTF8);
+            CFArrayAppendValue(exclusions, cfp);
+            CFRelease(cfp);
+        }
+        FSEventStreamSetExclusionPaths(stream_, exclusions);
+        CFRelease(exclusions);
+    }
 
     queue_ = dispatch_queue_create("com.maceverything.fswatcher", DISPATCH_QUEUE_SERIAL);
     FSEventStreamSetDispatchQueue(stream_, queue_);
@@ -134,6 +149,16 @@ void FileSystemWatcher::fseventsCallback(
         if (pathStr.find("/.Trashes/") != std::string::npos) continue;
         if (pathStr.find("/private/var/folders/") != std::string::npos &&
             pathStr.find("/com.apple.") != std::string::npos) continue;
+
+        // Skip events from app's own excluded directories
+        bool excluded = false;
+        for (const auto& ep : watcher->exclusionPaths_) {
+            if (pathStr.size() >= ep.size() && pathStr.compare(0, ep.size(), ep) == 0) {
+                excluded = true;
+                break;
+            }
+        }
+        if (excluded) continue;
 
         events.push_back({std::move(pathStr), flags});
     }

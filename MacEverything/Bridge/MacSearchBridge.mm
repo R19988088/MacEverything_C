@@ -454,6 +454,11 @@ static bool pathEndsWithApp(const std::string& path) {
     // Capture engine as a shared_ptr for the callback
     __weak MacSearchBridge *weakSelf = self;
 
+    // Exclude app's own cache directory from FSEvents to prevent self-triggering
+    NSString *cacheDir = [NSString stringWithFormat:@"%@/Library/Caches/com.maceverything.app",
+                          NSHomeDirectory()];
+    _watcher->setExclusionPaths({std::string([cacheDir UTF8String])});
+
     auto* shuttingDownPtr = &_shuttingDown;
     _watcher->start(root, [weakSelf, shuttingDownPtr](std::vector<FileSystemWatcher::Event> events) {
         // This runs on the FSEvents serial queue (background)
@@ -705,17 +710,9 @@ static bool pathEndsWithApp(const std::string& path) {
 
         if (shuttingDown->load(std::memory_order_relaxed)) return;
 
-        // Remove all old records under this directory prefix
-        engine->removeByPathPrefix(dir);
-
-        // Add fresh records
-        for (auto& record : freshRecords) {
-            if (shuttingDown->load(std::memory_order_relaxed)) return;
-            std::string fullPath = record.path;
-            if (!fullPath.empty() && fullPath.back() != '/') fullPath += "/";
-            fullPath += record.name;
-            engine->updateByPath(fullPath, std::move(record));
-        }
+        // Batch-replace: tombstone old prefix records + add fresh records + rebuild
+        // trigram index once, instead of per-record remove+add (O(N²) → O(N))
+        engine->batchRescanPrefix(dir, std::move(freshRecords));
 
         // Notify UI
         dispatch_async(dispatch_get_main_queue(), ^{

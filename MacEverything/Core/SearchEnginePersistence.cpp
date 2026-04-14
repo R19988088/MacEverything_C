@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <iostream>
 #include <unistd.h>
 
 // --- Persistence format constants ---
@@ -177,6 +178,13 @@ bool SearchEngine::loadFromFile(const std::string& filePath, IndexMetadata* outM
     // Record count
     uint32_t count;
     if (fread(&count, sizeof(uint32_t), 1, f) != 1) { fclose(f); return false; }
+
+    constexpr uint32_t kMaxReasonableCount = 50'000'000;
+    if (count > kMaxReasonableCount) {
+        std::cerr << "[SearchEnginePersistence] Corrupt index: count=" << count << " exceeds limit\n";
+        fclose(f);
+        return false;
+    }
 
     std::vector<FileRecord> records;
     records.reserve(count);

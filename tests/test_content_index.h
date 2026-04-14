@@ -31,7 +31,7 @@ static void runContentIndexTests() {
         fclose(f);
     }
 
-    // Test binary detection via indexFile (readFileIfText rejects binary files)
+    // isBinaryFile was removed — binary detection is handled internally during indexing
     ContentIndex ci;
     ci.setExtensions({"txt", "bin"});
 

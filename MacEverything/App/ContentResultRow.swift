@@ -65,7 +65,9 @@ struct ContentResultRow: View {
     }
 
     private func openFile() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: item.filePath))
+        if !NSWorkspace.shared.open(URL(fileURLWithPath: item.filePath)) {
+            NSSound.beep()
+        }
     }
 
     private func revealInFinder() {

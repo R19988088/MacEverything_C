@@ -2,6 +2,7 @@
 #include "StringUtils.h"
 #include <algorithm>
 #include <fstream>
+#include <iostream>
 #include <cctype>
 #include <cstring>
 #include <atomic>
@@ -598,6 +599,13 @@ bool ContentIndex::loadFromFile(const std::string& path) {
 
     uint32_t fileCount;
     if (!readU32(f, fileCount)) {
+        fclose(f);
+        return false;
+    }
+
+    constexpr uint32_t kMaxReasonableCount = 50'000'000;
+    if (fileCount > kMaxReasonableCount) {
+        std::cerr << "[ContentIndex] Corrupt index: fileCount=" << fileCount << " exceeds limit\n";
         fclose(f);
         return false;
     }

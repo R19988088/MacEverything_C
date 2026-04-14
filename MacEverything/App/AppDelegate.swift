@@ -8,6 +8,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) var mainSearchWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MacSearchBridge.initializeLogger()
+
         // Delay by one frame to let SwiftUI create the window
         DispatchQueue.main.async { [weak self] in
             self?.mainSearchWindow = NSApp.windows.first { $0.title == "MacEverything" }
@@ -94,7 +96,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try SMAppService.mainApp.register()
             }
         } catch {
-            NSLog("Failed to toggle launch at login: \(error)")
+            AppLogger.error("App", "Failed to toggle launch at login: \(error)")
         }
     }
 

@@ -1,5 +1,6 @@
 #pragma once
 #import "MacSearchBridge.h"
+#include "Logger.h"
 #include "SearchEngine.h"
 #include "ContentIndex.h"
 #include "ContentIndexPersistence.h"

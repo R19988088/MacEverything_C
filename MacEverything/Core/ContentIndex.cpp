@@ -1,4 +1,5 @@
 #include "ContentIndex.h"
+#include "Logger.h"
 #include "StringUtils.h"
 #include <algorithm>
 #include <fstream>

@@ -1,6 +1,6 @@
 #include "IndexWAL.h"
+#include "Logger.h"
 #include <cstring>
-#include <iostream>
 #include <unistd.h>
 #include <array>
 
@@ -174,8 +174,8 @@ std::vector<WALEntry> IndexWAL::readAll(const std::string& walPath) {
         uint32_t computedCRC = crc32(rawBuf.data(), rawBuf.size());
         if (computedCRC != storedCRC) {
             // H-4: Log CRC mismatch location for diagnostics
-            std::cerr << "[IndexWAL] CRC mismatch at offset " << startPos
-                      << ", recovered " << entries.size() << " entries\n";
+            LOG_ERROR("IndexWAL", "CRC mismatch at offset " << startPos
+                      << ", recovered " << entries.size() << " entries");
             break;
         }
 

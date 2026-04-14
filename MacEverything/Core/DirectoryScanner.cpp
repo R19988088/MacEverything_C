@@ -1,4 +1,5 @@
 #include "DirectoryScanner.h"
+#include "Logger.h"
 #include <sys/attr.h>
 #include <sys/vnode.h>
 #include <sys/types.h>
@@ -6,7 +7,6 @@
 #include <fcntl.h>
 #include <cstring>
 #include <cerrno>
-#include <iostream>
 #include <memory>
 
 static constexpr size_t ATTR_BUF_SIZE = 1 * 1024 * 1024; // 1 MB per-thread buffer
@@ -35,7 +35,7 @@ void DirectoryScanner::scan(const std::string& rootPath) {
     if (numThreads < 4) numThreads = 4;
     if (numThreads > 32) numThreads = 32;
 
-    std::cout << "Scanning from: " << rootPath << " (using " << numThreads << " threads)\n";
+    LOG_INFO("Scanner", "Scanning from: " << rootPath << " (using " << numThreads << " threads)");
 
     threadResults_.resize(numThreads);
     for (auto& v : threadResults_) {

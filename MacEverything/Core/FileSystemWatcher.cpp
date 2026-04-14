@@ -1,4 +1,5 @@
 #include "FileSystemWatcher.h"
+#include "Logger.h"
 #include <cstring>
 
 FileSystemWatcher::~FileSystemWatcher() {
@@ -70,9 +71,11 @@ void FileSystemWatcher::startInternal(const std::string& rootPath,
     queue_ = dispatch_queue_create("com.maceverything.fswatcher", DISPATCH_QUEUE_SERIAL);
     FSEventStreamSetDispatchQueue(stream_, queue_);
     FSEventStreamStart(stream_);
+    LOG_INFO("FSWatcher", "Started watching: " << rootPath);
 }
 
 void FileSystemWatcher::stop() {
+    LOG_INFO("FSWatcher", "Stopping file system watcher");
     if (stream_) {
         FSEventStreamStop(stream_);
         FSEventStreamInvalidate(stream_);
@@ -164,6 +167,7 @@ void FileSystemWatcher::fseventsCallback(
     }
 
     if (!events.empty() && watcher->callback_) {
+        LOG_DEBUG("FSWatcher", "Received " << events.size() << " events (from " << numEvents << " raw)");
         watcher->callback_(std::move(events));
     }
 

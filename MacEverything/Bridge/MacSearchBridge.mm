@@ -320,7 +320,8 @@
                 NSOperatingSystemVersion osVer = [[NSProcessInfo processInfo] operatingSystemVersion];
                 meta.extra[IndexMetadata::kOSVersion] = [[NSString stringWithFormat:@"%ld.%ld.%ld",
                     (long)osVer.majorVersion, (long)osVer.minorVersion, (long)osVer.patchVersion] UTF8String];
-                self->_engine->saveToFile(cacheStr, meta);
+                auto engine = [self safeEngine];
+                if (engine) engine->saveToFile(cacheStr, meta);
 
                 if (completion) completion(count, YES);
             }];

@@ -56,20 +56,6 @@ uint64_t ContentIndex::hashContent(const std::string& content) {
     return hash;
 }
 
-bool ContentIndex::isBinaryFile(const std::string& path) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return true; // can't read = skip
-
-    char buf[8192];
-    size_t bytesRead = fread(buf, 1, sizeof(buf), f);
-    fclose(f);
-
-    for (size_t i = 0; i < bytesRead; i++) {
-        if (buf[i] == '\0') return true;
-    }
-    return false;
-}
-
 bool ContentIndex::hasAllowedExtension(const std::string& filename) const {
     std::shared_lock lock(mutex_);
     return hasAllowedExtensionLocked(filename);
@@ -86,30 +72,6 @@ bool ContentIndex::hasAllowedExtensionLocked(const std::string& filename) const 
 
     std::string ext = me::toLower(filename.substr(dotPos + 1));
     return extensions_.count(ext) > 0;
-}
-
-std::string ContentIndex::readFileContent(const std::string& path, uint64_t maxSize) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return {};
-
-    // Get file size
-    fseek(f, 0, SEEK_END);
-    long fileSize = ftell(f);
-    if (fileSize <= 0 || static_cast<uint64_t>(fileSize) > maxSize) {
-        fclose(f);
-        return {};
-    }
-
-    fseek(f, 0, SEEK_SET);
-    std::string content;
-    content.resize(static_cast<size_t>(fileSize));
-    size_t bytesRead = fread(content.data(), 1, content.size(), f);
-    fclose(f);
-
-    if (bytesRead != content.size()) {
-        content.resize(bytesRead);
-    }
-    return content;
 }
 
 std::string ContentIndex::readFileIfText(const std::string& path, uint64_t maxSize) {

@@ -98,15 +98,13 @@ struct ContentSettingsView: View {
     }
 
     private func applySettings() {
+        let dirty = extensions != initialExtensions || maxFileSizeMB != initialMaxFileSizeMB
+        guard dirty else { return }
         bridge.setContentMaxFileSize(UInt64(maxFileSizeMB * 1024 * 1024))
         bridge.setContentExtensions(extensions)
-
-        let dirty = extensions != initialExtensions || maxFileSizeMB != initialMaxFileSizeMB
-        if dirty {
-            bridge.rebuildContentIndex()
-            initialExtensions = extensions
-            initialMaxFileSizeMB = maxFileSizeMB
-        }
+        bridge.rebuildContentIndex()
+        initialExtensions = extensions
+        initialMaxFileSizeMB = maxFileSizeMB
     }
 }
 

@@ -359,6 +359,7 @@ class SearchViewModel: ObservableObject {
     func onWindowFocusChanged(_ focused: Bool) {
         if refreshThrottle.focusChanged(focused) {
             performIndexRefresh()
+            scheduleCooldown()
         }
     }
 

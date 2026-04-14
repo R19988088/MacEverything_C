@@ -66,6 +66,7 @@ final class IndexRefreshThrottle {
         if focused && isPending {
             isPending = false
             doRefresh()
+            isCooldownActive = true
             return true
         }
         return false

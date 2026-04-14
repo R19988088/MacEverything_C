@@ -100,6 +100,7 @@ func testFocusRegainWithPending() {
     check(catchUp, "catch-up refresh should fire")
     assertEqual(t.refreshCount, 1, "one refresh on regain")
     check(!t.isPending, "pending cleared")
+    check(t.isCooldownActive, "cooldown should be active after focus-regain refresh")
 }
 
 func testFocusRegainWithoutPending() {
@@ -160,10 +161,13 @@ func testFullCycle() {
     assertEqual(t.refreshCount, 2, "no refreshes while unfocused")
 
     // Phase 3: Regain focus
-    t.focusChanged(true)  // refresh #3 (catch-up)
+    t.focusChanged(true)  // refresh #3 (catch-up), cooldown starts
     assertEqual(t.refreshCount, 3)
+    check(t.isCooldownActive, "cooldown active after focus regain")
 
-    // Phase 4: Normal focused operation resumes
+    // Phase 4: Normal focused operation resumes — must expire cooldown first
+    t.cooldownExpired()  // no pending, cooldown ends
+    check(!t.isCooldownActive, "cooldown ended")
     t.indexChanged()  // refresh #4
     assertEqual(t.refreshCount, 4)
 }

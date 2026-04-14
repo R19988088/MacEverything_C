@@ -32,6 +32,7 @@
 		A1000017 /* SearchEnginePersistence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000024; };
 		A1000018 /* IndexRefreshThrottle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025; };
 		A1000019 /* TextHighlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026; };
+		A100001A /* StringUtils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000028; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -74,6 +75,8 @@
 		A2000024 /* SearchEnginePersistence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEnginePersistence.cpp; sourceTree = "<group>"; };
 		A2000025 /* IndexRefreshThrottle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexRefreshThrottle.swift; sourceTree = "<group>"; };
 		A2000026 /* TextHighlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextHighlight.swift; sourceTree = "<group>"; };
+		A2000027 /* StringUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = StringUtils.h; sourceTree = "<group>"; };
+		A2000028 /* StringUtils.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = StringUtils.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -172,6 +175,8 @@
 				A200001D /* ContentIndexPersistence.h */,
 				A200001E /* ContentIndexPersistence.cpp */,
 				A2000024 /* SearchEnginePersistence.cpp */,
+				A2000027 /* StringUtils.h */,
+				A2000028 /* StringUtils.cpp */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -268,6 +273,7 @@
 				A1000017 /* SearchEnginePersistence.cpp in Sources */,
 				A1000018 /* IndexRefreshThrottle.swift in Sources */,
 				A1000019 /* TextHighlight.swift in Sources */,
+				A100001A /* StringUtils.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

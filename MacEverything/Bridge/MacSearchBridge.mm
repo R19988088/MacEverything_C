@@ -735,7 +735,7 @@ static bool pathEndsWithApp(const std::string& path) {
         uint32_t offset = 0;
         bool valid = false;
     };
-    std::vector<SnippetResult> snippetResults(candidates.size());
+    __block std::vector<SnippetResult> snippetResults(candidates.size());
 
     dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
     dispatch_apply(candidates.size(), queue, ^(size_t i) {

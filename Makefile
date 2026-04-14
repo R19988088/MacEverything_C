@@ -12,10 +12,16 @@ test_all: test_all.cpp $(CORE_SRCS)
 benchmark: benchmark.cpp $(CORE_SRCS)
 	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) $^ -o $@
 
+# === Lint targets ===
+lint-bridge:
+	$(CXX) $(CXXFLAGS) -fsyntax-only -fobjc-arc -x objective-c++ \
+		-IMacEverything/Core -IMacEverything/Bridge \
+		MacEverything/Bridge/MacSearchBridge.mm
+
 # === Test targets ===
 test: test-fast
 
-test-fast: test_all
+test-fast: test_all lint-bridge
 	./test_all --fast
 
 test-slow: test_all

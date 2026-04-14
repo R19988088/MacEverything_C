@@ -139,6 +139,9 @@ class SearchViewModel: ObservableObject {
         displayItems = []
         totalMatches = 0
         queryTimeMs = 0
+        contentResults = []
+        isContentSearch = false
+        contentKeyword = ""
 
         // Delete cached index files so startIncremental does a full scan
         try? FileManager.default.removeItem(atPath: Self.cachePath)

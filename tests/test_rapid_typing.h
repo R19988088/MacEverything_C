@@ -248,12 +248,29 @@ inline void runRapidTypingTest() {
               "Scenario 4: Baseline CPU < 2s (20 queries)");
     }
 
-    // ── Scenario 5: Cool-down CPU utilization (idle after queries stop) ──
+    // ── Scenario 5: Cool-down CPU utilization (with FSEvents background) ──
     {
-        std::cout << "\n  Scenario 5: Cool-down CPU utilization\n";
+        std::cout << "\n  Scenario 5: Cool-down CPU utilization (with FSEvents)\n";
 
-        // Phase 1: Fire a burst of 50 queries to warm everything up
+        // Setup: temp directory + FileSystemWatcher to simulate real app background
+        auto tmpDir = fs::temp_directory_path() / ("maceverything_idle_" + std::to_string(getpid()));
+        fs::create_directories(tmpDir);
+
+        FileSystemWatcher watcher;
+        std::atomic<int> eventCount{0};
+        watcher.start(tmpDir.string(), [&](std::vector<FileSystemWatcher::Event> events) {
+            eventCount.fetch_add(static_cast<int>(events.size()), std::memory_order_relaxed);
+        });
+        // Let FSEvents stream settle (same pattern as test_fsevents.h)
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        // Phase 1: Fire burst queries + generate real FS events simultaneously
         {
+            // Create files to trigger FSEvents callbacks
+            for (int i = 0; i < 20; i++) {
+                std::ofstream(tmpDir / ("burst_" + std::to_string(i) + ".txt")) << "data";
+            }
+
             std::vector<std::thread> burst;
             for (int i = 0; i < 50; i++) {
                 burst.emplace_back([&engine, i] {
@@ -264,28 +281,38 @@ inline void runRapidTypingTest() {
             for (auto& t : burst) t.join();
         }
 
-        // Phase 2: All queries done. Measure CPU during a quiet 500ms window.
+        // Phase 2: Wait for FSEvents to drain (latency is 300ms in FileSystemWatcher)
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        int eventsReceived = eventCount.load(std::memory_order_relaxed);
+
+        // Phase 3: All queries done, FSEvents drained. Measure CPU during idle.
+        // FileSystemWatcher is still running in background (GCD queue alive).
         constexpr int IDLE_MS = 500;
         auto idleBefore = ResourceSnapshot::take();
         std::this_thread::sleep_for(std::chrono::milliseconds(IDLE_MS));
         auto idleAfter = ResourceSnapshot::take();
 
         double idleCpuMs = idleAfter.cpu.totalMs() - idleBefore.cpu.totalMs();
-        // CPU utilization = CPU time consumed / wall time elapsed
-        // On an N-core machine, max utilization is N * 100%.
-        // We want near 0% — allow up to 5% of a single core.
         double utilizationPct = (idleCpuMs / IDLE_MS) * 100.0;
 
+        std::cout << "    FSEvents received: " << eventsReceived << " events\n";
         std::cout << "    Idle window: " << IDLE_MS << " ms\n";
         std::cout << "    CPU consumed during idle: " << std::fixed << std::setprecision(1)
                   << idleCpuMs << " ms\n";
         std::cout << "    CPU utilization: " << std::fixed << std::setprecision(1)
                   << utilizationPct << "% (of 1 core)\n";
 
+        check(eventsReceived > 0,
+              "Scenario 5: FSEvents received events during burst");
         check(utilizationPct < 5.0,
-              "Scenario 5: CPU utilization < 5% after queries stop");
+              "Scenario 5: CPU utilization < 5% after queries stop (with FSEvents)");
         check(idleCpuMs < 25.0,
               "Scenario 5: CPU time < 25ms during 500ms idle window");
+
+        // Cleanup
+        watcher.stop();
+        fs::remove_all(tmpDir);
     }
 
     // ── Overall resource summary ──

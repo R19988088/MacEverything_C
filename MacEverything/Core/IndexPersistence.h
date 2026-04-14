@@ -5,6 +5,7 @@
 #include "FileSystemWatcher.h"
 #include <string>
 #include <memory>
+#include <mutex>
 #include <dispatch/dispatch.h>
 
 /// Orchestrates index persistence: base file + WAL + auto-compaction.
@@ -52,4 +53,5 @@ private:
     std::string walPath_;
     dispatch_source_t compactionTimer_ = nullptr;
     dispatch_queue_t compactionQueue_ = nullptr;
+    std::mutex walMutex_;
 };

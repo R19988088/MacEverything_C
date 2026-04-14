@@ -49,6 +49,10 @@ public:
     /// Maximum WAL file size (20 MB).
     static constexpr size_t kMaxWALSize = 20 * 1024 * 1024;
 
+    /// H-3: WAL file header constants
+    static constexpr uint32_t kMagic   = 0x43574C31; // "CWL1"
+    static constexpr uint32_t kVersion = 1;
+
 private:
     FILE* file_ = nullptr;
     std::string path_;

@@ -16,7 +16,23 @@ bool ContentIndexWAL::open(const std::string& walPath) {
 
     path_ = walPath;
     file_ = fopen(walPath.c_str(), "ab");
-    return file_ != nullptr;
+    if (!file_) return false;
+
+    // H-3: Write magic+version header if this is a new (empty) file
+    long pos = ftell(file_);
+    if (pos == 0) {
+        uint32_t magic = kMagic;
+        uint32_t version = kVersion;
+        if (fwrite(&magic, sizeof(uint32_t), 1, file_) != 1 ||
+            fwrite(&version, sizeof(uint32_t), 1, file_) != 1) {
+            fclose(file_);
+            file_ = nullptr;
+            return false;
+        }
+        fflush(file_);
+    }
+
+    return true;
 }
 
 bool ContentIndexWAL::appendAdd(uint32_t fileIndex, uint64_t contentHash,
@@ -97,6 +113,15 @@ std::vector<ContentIndexWAL::Entry> ContentIndexWAL::readAll(const std::string& 
     FILE* f = fopen(walPath.c_str(), "rb");
     if (!f) return entries;
 
+    // H-3: Verify magic+version header
+    uint32_t magic = 0, version = 0;
+    if (fread(&magic, sizeof(uint32_t), 1, f) != 1 ||
+        fread(&version, sizeof(uint32_t), 1, f) != 1 ||
+        magic != kMagic || version != kVersion) {
+        // Legacy WAL without header — try reading from the beginning
+        fseek(f, 0, SEEK_SET);
+    }
+
     while (true) {
         long startPos = ftell(f);
         if (startPos < 0) break;
@@ -137,7 +162,12 @@ std::vector<ContentIndexWAL::Entry> ContentIndexWAL::readAll(const std::string& 
         fseek(f, afterCRC, SEEK_SET);
 
         uint32_t computedCRC = IndexWAL::crc32(rawBuf.data(), rawBuf.size());
-        if (computedCRC != storedCRC) break; // CRC mismatch — stop at corrupt entry
+        if (computedCRC != storedCRC) {
+            // H-4: Log CRC mismatch location for diagnostics
+            std::cerr << "[ContentIndexWAL] CRC mismatch at offset " << startPos
+                      << ", recovered " << entries.size() << " entries\n";
+            break;
+        }
 
         entries.push_back(std::move(entry));
     }
@@ -252,17 +282,21 @@ void ContentIndexPersistence::compact() {
         wal_ = newWal;
     }
 
-    // 3. Close and delete old WAL
-    if (oldWal) {
-        oldWal->closeAndDelete();
-    }
-
-    // 4. Write new base file
+    // 3. Write new base file BEFORE deleting old WAL (crash-safety: C-1 fix)
     if (index_->saveToFile(basePath_)) {
         std::cout << "[ContentIndexPersistence] Compacted content index, files="
                   << index_->indexedFileCount() << "\n";
+        // 4. Only delete old WAL after base file is safely written
+        if (oldWal) {
+            oldWal->closeAndDelete();
+        }
     } else {
-        std::cerr << "[ContentIndexPersistence] Failed to write content base index\n";
+        std::cerr << "[ContentIndexPersistence] Failed to write content base index"
+                  << " — keeping old WAL for recovery\n";
+        // Keep old WAL alive for crash recovery; close without deleting
+        if (oldWal) {
+            oldWal->close();
+        }
     }
 
     // 5. Rename new WAL to standard path

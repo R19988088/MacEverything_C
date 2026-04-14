@@ -161,6 +161,7 @@ class SearchViewModel: ObservableObject {
             loadedCount = 0
             isContentSearch = false
             contentResults = []
+            contentKeyword = "" // H-9: reset cached keyword
             // Bump C++ query generation to cancel any in-flight dispatch_apply scan
             _ = bridge.queryIndices("", maxResults: 0)
             if scanComplete {
@@ -187,6 +188,7 @@ class SearchViewModel: ObservableObject {
             loadedCount = 0
 
             let keyword = String(text.dropFirst(7))
+            contentKeyword = keyword // H-9: cache computed keyword
             guard !keyword.isEmpty else {
                 contentResults = []
                 totalMatches = 0
@@ -203,6 +205,7 @@ class SearchViewModel: ObservableObject {
         } else {
             isContentSearch = false
             contentResults = []
+            contentKeyword = "" // H-9: reset cached keyword
 
             searchTask = Task { @MainActor in
                 // 80ms debounce
@@ -373,11 +376,6 @@ class SearchViewModel: ObservableObject {
         loadedCount < cachedResults.count
     }
 
-    var contentKeyword: String {
-        let lower = searchText.lowercased()
-        if lower.hasPrefix("infile:") {
-            return String(searchText.dropFirst(7))
-        }
-        return ""
-    }
+    // H-9: Cached to avoid recomputing lowercased() + hasPrefix on every access
+    private(set) var contentKeyword: String = ""
 }

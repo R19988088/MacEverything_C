@@ -543,11 +543,10 @@ std::vector<ContentMatch> ContentIndex::query(const std::string& keyword, uint32
             candidates.swap(temp);
         }
     } else {
-        // Short keyword: collect all indexed file indices for brute-force
-        candidates.reserve(fileInfos_.size());
-        for (const auto& [fileIdx, _] : fileInfos_) {
-            candidates.push_back(fileIdx);
-        }
+        // C-4 fix: Short keyword (<3 chars) cannot generate trigrams.
+        // Returning all indexed files is prohibitively expensive (100k+ files).
+        // Consistent with SearchEngine::query() which also requires min 2 chars.
+        return {};
     }
 
     // Release shared lock before doing file I/O for verification

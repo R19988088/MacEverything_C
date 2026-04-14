@@ -171,12 +171,19 @@ struct ContentView: View {
                     LazyVStack(spacing: 0) {
                         if viewModel.showingRecent && !viewModel.displayItems.isEmpty {
                             HStack {
-                                Image(systemName: "clock")
-                                    .foregroundColor(.secondary)
-                                Text("Recent Files")
-                                    .font(.callout)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.secondary)
+                                HStack(spacing: 4) {
+                                    Image(systemName: "clock")
+                                    Text("Recent Files")
+                                        .font(.callout)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 5)
+                                        .fill(Color.orange)
+                                )
                                 Spacer()
                             }
                             .padding(.horizontal, 12)
@@ -205,11 +212,6 @@ struct ContentView: View {
                         }
                     }
                 }
-                .background(
-                    viewModel.showingRecent
-                        ? Color.orange.opacity(0.06)
-                        : Color.clear
-                )
                 .animation(.easeInOut(duration: 0.25), value: viewModel.showingRecent)
 
                 if viewModel.totalMatches > 0 {

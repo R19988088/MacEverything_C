@@ -1,10 +1,18 @@
 import SwiftUI
+import Combine
 
 struct PermissionView: View {
     @State private var hasFullDiskAccess: Bool = true
 
+    private let fdaTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
+
     var body: some View {
         Group {}.onAppear { checkAccess() }
+            .onReceive(fdaTimer) { _ in
+                if !hasFullDiskAccess {
+                    checkAccess()
+                }
+            }
 
         if !hasFullDiskAccess {
             HStack {

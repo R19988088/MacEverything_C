@@ -213,10 +213,18 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     // compactRecords() replaces records_/lowerNames_ via move-assign under unique_lock,
     // which would free the old storage. shared_lock prevents compaction during query.
     // dispatch_apply under shared_lock is safe — multiple readers can hold it concurrently.
+    auto beforeLock = std::chrono::steady_clock::now();
     std::shared_lock lock(mutex_);
+    auto afterLock = std::chrono::steady_clock::now();
 
     if (records_.empty()) return {};
     size_t totalSize = records_.size();
+
+    // Timing instrumentation: default all phase timestamps to afterLock
+    auto beforeTrigram = afterLock, afterTrigram = afterLock;
+    auto afterPhase1 = afterLock;
+    auto beforePhase2 = afterLock, afterPhase2 = afterLock;
+    size_t phase1Results = 0;
 
     std::vector<uint32_t> trigramCandidates;
     bool useTrigramIndex = false;
@@ -225,6 +233,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     useTrigramIndex = !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
 
     if (useTrigramIndex) {
+        beforeTrigram = std::chrono::steady_clock::now();
         auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
         std::unordered_set<Trigram> uniqueKeyTrigrams(keyTrigrams.begin(), keyTrigrams.end());
 
@@ -263,6 +272,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         } else {
             useTrigramIndex = false;
         }
+        afterTrigram = std::chrono::steady_clock::now();
     }
 
     // Collect results: (index, priority, pathLen) so sorting doesn't need records_ access.
@@ -292,10 +302,14 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             }
         }
 
+        afterPhase1 = std::chrono::steady_clock::now();
+        phase1Results = merged.size();
+
         // Phase 2: Linear scan for path-only matches (skip if maxResults already satisfied)
         if (maxResults > 0 && merged.size() >= maxResults) {
-            // Already have enough results from trigram name matches, skip path scan
+            beforePhase2 = afterPhase2 = afterPhase1;
         } else {
+        beforePhase2 = std::chrono::steady_clock::now();
         // Use parallel scan for path matches
         unsigned numThreads = std::thread::hardware_concurrency();
         if (numThreads < 1) numThreads = 1;
@@ -363,9 +377,11 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         for (auto& v : threadResults) {
             merged.insert(merged.end(), v.begin(), v.end());
         }
+        afterPhase2 = std::chrono::steady_clock::now();
         } // end Phase 2 maxResults check
     } else {
         // Original linear scan path (for glob patterns or short keywords)
+        beforePhase2 = std::chrono::steady_clock::now();
         unsigned numThreads = std::thread::hardware_concurrency();
         if (numThreads < 1) numThreads = 1;
         if (numThreads > 32) numThreads = 32;
@@ -429,6 +445,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         for (auto& v : threadResults) {
             merged.insert(merged.end(), v.begin(), v.end());
         }
+        afterPhase2 = std::chrono::steady_clock::now();
     }
 
     // Final cancellation check before sorting
@@ -436,9 +453,11 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     // C-1 fix: Release shared_lock before sorting — Match structs contain only
     // local data (idx, priority, pathLen), no references into records_/lowerNames_.
+    auto beforeUnlock = std::chrono::steady_clock::now();
     lock.unlock();
 
     // Sort by priority, then by full path length (shorter = shallower = better)
+    auto beforeSort = std::chrono::steady_clock::now();
     auto cmp = [](const Match& a, const Match& b) {
         if (a.priority != b.priority) return a.priority < b.priority;
         return a.pathLen < b.pathLen;
@@ -452,6 +471,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     } else {
         std::sort(merged.begin(), merged.end(), cmp);
     }
+    auto afterSort = std::chrono::steady_clock::now();
 
     std::vector<uint32_t> result;
     result.reserve(resultCount);
@@ -462,7 +482,29 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     auto elapsed = std::chrono::steady_clock::now() - queryStart;
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     if (ms > 100) {
-        LOG_INFO("SearchEngine", "Query \"" << keyword << "\" took " << ms << "ms, " << result.size() << " results");
+        auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterLock - beforeLock).count();
+        auto lockHeldMs = std::chrono::duration_cast<std::chrono::milliseconds>(beforeUnlock - afterLock).count();
+        auto sortMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterSort - beforeSort).count();
+
+        if (useTrigramIndex) {
+            auto trigramMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterTrigram - beforeTrigram).count();
+            auto phase1Ms = std::chrono::duration_cast<std::chrono::milliseconds>(afterPhase1 - afterTrigram).count();
+            auto phase2Ms = std::chrono::duration_cast<std::chrono::milliseconds>(afterPhase2 - beforePhase2).count();
+            LOG_INFO("SearchEngine", "Query \"" << keyword << "\" total=" << ms
+                << "ms lock_wait=" << lockWaitMs << "ms trigram=" << trigramMs
+                << "ms phase1=" << phase1Ms << "ms phase2=" << phase2Ms
+                << "ms lock_held=" << lockHeldMs << "ms sort=" << sortMs
+                << "ms | path=trigram candidates=" << trigramCandidates.size()
+                << " phase1=" << phase1Results
+                << " phase2=" << (merged.size() - phase1Results)
+                << " results=" << result.size() << " records=" << totalSize);
+        } else {
+            auto scanMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterPhase2 - beforePhase2).count();
+            LOG_INFO("SearchEngine", "Query \"" << keyword << "\" total=" << ms
+                << "ms lock_wait=" << lockWaitMs << "ms scan=" << scanMs
+                << "ms lock_held=" << lockHeldMs << "ms sort=" << sortMs
+                << "ms | path=linear results=" << result.size() << " records=" << totalSize);
+        }
     }
 
     return result;

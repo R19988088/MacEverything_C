@@ -36,9 +36,9 @@ void Logger::init(const std::string& logDir, LogLevel level) {
 
     initialized_.store(true, std::memory_order_release);
 
-    // Write startup marker (force flush so it's on disk immediately)
+    // Write startup marker
     std::string startLine = formatTimestamp() + " [INFO] [Logger] === Log session started ===\n";
-    writeRaw(startLine, /*forceFlush=*/true);
+    writeRaw(startLine);
 }
 
 void Logger::log(LogLevel level, const char* module, const std::string& message) {
@@ -50,8 +50,6 @@ void Logger::log(LogLevel level, const char* module, const std::string& message)
 
     std::string line = formatTimestamp() + " [" + levelToString(level) + "] ["
                      + module + "] " + message + "\n";
-
-    bool forceFlush = (level == LogLevel::Error);
 
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -65,7 +63,7 @@ void Logger::log(LogLevel level, const char* module, const std::string& message)
     // File output
     if (file_) {
         rotateIfNeeded();
-        writeRaw(line, forceFlush);
+        writeRaw(line);
     }
 }
 
@@ -87,8 +85,6 @@ void Logger::shutdown() {
     if (file_) {
         std::string line = formatTimestamp() + " [INFO] [Logger] === Log session ended ===\n";
         writeRaw(line);
-        fflush(file_);
-        unflushedCount_ = 0;
         fclose(file_);
         file_ = nullptr;
     }
@@ -121,15 +117,11 @@ void Logger::rotateIfNeeded() {
     }
 }
 
-void Logger::writeRaw(const std::string& line, bool forceFlush) {
+void Logger::writeRaw(const std::string& line) {
     // Caller holds mutex_
     if (!file_) return;
     fwrite(line.data(), 1, line.size(), file_);
-    ++unflushedCount_;
-    if (forceFlush || unflushedCount_ >= kFlushInterval) {
-        fflush(file_);
-        unflushedCount_ = 0;
-    }
+    fflush(file_);
 }
 
 std::string Logger::formatTimestamp() const {

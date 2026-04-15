@@ -58,6 +58,9 @@ bool IndexWAL::open(const std::string& walPath) {
             return false;
         }
         fflush(file_);
+        currentSize_ = 2 * sizeof(uint32_t); // header: magic + version
+    } else {
+        currentSize_ = static_cast<size_t>(pos);
     }
 
     entryCount_ = 0;
@@ -69,8 +72,7 @@ bool IndexWAL::append(WALOp op, const std::string& fullPath, const FileRecord& r
     if (!file_) return false;
 
     // H-6: Check WAL file size limit before writing
-    struct stat st;
-    if (fstat(fileno(file_), &st) == 0 && static_cast<size_t>(st.st_size) >= kMaxWALSize) {
+    if (currentSize_ >= kMaxWALSize) {
         return false;
     }
 
@@ -105,6 +107,8 @@ bool IndexWAL::append(WALOp op, const std::string& fullPath, const FileRecord& r
     if (fwrite(buf.data(), 1, buf.size(), file_) != buf.size()) return false;
     uint32_t checksum = crc32(buf.data(), buf.size());
     if (fwrite(&checksum, sizeof(uint32_t), 1, file_) != 1) return false;
+
+    currentSize_ += buf.size() + sizeof(uint32_t);
 
     fflush(file_);
     entryCount_++;

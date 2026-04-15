@@ -551,8 +551,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
     std::unique_lock lock(mutex_);
 
     // ── Phase 1: Tombstone old records matching prefix ──
-    // Same prefix-match logic as removeByPathPrefix, but skip removeTrigramsForRecord
-    // because we rebuild the entire trigram index at the end.
+    // Remove trigrams incrementally for each tombstoned record.
     std::string lowerPrefix = me::toLower(pathPrefix);
     uint32_t removed = 0;
     for (auto it = pathIndex_.begin(); it != pathIndex_.end(); ) {
@@ -568,6 +567,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
                 wal_->append(WALOp::Remove, fullPath);
             }
 
+            removeTrigramsForRecord(idx);
             records_[idx].type = 0;
             records_[idx].name.clear();
             records_[idx].size = 0;
@@ -581,7 +581,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
         }
     }
 
-    // ── Phase 2: Add fresh records (skip per-record trigram insertion) ──
+    // ── Phase 2: Add fresh records with incremental trigram insertion ──
     for (auto& record : freshRecords) {
         uint32_t newIdx = static_cast<uint32_t>(records_.size());
         std::string fullPath = makeFullPath(record.path, record.name);
@@ -597,11 +597,11 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
         lowerNames_.push_back(lower);
         pathIndices_.push_back(pIdx);
         pathIndex_[me::toLower(fullPath)] = newIdx;
+        addTrigramsForRecord(newIdx, lower);
         liveCount_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    // ── Phase 3: Bulk rebuild trigram index + recent cache ──
-    buildTrigramIndex();
+    // ── Phase 3: Rebuild recent cache ──
     rebuildRecentCache();
 
     return removed;

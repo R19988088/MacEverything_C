@@ -19,7 +19,6 @@
     LOG_INFO("Bridge", "Content indexing started");
 
     auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
-    auto* shuttingDown = &_shuttingDown;
     auto* cancelFlag = &_cancelContentIndexing; // H-8
     __weak MacSearchBridge *weakSelf = self;
 
@@ -53,7 +52,9 @@
         dispatch_queue_t concurrentQ = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
         const auto& entries = *fileEntries;
         dispatch_apply(total, concurrentQ, ^(size_t i) {
-            if (shuttingDown->load(std::memory_order_relaxed)) return;
+            MacSearchBridge *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (strongSelf->_shuttingDown.load(std::memory_order_relaxed)) return;
             if (cancelFlag->load(std::memory_order_relaxed)) return;
 
             const auto& entry = entries[i];
@@ -252,14 +253,12 @@
     if (!engine || !contentIndex) return;
 
     // P-5: Cancel in-flight content indexing and wait via semaphore (not spin-wait)
+    // P0-1: Increment generation instead of replacing semaphore to avoid race
+    _contentIndexGeneration.fetch_add(1, std::memory_order_acq_rel);
     if (_isContentIndexing.load(std::memory_order_relaxed)) {
         _cancelContentIndexing.store(true, std::memory_order_relaxed);
         dispatch_semaphore_wait(_contentIndexingSemaphore,
                                 dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
-        // C-2: Reset semaphore to drain accumulated signals from previous
-        // startContentIndexing completions, preventing future waits from
-        // passing through immediately.
-        _contentIndexingSemaphore = dispatch_semaphore_create(0);
     }
 
     // H8 fix: Stop old persistence's auto-compaction timer before replacing,

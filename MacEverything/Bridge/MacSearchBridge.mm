@@ -92,6 +92,7 @@
         _isContentIndexing.store(false, std::memory_order_relaxed);
         _shuttingDown.store(false, std::memory_order_relaxed);
         _cancelContentIndexing.store(false, std::memory_order_relaxed);
+        _contentIndexGeneration.store(0, std::memory_order_relaxed);
         // H-7: Serial queue for mutations
         _mutationQueue = dispatch_queue_create("com.maceverything.mutation", DISPATCH_QUEUE_SERIAL);
         // P-5: Semaphore for waiting on content indexing completion
@@ -393,12 +394,11 @@
 
     // C-4: Wait for content indexing dispatch_apply to finish before compacting.
     // _shuttingDown + _cancelContentIndexing are checked every iteration, so it will exit quickly.
+    // P0-1: Increment generation instead of replacing semaphore to avoid race
+    _contentIndexGeneration.fetch_add(1, std::memory_order_acq_rel);
     if (_isContentIndexing.load(std::memory_order_relaxed)) {
         dispatch_semaphore_wait(_contentIndexingSemaphore,
                                 dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
-        // C-2: Reset semaphore to drain accumulated signals from previous
-        // startContentIndexing completions.
-        _contentIndexingSemaphore = dispatch_semaphore_create(0);
     }
 
     // 4. Now safe to compact on main thread — no competing lock holders
@@ -736,19 +736,22 @@ static bool pathEndsWithApp(const std::string& path) {
     if (!engine) return;
 
     std::string dir([dirPath UTF8String]);
-    auto* shuttingDown = &_shuttingDown;
     __weak MacSearchBridge *weakSelf = self;
 
     // H-7: Dispatch to serial mutation queue to prevent concurrent index mutations
     dispatch_async(_mutationQueue, ^{
-        if (shuttingDown->load(std::memory_order_relaxed)) return;
+        MacSearchBridge *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf->_shuttingDown.load(std::memory_order_relaxed)) return;
 
         // Scan the subtree using DirectoryScanner
         auto scanner = std::make_shared<DirectoryScanner>();
         scanner->scan(dir);
         auto freshRecords = scanner->takeResults();
 
-        if (shuttingDown->load(std::memory_order_relaxed)) return;
+        strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf->_shuttingDown.load(std::memory_order_relaxed)) return;
 
         // Batch-replace: tombstone old prefix records + add fresh records + rebuild
         // trigram index once, instead of per-record remove+add (O(N²) → O(N))

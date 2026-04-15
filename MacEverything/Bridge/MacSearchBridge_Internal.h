@@ -38,6 +38,8 @@
     std::shared_mutex _contentPersistenceMutex;
     // P-5: Semaphore signaled when content indexing completes
     dispatch_semaphore_t _contentIndexingSemaphore;
+    // P0-1: Generation counter to detect stale content indexing completions
+    std::atomic<uint64_t> _contentIndexGeneration;
 }
 
 /// Thread-safe engine accessor (C-4)

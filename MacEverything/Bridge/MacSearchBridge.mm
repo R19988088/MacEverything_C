@@ -85,7 +85,7 @@
     self = [super init];
     if (self) {
         _engine = std::make_shared<SearchEngine>();
-        _watcher = std::make_shared<FileSystemWatcher>();
+        _watcher = std::make_shared<FileSystemWatcher>("live");
         _contentIndex = std::make_shared<ContentIndex>();
         _isScanning.store(false, std::memory_order_relaxed);
         _isMonitoring.store(false, std::memory_order_relaxed);
@@ -346,7 +346,7 @@
         auto journalTruncated = std::make_shared<std::atomic<bool>>(false);
 
         __weak MacSearchBridge *weakSelf = self;
-        auto watcherForReplay = std::make_unique<FileSystemWatcher>();
+        auto watcherForReplay = std::make_unique<FileSystemWatcher>("replay");
         auto* watcherPtr = watcherForReplay.get();
 
         dispatch_semaphore_t sem = dispatch_semaphore_create(0);

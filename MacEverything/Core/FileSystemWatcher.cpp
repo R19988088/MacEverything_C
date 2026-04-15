@@ -72,11 +72,12 @@ void FileSystemWatcher::startInternal(const std::string& rootPath,
     queue_ = dispatch_queue_create("com.maceverything.fswatcher", DISPATCH_QUEUE_SERIAL);
     FSEventStreamSetDispatchQueue(stream_, queue_);
     FSEventStreamStart(stream_);
-    LOG_INFO("FSWatcher", "Started watching: " << rootPath);
+    LOG_INFO("FSWatcher", "[" << label_ << "] Started watching: " << rootPath);
 }
 
 void FileSystemWatcher::stop() {
-    LOG_INFO("FSWatcher", "Stopping file system watcher");
+    if (!stream_ && !queue_) return;
+    LOG_INFO("FSWatcher", "[" << label_ << "] Stopped");
     if (stream_) {
         FSEventStreamStop(stream_);
         FSEventStreamInvalidate(stream_);

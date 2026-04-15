@@ -77,6 +77,27 @@ void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
     }
 }
 
+void SearchEngine::markPageDirty(uint32_t recordIndex) {
+    uint32_t page = recordIndex / kRecordsPerPage;
+    if (page < dirtyPages_.size()) {
+        dirtyPages_[page] = true;
+    }
+}
+
+std::vector<uint32_t> SearchEngine::getDirtyPageNumbers() const {
+    std::shared_lock lock(mutex_);
+    std::vector<uint32_t> result;
+    for (size_t i = 0; i < dirtyPages_.size(); i++) {
+        if (dirtyPages_[i]) result.push_back(static_cast<uint32_t>(i));
+    }
+    return result;
+}
+
+void SearchEngine::clearDirtyPages() {
+    std::unique_lock lock(mutex_);
+    std::fill(dirtyPages_.begin(), dirtyPages_.end(), false);
+}
+
 void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     std::unique_lock lock(mutex_);
 
@@ -143,6 +164,11 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     rebuildRecentCache();
 
     liveCount_.store(static_cast<uint32_t>(records_.size()), std::memory_order_relaxed);
+
+    // Initialize dirty page bitmap (no pages dirty after initial load)
+    uint32_t pageCount = (static_cast<uint32_t>(records_.size()) + kRecordsPerPage - 1) / kRecordsPerPage;
+    dirtyPages_.assign(pageCount, false);
+    fullRewriteNeeded_.store(false, std::memory_order_relaxed);
 }
 
 bool SearchEngine::isGlobPattern(const std::string& s) {
@@ -480,6 +506,12 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     // Update trigram index
     addTrigramsForRecord(idx, lower);
 
+    // Dirty page tracking
+    if (idx / kRecordsPerPage >= dirtyPages_.size()) {
+        dirtyPages_.resize(idx / kRecordsPerPage + 1, false);
+    }
+    markPageDirty(idx);
+
     liveCount_.fetch_add(1, std::memory_order_relaxed);
     addToRecentCache(idx, records_[idx].modTime);
 
@@ -499,6 +531,7 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
     // Clean up trigram index (must happen before clearing lowerNames_)
     removeTrigramsForRecord(idx);
     records_[idx].type = 0;
+    markPageDirty(idx);
     records_[idx].name.clear();
     records_[idx].size = 0;
     records_[idx].modTime = 0;
@@ -533,6 +566,7 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
             // Clean up trigram index (must happen before clearing lowerNames_)
             removeTrigramsForRecord(idx);
             records_[idx].type = 0;
+            markPageDirty(idx);
             records_[idx].name.clear();
             records_[idx].size = 0;
             records_[idx].modTime = 0;
@@ -572,6 +606,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
 
             removeTrigramsForRecord(idx);
             records_[idx].type = 0;
+            markPageDirty(idx);
             records_[idx].name.clear();
             records_[idx].size = 0;
             records_[idx].modTime = 0;
@@ -601,6 +636,10 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
         pathIndices_.push_back(pIdx);
         pathIndex_[me::toLower(fullPath)] = newIdx;
         addTrigramsForRecord(newIdx, lower);
+        if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
+            dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
+        }
+        markPageDirty(newIdx);
         liveCount_.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -623,6 +662,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
         // Clean up trigram index (must happen before clearing lowerNames_)
         removeTrigramsForRecord(idx);
         records_[idx].type = 0;
+        markPageDirty(idx);
         records_[idx].name.clear();
         records_[idx].size = 0;
         records_[idx].modTime = 0;
@@ -647,6 +687,10 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     pathIndices_.push_back(pIdx);
     pathIndex_[me::toLower(newFullPath)] = newIdx;
     addTrigramsForRecord(newIdx, lower);
+    if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
+        dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
+    }
+    markPageDirty(newIdx);
     liveCount_.fetch_add(1, std::memory_order_relaxed);
     addToRecentCache(newIdx, records_[newIdx].modTime);
 }
@@ -782,6 +826,8 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         LOG_INFO("SearchEngine", "COW compaction done: replayed " << replayedAdds
                  << " adds, " << replayedDeletes << " deletes, live=" << cdLiveCount);
     }
+
+    fullRewriteNeeded_.store(true, std::memory_order_relaxed);
 
     return remap;
 }

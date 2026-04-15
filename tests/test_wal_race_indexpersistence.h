@@ -23,8 +23,10 @@ static void runWalRaceIndexPersistenceTest() {
     }
     engine->loadRecords(std::move(records));
 
+    std::string basePath = tmpDir + "/idx.bin";
+    std::string walPath = tmpDir + "/idx.wal";
     auto persistence = std::make_shared<IndexPersistence>(
-        engine, tmpDir + "/idx.bin", tmpDir + "/idx.wal");
+        engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
     persistence->attachWAL();
 
     // Test 1: Concurrent compact() calls should not race on wal_

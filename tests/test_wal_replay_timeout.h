@@ -37,7 +37,7 @@ static void runWalReplayTimeoutTest() {
     // Test: batch WAL replay merges correctly
     {
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         uint64_t eventId = persistence.load();
         check(eventId == 42, "C14: WAL batch replay succeeded, eventId preserved");
         check(testEngine->liveRecordCount() == 1100, "C14: All records loaded (100 base + 1000 WAL)");

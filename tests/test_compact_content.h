@@ -64,7 +64,7 @@ static void runCompactContentIndexTest() {
     // Test via IndexPersistence.compact() integration
     std::string basePath = tmpDir + "/test_index.bin";
     std::string walPath = tmpDir + "/test_index.wal";
-    auto persistence = std::make_unique<IndexPersistence>(engine, basePath, walPath);
+    auto persistence = std::make_unique<IndexPersistence>(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
     persistence->attachWAL();
 
     // Add a new record, remove it, then compact via IndexPersistence

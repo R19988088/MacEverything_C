@@ -46,16 +46,14 @@ static void testIndexWalDirtyFlag() {
 static void testIndexPersistenceSkipsCleanCompaction() {
     std::cout << "\n─── IndexPersistence skips clean compaction ───\n";
 
-    std::string basePath = "/tmp/test_dirty_index.bin";
-    std::string walPath  = "/tmp/test_dirty_index.wal";
-
-    // Clean up
-    std::remove(basePath.c_str());
-    std::remove(walPath.c_str());
-    std::remove((walPath + ".new").c_str());
+    std::string tmpDir = "/tmp/test_dirty_index_" + std::to_string(getpid());
+    fs::create_directories(tmpDir);
+    std::string basePath = tmpDir + "/index.bin";
+    std::string walPath  = tmpDir + "/index.wal";
+    std::string ptPath   = ptablePathFor(basePath);
 
     auto engine = std::make_shared<SearchEngine>();
-    IndexPersistence persistence(engine, basePath, walPath);
+    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptPath);
     persistence.attachWAL();
 
     // Add a record so there's something to compact
@@ -69,10 +67,10 @@ static void testIndexPersistenceSkipsCleanCompaction() {
 
     // First compaction should succeed (WAL is dirty from addOrUpdate)
     persistence.compact(1, /*force=*/true);
-    check(fs::exists(basePath), "base index should be written after dirty compaction");
+    check(fs::exists(ptPath), "ptable should be written after dirty compaction");
 
     // Get file modification time after first compaction
-    auto modTime1 = fs::last_write_time(basePath);
+    auto modTime1 = fs::last_write_time(ptPath);
 
     // Wait briefly to ensure filesystem timestamp granularity
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -80,13 +78,12 @@ static void testIndexPersistenceSkipsCleanCompaction() {
     // Second compaction should be skipped (no mutations)
     persistence.compact(2);
 
-    // Base file should not be rewritten
-    auto modTime2 = fs::last_write_time(basePath);
-    check(modTime1 == modTime2, "base index should NOT be rewritten when no mutations");
+    // Ptable should not be rewritten
+    auto modTime2 = fs::last_write_time(ptPath);
+    check(modTime1 == modTime2, "ptable should NOT be rewritten when no mutations");
 
     // Clean up
-    std::remove(basePath.c_str());
-    std::remove(walPath.c_str());
+    fs::remove_all(tmpDir);
 }
 
 // ─────────── ContentIndexPersistence skips compaction when clean ───────────

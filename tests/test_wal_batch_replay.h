@@ -16,6 +16,8 @@ static void runWalBatchReplayTests() {
     auto cleanup = [&]() {
         fs::remove(basePath);
         fs::remove(walPath);
+        fs::remove(pagesPathFor(basePath));
+        fs::remove(ptablePathFor(basePath));
     };
 
     // ── Test 1: Add entries merge correctly ──
@@ -42,7 +44,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         uint64_t eventId = persistence.load();
         check(eventId == 10, "C27: Add-only WAL preserves eventId");
         check(testEngine->liveRecordCount() == 80, "C27: Add-only WAL: 50 base + 30 added = 80");
@@ -70,7 +72,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         persistence.load();
         check(testEngine->liveRecordCount() == 40, "C27: Remove WAL: 50 - 10 = 40");
 
@@ -108,7 +110,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         persistence.load();
         check(testEngine->liveRecordCount() == 20, "C27: Update WAL preserves record count (20)");
 
@@ -153,7 +155,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         persistence.load();
         // 100 - 20 removed + 15 added = 95 (updates don't change count)
         check(testEngine->liveRecordCount() == 95, "C27: Mixed WAL: 100 - 20 + 15 = 95");
@@ -177,7 +179,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         persistence.load();
         check(testEngine->liveRecordCount() == 1, "C27: Idempotent Add keeps count at 1");
 
@@ -207,7 +209,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         persistence.load();
         check(testEngine->liveRecordCount() == 1, "C27: Remove non-existent path is a no-op");
     }
@@ -218,6 +220,8 @@ static void runWalBatchReplayTests() {
         std::string walOnlyPath = tmpDir + "/walonly.wal";
         fs::remove(emptyBase);
         fs::remove(walOnlyPath);
+        fs::remove(pagesPathFor(emptyBase));
+        fs::remove(ptablePathFor(emptyBase));
 
         IndexWAL wal;
         wal.open(walOnlyPath);
@@ -229,7 +233,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, emptyBase, walOnlyPath);
+        IndexPersistence persistence(testEngine, emptyBase, walOnlyPath, pagesPathFor(emptyBase), ptablePathFor(emptyBase));
         uint64_t eventId = persistence.load();
         check(eventId == 0, "C27: No base file returns eventId=0");
         check(testEngine->liveRecordCount() == 50, "C27: WAL-only loads 50 records");
@@ -252,7 +256,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         persistence.load();
         check(testEngine->liveRecordCount() == 0, "C27: Case-insensitive Remove works");
     }
@@ -289,7 +293,7 @@ static void runWalBatchReplayTests() {
         wal.close();
 
         auto testEngine = std::make_shared<SearchEngine>();
-        IndexPersistence persistence(testEngine, basePath, walPath);
+        IndexPersistence persistence(testEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
 
         auto start = std::chrono::steady_clock::now();
         persistence.load();
@@ -337,7 +341,7 @@ static void runWalBatchReplayTests() {
 
         // Batch replay (our new code path)
         auto batchEngine = std::make_shared<SearchEngine>();
-        IndexPersistence batchPersist(batchEngine, basePath, walPath);
+        IndexPersistence batchPersist(batchEngine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
         batchPersist.load();
 
         // Sequential replay (manual simulation)

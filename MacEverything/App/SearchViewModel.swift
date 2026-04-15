@@ -76,6 +76,14 @@ class SearchViewModel: ObservableObject {
         return (cacheDir as NSString).appendingPathComponent("index.wal")
     }
 
+    static var pagesPath: String {
+        return (cacheDir as NSString).appendingPathComponent("index.pages")
+    }
+
+    static var ptablePath: String {
+        return (cacheDir as NSString).appendingPathComponent("index.ptable")
+    }
+
     init() {
         startIncremental()
     }
@@ -155,6 +163,8 @@ class SearchViewModel: ObservableObject {
         // Delete cached index files so startIncremental does a full scan
         try? FileManager.default.removeItem(atPath: Self.cachePath)
         try? FileManager.default.removeItem(atPath: Self.walPath)
+        try? FileManager.default.removeItem(atPath: Self.pagesPath)
+        try? FileManager.default.removeItem(atPath: Self.ptablePath)
 
         startIncremental()
     }

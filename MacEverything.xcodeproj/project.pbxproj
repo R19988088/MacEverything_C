@@ -37,6 +37,7 @@
 		A100001C /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002B; };
 		A100001D /* InstanceLock.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200002D; };
 		A100001E /* SearchHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002E; };
+		A100001F /* PagedIndexWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000030; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -87,6 +88,8 @@
 		A200002C /* InstanceLock.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = InstanceLock.h; sourceTree = "<group>"; };
 		A200002D /* InstanceLock.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = InstanceLock.cpp; sourceTree = "<group>"; };
 		A200002E /* SearchHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchHistoryStore.swift; sourceTree = "<group>"; };
+		A200002F /* PagedIndexWriter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PagedIndexWriter.h; sourceTree = "<group>"; };
+		A2000030 /* PagedIndexWriter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PagedIndexWriter.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -193,6 +196,8 @@
 				A200002A /* Logger.cpp */,
 				A200002C /* InstanceLock.h */,
 				A200002D /* InstanceLock.cpp */,
+				A200002F /* PagedIndexWriter.h */,
+				A2000030 /* PagedIndexWriter.cpp */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -294,6 +299,7 @@
 				A100001C /* AppLogger.swift in Sources */,
 				A100001D /* InstanceLock.cpp in Sources */,
 				A100001E /* SearchHistoryStore.swift in Sources */,
+				A100001F /* PagedIndexWriter.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

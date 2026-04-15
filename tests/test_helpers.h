@@ -31,6 +31,16 @@ struct ResourceSnapshot {
     static ResourceSnapshot take() { return {getMemoryUsageMB(), getCpuTime()}; }
 };
 
+// Helper: derive paged persistence paths from a base path
+static std::string pagesPathFor(const std::string& basePath) {
+    auto dir = basePath.substr(0, basePath.rfind('/'));
+    return dir + "/index.pages";
+}
+static std::string ptablePathFor(const std::string& basePath) {
+    auto dir = basePath.substr(0, basePath.rfind('/'));
+    return dir + "/index.ptable";
+}
+
 static int passed = 0, failed = 0;
 
 static void check(bool cond, const char* msg) {

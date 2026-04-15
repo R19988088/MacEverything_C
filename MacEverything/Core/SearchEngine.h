@@ -130,6 +130,19 @@ public:
     /// Detach the WAL (e.g. before compaction).
     void detachWAL();
 
+    /// Records per page for paged persistence
+    static constexpr uint32_t kRecordsPerPage = 1024;
+
+    /// Get the list of dirty page numbers (pages modified since last clearDirtyPages). Thread-safe.
+    std::vector<uint32_t> getDirtyPageNumbers() const;
+
+    /// Clear the dirty page bitmap. Thread-safe.
+    void clearDirtyPages();
+
+    /// Whether a full rewrite is needed (set after compactRecords renumbers indices).
+    bool needsFullRewrite() const { return fullRewriteNeeded_.load(std::memory_order_relaxed); }
+    void clearFullRewriteNeeded() { fullRewriteNeeded_.store(false, std::memory_order_relaxed); }
+
     /// Monotonically increasing generation counter, incremented on each compaction.
     uint64_t compactionGeneration() const { return compactionGen_.load(std::memory_order_relaxed); }
 
@@ -165,6 +178,18 @@ public:
         }
     }
 
+    /// Batch callback for a contiguous range of records, including tombstones.
+    /// Used by PagedIndexWriter to serialize pages with stable index positions.
+    /// Callback signature: void(uint32_t idx, const FileRecord& record, const std::string& path)
+    template<typename Func>
+    void forEachRecordInRange(uint32_t startIdx, uint32_t count, Func&& func) const {
+        std::shared_lock lock(mutex_);
+        uint32_t end = std::min(startIdx + count, static_cast<uint32_t>(records_.size()));
+        for (uint32_t i = startIdx; i < end; i++) {
+            func(i, records_[i], pathTable_.resolve(pathIndices_[i]));
+        }
+    }
+
     /// Thread-safe snapshot of PathTable. Returns a copy under shared_lock.
     PathTable pathTableSnapshot() const {
         std::shared_lock lock(mutex_);
@@ -195,6 +220,12 @@ private:
 
     static bool isGlobPattern(const std::string& s);
     static bool globMatch(const std::string& pattern, const std::string& text);
+
+    std::vector<bool> dirtyPages_;                // dirty page bitmap
+    std::atomic<bool> fullRewriteNeeded_{false};   // set by compactRecords()
+
+    /// Mark the page containing the given record index as dirty. Must be called under lock.
+    void markPageDirty(uint32_t recordIndex);
 
     std::shared_ptr<IndexWAL> wal_;
     std::atomic<uint64_t> compactionGen_{0};

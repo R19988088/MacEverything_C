@@ -246,16 +246,18 @@
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         auto incrementalStart = std::chrono::steady_clock::now();
         auto engine = std::make_shared<SearchEngine>();
+        std::string cacheStr([cache UTF8String]);
+        std::string walStr([wal UTF8String]);
+        // Derive paged persistence paths from cache directory
+        std::string cacheDir = cacheStr.substr(0, cacheStr.rfind('/'));
+        std::string pagesStr = cacheDir + "/index.pages";
+        std::string ptableStr = cacheDir + "/index.ptable";
         auto persistence = std::make_unique<IndexPersistence>(
-            engine,
-            std::string([cache UTF8String]),
-            std::string([wal UTF8String])
+            engine, cacheStr, walStr, pagesStr, ptableStr
         );
 
         uint64_t lastEventId = persistence->load();
         uint32_t loadedCount = engine->liveRecordCount();
-        std::string cacheStr([cache UTF8String]);
-        std::string walStr([wal UTF8String]);
 
         if (lastEventId > 0 && loadedCount > 0) {
             // === Have cached index: deliver immediately, then sync in background ===
@@ -300,8 +302,11 @@
                     return;
                 }
 
+                std::string freshCacheDir = cacheStr.substr(0, cacheStr.rfind('/'));
+                std::string freshPagesStr = freshCacheDir + "/index.pages";
+                std::string freshPtableStr = freshCacheDir + "/index.ptable";
                 auto newPersistence = std::make_shared<IndexPersistence>(
-                    [self safeEngine], cacheStr, walStr
+                    [self safeEngine], cacheStr, walStr, freshPagesStr, freshPtableStr
                 );
                 [self setPersistence:newPersistence];
                 newPersistence->attachWAL();
@@ -313,12 +318,11 @@
                 meta.lastEventId = eventId;
                 meta.extra[IndexMetadata::kScanRoot] = std::string([root UTF8String]);
                 meta.extra[IndexMetadata::kAppVersion] = "1.1.0";
-                meta.extra[IndexMetadata::kRecordFormat] = "v3_inode";
+                meta.extra[IndexMetadata::kRecordFormat] = "v4_paged";
                 NSOperatingSystemVersion osVer = [[NSProcessInfo processInfo] operatingSystemVersion];
                 meta.extra[IndexMetadata::kOSVersion] = [[NSString stringWithFormat:@"%ld.%ld.%ld",
                     (long)osVer.majorVersion, (long)osVer.minorVersion, (long)osVer.patchVersion] UTF8String];
-                auto eng = [self safeEngine];
-                if (eng) eng->saveToFile(cacheStr, meta);
+                newPersistence->flush(meta, /*force=*/true);
 
                 if (completion) completion(count, YES);
             }];
@@ -427,8 +431,11 @@
             sharedPersistence->stopAutoCompactionAndWait();
 
             // Replace persistence (old one destructs: detaches WAL, closes file)
+            std::string bgCacheDir = cacheStr.substr(0, cacheStr.rfind('/'));
+            std::string bgPagesStr = bgCacheDir + "/index.pages";
+            std::string bgPtableStr = bgCacheDir + "/index.ptable";
             auto newPersistence = std::make_shared<IndexPersistence>(
-                engine, cacheStr, walStr
+                engine, cacheStr, walStr, bgPagesStr, bgPtableStr
             );
             [self setPersistence:newPersistence];
             newPersistence->attachWAL();
@@ -437,17 +444,17 @@
             [self startMonitoringFrom:root];
             newPersistence->startAutoCompaction(300.0, self->_watcher);
 
-            // Save snapshot
+            // Save snapshot via paged persistence
             uint64_t eventId = self->_watcher ? self->_watcher->getLastEventId() : 0;
             IndexMetadata meta;
             meta.lastEventId = eventId;
             meta.extra[IndexMetadata::kScanRoot] = std::string([root UTF8String]);
             meta.extra[IndexMetadata::kAppVersion] = "1.1.0";
-            meta.extra[IndexMetadata::kRecordFormat] = "v3_inode";
+            meta.extra[IndexMetadata::kRecordFormat] = "v4_paged";
             NSOperatingSystemVersion osVer = [[NSProcessInfo processInfo] operatingSystemVersion];
             meta.extra[IndexMetadata::kOSVersion] = [[NSString stringWithFormat:@"%ld.%ld.%ld",
                 (long)osVer.majorVersion, (long)osVer.minorVersion, (long)osVer.patchVersion] UTF8String];
-            engine->saveToFile(cacheStr, meta);
+            newPersistence->flush(meta, /*force=*/true);
 
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                 [self setupContentPersistence];

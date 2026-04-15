@@ -50,6 +50,9 @@ public:
     /// Set the number of entries between automatic fsyncs (0 = never auto-fsync).
     void setSyncInterval(uint64_t entries) { syncInterval_ = entries; }
 
+    /// Current WAL file size in bytes.
+    size_t currentSize() const { return currentSize_; }
+
     /// Close the WAL file (fsyncs pending data before closing).
     void close();
 

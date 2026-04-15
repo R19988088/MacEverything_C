@@ -5,13 +5,17 @@
 #include <chrono>
 #include <cerrno>
 #include <cstring>
+#include <cmath>
 
 IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
                                    const std::string& basePath,
-                                   const std::string& walPath)
+                                   const std::string& walPath,
+                                   const std::string& pagesPath,
+                                   const std::string& ptablePath)
     : engine_(std::move(engine))
     , basePath_(basePath)
     , walPath_(walPath)
+    , pagedWriter_(std::make_unique<PagedIndexWriter>(pagesPath, ptablePath))
 {}
 
 IndexPersistence::~IndexPersistence() {
@@ -26,26 +30,44 @@ IndexPersistence::~IndexPersistence() {
 uint64_t IndexPersistence::load() {
     uint64_t lastEventId = 0;
 
-    // 1. Load base index
-    bool loaded = engine_->loadFromFile(basePath_, &lastEventId);
-    if (loaded) {
-        LOG_INFO("IndexPersistence", "Loaded base index, lastEventId=" << lastEventId
-                  << ", records=" << engine_->liveRecordCount());
-    } else {
-        LOG_INFO("IndexPersistence", "No base index found at " << basePath_);
+    // 1. Try paged format first (v4)
+    bool loaded = false;
+    if (pagedWriter_->exists()) {
+        IndexMetadata meta;
+        loaded = pagedWriter_->load(*engine_, &meta);
+        if (loaded) {
+            lastEventId = meta.lastEventId;
+            LOG_INFO("IndexPersistence", "Loaded paged index, lastEventId=" << lastEventId
+                      << ", records=" << engine_->liveRecordCount());
+        } else {
+            LOG_ERROR("IndexPersistence", "Paged index corrupt, trying legacy format");
+        }
     }
 
-    // 2. Batch-merge WAL entries into base records, then load once.
-    //    This avoids per-entry lock+trigram-update overhead that caused timeouts
-    //    with large WALs (190K+ entries).
+    // 2. Fallback to legacy v3 format
+    if (!loaded) {
+        loaded = engine_->loadFromFile(basePath_, &lastEventId);
+        if (loaded) {
+            LOG_INFO("IndexPersistence", "Loaded legacy index, lastEventId=" << lastEventId
+                      << ", records=" << engine_->liveRecordCount());
+            // Migrate: write out paged format for next time
+            IndexMetadata migrateMeta;
+            migrateMeta.lastEventId = lastEventId;
+            if (pagedWriter_->fullRewrite(*engine_, migrateMeta)) {
+                LOG_INFO("IndexPersistence", "Migrated legacy index to paged format");
+            }
+        } else {
+            LOG_INFO("IndexPersistence", "No base index found at " << basePath_);
+        }
+    }
+
+    // 3. Batch-merge WAL entries into base records
     auto entries = IndexWAL::readAll(walPath_);
     if (!entries.empty()) {
         LOG_INFO("IndexPersistence", "Replaying " << entries.size() << " WAL entries (batch mode)");
 
-        // Export current records with paths restored
         auto records = engine_->exportRecords();
 
-        // Build path->index map for efficient lookup (case-insensitive)
         std::unordered_map<std::string, size_t> pathMap;
         pathMap.reserve(records.size());
         for (size_t i = 0; i < records.size(); i++) {
@@ -53,7 +75,6 @@ uint64_t IndexPersistence::load() {
             pathMap[me::toLower(fullPath)] = i;
         }
 
-        // Apply WAL entries to the records vector
         for (auto& entry : entries) {
             std::string lowerPath = me::toLower(entry.fullPath);
 
@@ -61,7 +82,6 @@ uint64_t IndexPersistence::load() {
                 case WALOp::Add: {
                     auto it = pathMap.find(lowerPath);
                     if (it != pathMap.end()) {
-                        // Path already exists — update in place (idempotency)
                         records[it->second] = std::move(entry.record);
                     } else {
                         pathMap[lowerPath] = records.size();
@@ -72,7 +92,7 @@ uint64_t IndexPersistence::load() {
                 case WALOp::Remove: {
                     auto it = pathMap.find(lowerPath);
                     if (it != pathMap.end()) {
-                        records[it->second].type = 0; // tombstone
+                        records[it->second].type = 0;
                         pathMap.erase(it);
                     }
                     break;
@@ -90,13 +110,11 @@ uint64_t IndexPersistence::load() {
             }
         }
 
-        // Remove tombstones before batch loading
         records.erase(
             std::remove_if(records.begin(), records.end(),
                 [](const FileRecord& r) { return r.type == 0; }),
             records.end());
 
-        // Batch load all records at once (efficient trigram build + path interning)
         engine_->loadRecords(std::move(records));
         LOG_INFO("IndexPersistence", "WAL replay done, live records=" << engine_->liveRecordCount());
     }
@@ -118,38 +136,56 @@ void IndexPersistence::attachWAL() {
     }
 }
 
-void IndexPersistence::compact(uint64_t lastEventId, bool force) {
+void IndexPersistence::flush(uint64_t lastEventId, bool force) {
     IndexMetadata meta;
     meta.lastEventId = lastEventId;
-    compact(meta, force);
+    flush(meta, force);
 }
 
-void IndexPersistence::compact(const IndexMetadata& metadata, bool force) {
-    // Skip compaction if no mutations since last compact
+void IndexPersistence::flush(const IndexMetadata& metadata, bool force) {
+    // Skip if no mutations
     {
         std::lock_guard<std::mutex> lock(walMutex_);
         if (wal_ && !wal_->isDirty()) {
-            LOG_INFO("IndexPersistence", "Skipping compaction — no mutations since last compact");
+            LOG_INFO("IndexPersistence", "Skipping flush — no mutations since last flush");
             return;
         }
-        // Skip compaction if WAL has too few entries (not worth the I/O cost)
         if (!force && wal_ && wal_->entryCount() < kCompactThreshold) {
-            LOG_INFO("IndexPersistence", "Skipping compaction — only "
+            LOG_INFO("IndexPersistence", "Skipping flush — only "
                       << wal_->entryCount() << " entries (threshold=" << kCompactThreshold << ")");
             return;
         }
     }
 
-    // 1. Open a fresh WAL *before* detaching the old one, so there is no
-    //    window where mutations are unlogged.
-    auto newWal = std::make_shared<IndexWAL>();
-    std::string newWalPath = walPath_ + ".new";
-    if (!newWal->open(newWalPath)) {
-        LOG_ERROR("IndexPersistence", "Failed to open new WAL for compaction");
+    // Check if full compaction is needed (tombstone ratio)
+    uint32_t totalCount = engine_->recordCount();
+    uint32_t liveCount = engine_->liveRecordCount();
+    double tombstoneRatio = totalCount > 0
+        ? static_cast<double>(totalCount - liveCount) / totalCount
+        : 0.0;
+
+    if (tombstoneRatio > kTombstoneCompactRatio) {
+        LOG_INFO("IndexPersistence", "Tombstone ratio " << (tombstoneRatio * 100)
+                  << "% > " << (kTombstoneCompactRatio * 100) << "% — triggering full compaction");
+        fullCompact(metadata);
         return;
     }
 
-    // 2. Atomically swap: attach new WAL, get old WAL back
+    // Check if dead space rewrite is needed
+    if (pagedWriter_->deadSpaceRatio() > kDeadSpaceRewriteRatio) {
+        LOG_INFO("IndexPersistence", "Dead space ratio " << (pagedWriter_->deadSpaceRatio() * 100)
+                  << "% — triggering full rewrite to reclaim space");
+    }
+
+    // 1. Open a fresh WAL before detaching the old one
+    auto newWal = std::make_shared<IndexWAL>();
+    std::string newWalPath = walPath_ + ".new";
+    if (!newWal->open(newWalPath)) {
+        LOG_ERROR("IndexPersistence", "Failed to open new WAL for flush");
+        return;
+    }
+
+    // 2. Atomically swap WAL
     std::shared_ptr<IndexWAL> oldWal;
     {
         std::lock_guard<std::mutex> lock(walMutex_);
@@ -158,32 +194,24 @@ void IndexPersistence::compact(const IndexMetadata& metadata, bool force) {
     }
     engine_->attachWAL(newWal);
 
-    // 3. Compact in-memory records (remove tombstones) before saving
-    auto remap = engine_->compactRecords();
-    // H-1: Propagate index remap to ContentIndex
-    if (!remap.empty() && contentIndex_) {
-        contentIndex_->remapFileIndices(remap);
+    // 3. Flush dirty pages (or full rewrite if dead space is high)
+    bool writeOk;
+    if (engine_->needsFullRewrite() || pagedWriter_->deadSpaceRatio() > kDeadSpaceRewriteRatio) {
+        writeOk = pagedWriter_->fullRewrite(*engine_, metadata);
+    } else {
+        writeOk = pagedWriter_->flushDirtyPages(*engine_, metadata);
     }
 
-    // 4. Write base file (crash-safety: C-2 fix — write before removing old WAL)
-    if (engine_->saveToFile(basePath_, metadata)) {
-        LOG_INFO("IndexPersistence", "Compacted base index, lastEventId=" << metadata.lastEventId
+    if (writeOk) {
+        LOG_INFO("IndexPersistence", "Flushed paged index, lastEventId=" << metadata.lastEventId
                   << ", records=" << engine_->liveRecordCount());
     } else {
-        LOG_ERROR("IndexPersistence", "Failed to write base index — keeping old WAL for recovery");
-        if (oldWal) {
-            oldWal->close();
-        }
+        LOG_ERROR("IndexPersistence", "Failed to flush paged index — keeping old WAL for recovery");
+        if (oldWal) oldWal->close();
         return;
     }
 
-    // 5. Rename new WAL from .wal.new to .wal.
-    //    POSIX rename atomically replaces the old .wal directory entry,
-    //    so old WAL's inode is unlinked from the directory — its fd remains
-    //    valid but the file is gone once the fd is closed.
-    //    This avoids the self-propagating failure chain: we never call
-    //    closeAndDelete() on oldWal, so there's no risk of unlinking the
-    //    new WAL's file.
+    // 4. Rename new WAL to replace old
     if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
         LOG_ERROR("IndexPersistence", "Failed to rename WAL: " << newWalPath
                   << " -> " << walPath_ << " (errno=" << errno << ": " << strerror(errno) << ")");
@@ -192,34 +220,127 @@ void IndexPersistence::compact(const IndexMetadata& metadata, bool force) {
         if (wal_) wal_->updatePath(walPath_);
     }
 
-    // 6. Close old WAL (just close fd — rename already replaced the directory entry)
-    if (oldWal) {
-        oldWal->close();
+    // 5. Close old WAL
+    if (oldWal) oldWal->close();
+}
+
+void IndexPersistence::fullCompact(const IndexMetadata& metadata) {
+    // 1. Open a fresh WAL
+    auto newWal = std::make_shared<IndexWAL>();
+    std::string newWalPath = walPath_ + ".new";
+    if (!newWal->open(newWalPath)) {
+        LOG_ERROR("IndexPersistence", "Failed to open new WAL for full compaction");
+        return;
     }
+
+    // 2. Swap WAL
+    std::shared_ptr<IndexWAL> oldWal;
+    {
+        std::lock_guard<std::mutex> lock(walMutex_);
+        oldWal = wal_;
+        wal_ = newWal;
+    }
+    engine_->attachWAL(newWal);
+
+    // 3. Compact in-memory records (remove tombstones)
+    auto remap = engine_->compactRecords();
+    if (!remap.empty() && contentIndex_) {
+        contentIndex_->remapFileIndices(remap);
+    }
+
+    // 4. Full rewrite paged files
+    if (pagedWriter_->fullRewrite(*engine_, metadata)) {
+        LOG_INFO("IndexPersistence", "Full compaction done, lastEventId=" << metadata.lastEventId
+                  << ", records=" << engine_->liveRecordCount());
+    } else {
+        LOG_ERROR("IndexPersistence", "Failed to write full compaction — keeping old WAL");
+        if (oldWal) oldWal->close();
+        return;
+    }
+
+    // 5. Rename WAL
+    if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
+        LOG_ERROR("IndexPersistence", "Failed to rename WAL: " << newWalPath
+                  << " -> " << walPath_);
+    } else {
+        std::lock_guard<std::mutex> lock(walMutex_);
+        if (wal_) wal_->updatePath(walPath_);
+    }
+
+    // 6. Close old WAL
+    if (oldWal) oldWal->close();
+}
+
+double IndexPersistence::computeAdaptiveInterval() const {
+    auto dirtyPages = engine_->getDirtyPageNumbers();
+    uint32_t dirtyCount = static_cast<uint32_t>(dirtyPages.size());
+    uint32_t liveCount = engine_->liveRecordCount();
+    uint32_t totalPages = (liveCount + SearchEngine::kRecordsPerPage - 1) / SearchEngine::kRecordsPerPage;
+    if (totalPages == 0) totalPages = 1;
+
+    double dirtyRatio = static_cast<double>(dirtyCount) / totalPages;
+
+    double interval;
+    if (dirtyRatio > 0.3) {
+        interval = kMinIntervalSec;
+    } else if (dirtyRatio > 0.1) {
+        interval = kBaseIntervalSec * 0.5;
+    } else if (dirtyRatio > 0.01) {
+        interval = kBaseIntervalSec;
+    } else {
+        interval = kMaxIntervalSec;
+    }
+
+    // WAL size override
+    size_t walSize = 0;
+    {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(walMutex_));
+        if (wal_) walSize = wal_->currentSize();
+    }
+    if (walSize > kWALSizeFlushThreshold) {
+        interval = std::min(interval, kMinIntervalSec);
+    }
+
+    return interval;
+}
+
+void IndexPersistence::rescheduleTimer(double intervalSec) {
+    if (!compactionTimer_) return;
+    if (std::abs(intervalSec - currentIntervalSec_) < 1.0) return; // no significant change
+
+    uint64_t intervalNs = static_cast<uint64_t>(intervalSec * NSEC_PER_SEC);
+    dispatch_source_set_timer(compactionTimer_,
+                              dispatch_time(DISPATCH_TIME_NOW, intervalNs),
+                              intervalNs,
+                              30 * NSEC_PER_SEC);
+    currentIntervalSec_ = intervalSec;
+    LOG_INFO("IndexPersistence", "Adaptive interval adjusted to " << intervalSec << "s");
 }
 
 void IndexPersistence::startAutoCompaction(double intervalSec, std::shared_ptr<FileSystemWatcher> watcher) {
     stopAutoCompactionAndWait();
 
-    // Use a dedicated serial queue so we can dispatch_sync to drain in-flight work
+    currentIntervalSec_ = intervalSec;
     compactionQueue_ = dispatch_queue_create("com.maceverything.index.compaction", DISPATCH_QUEUE_SERIAL);
     compactionTimer_ = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, compactionQueue_);
     uint64_t intervalNs = static_cast<uint64_t>(intervalSec * NSEC_PER_SEC);
     dispatch_source_set_timer(compactionTimer_,
                               dispatch_time(DISPATCH_TIME_NOW, intervalNs),
                               intervalNs,
-                              30 * NSEC_PER_SEC); // 30s leeway
+                              30 * NSEC_PER_SEC);
 
-    // H9 fix: Capture shared_ptr — the block's copy keeps the watcher alive
-    // as long as the timer exists, preventing use-after-free.
     auto* self = this;
     dispatch_source_set_event_handler(compactionTimer_, ^{
         uint64_t eventId = watcher ? watcher->getLastEventId() : 0;
-        self->compact(eventId);
+        self->flush(eventId);
+
+        // Adjust interval based on current state
+        double newInterval = self->computeAdaptiveInterval();
+        self->rescheduleTimer(newInterval);
     });
 
     dispatch_resume(compactionTimer_);
-    LOG_INFO("IndexPersistence", "Auto-compaction started (every " << intervalSec << "s)");
+    LOG_INFO("IndexPersistence", "Auto-compaction started (initial interval " << intervalSec << "s)");
 }
 
 void IndexPersistence::stopAutoCompactionAndWait() {
@@ -229,10 +350,8 @@ void IndexPersistence::stopAutoCompactionAndWait() {
         compactionTimer_ = nullptr;
     }
     if (compactionQueue_) {
-        // Drain in-flight compaction by synchronously dispatching a no-op
         dispatch_sync(compactionQueue_, ^{});
         dispatch_release(compactionQueue_);
         compactionQueue_ = nullptr;
     }
 }
-

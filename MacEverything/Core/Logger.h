@@ -50,7 +50,7 @@ private:
     ~Logger();
 
     void rotateIfNeeded();
-    void writeRaw(const std::string& line, bool forceFlush = false);
+    void writeRaw(const std::string& line);
     std::string formatTimestamp() const;
     static const char* levelToString(LogLevel level);
 
@@ -60,11 +60,9 @@ private:
     std::string logDir_;
     std::string logFilePath_;
     FILE* file_ = nullptr;
-    uint32_t unflushedCount_ = 0;
 
     static constexpr size_t kMaxFileSize = 5 * 1024 * 1024;  // 5 MB
     static constexpr int kMaxFiles = 3;
-    static constexpr uint32_t kFlushInterval = 32;
 };
 
 /// RAII timer that logs elapsed time on scope exit.

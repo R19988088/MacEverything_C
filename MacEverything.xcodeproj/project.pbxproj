@@ -36,6 +36,7 @@
 		A100001B /* Logger.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200002A; };
 		A100001C /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002B; };
 		A100001D /* InstanceLock.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200002D; };
+		A100001E /* SearchHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002E; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,6 +86,7 @@
 		A200002B /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		A200002C /* InstanceLock.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = InstanceLock.h; sourceTree = "<group>"; };
 		A200002D /* InstanceLock.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = InstanceLock.cpp; sourceTree = "<group>"; };
+		A200002E /* SearchHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchHistoryStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -150,6 +152,7 @@
 				A2000025 /* IndexRefreshThrottle.swift */,
 				A2000026 /* TextHighlight.swift */,
 				A200002B /* AppLogger.swift */,
+				A200002E /* SearchHistoryStore.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -290,6 +293,7 @@
 				A100001B /* Logger.cpp in Sources */,
 				A100001C /* AppLogger.swift in Sources */,
 				A100001D /* InstanceLock.cpp in Sources */,
+				A100001E /* SearchHistoryStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

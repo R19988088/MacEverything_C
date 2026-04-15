@@ -14,12 +14,30 @@ struct ContentView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 26, weight: .medium))
                     .foregroundColor(.blue)
-                TextField("Search files... (infile: for content search)", text: $viewModel.searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 26))
-                    .onChange(of: viewModel.searchText) {
-                        viewModel.onSearchTextChanged()
+                ZStack(alignment: .leading) {
+                    // Ghost suggestion layer (behind)
+                    if let ghost = viewModel.ghostSuggestion {
+                        Text(ghost)
+                            .font(.system(size: 26))
+                            .foregroundColor(.secondary.opacity(0.4))
+                            .lineLimit(1)
+                            .allowsHitTesting(false)
                     }
+                    // Actual text field (in front)
+                    TextField("Search files... (infile: for content search)", text: $viewModel.searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 26))
+                        .onChange(of: viewModel.searchText) {
+                            viewModel.onSearchTextChanged()
+                        }
+                        .onKeyPress(.tab) {
+                            if viewModel.ghostSuggestion != nil {
+                                viewModel.acceptGhostSuggestion()
+                                return .handled
+                            }
+                            return .ignored
+                        }
+                }
                 if !viewModel.searchText.isEmpty {
                     Button {
                         viewModel.searchText = ""

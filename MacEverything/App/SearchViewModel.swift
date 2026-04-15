@@ -39,10 +39,13 @@ class SearchViewModel: ObservableObject {
     @Published var contentIndexProgress: (indexed: UInt32, total: UInt32)?
     @Published var contentIndexedCount: UInt32 = 0
     @Published var isSyncing: Bool = false
+    @Published var ghostSuggestion: String? = nil
 
     private let bridge = MacSearchBridge.shared()
+    private let historyStore = SearchHistoryStore()
     private var searchTask: Task<Void, Never>?
     private var recentTask: Task<Void, Never>?
+    private var settledTask: Task<Void, Never>?
     private var cachedResults: [MEFileResult] = []
     private var loadedCount: Int = 0
     private var searchGeneration: UInt64 = 0
@@ -171,6 +174,8 @@ class SearchViewModel: ObservableObject {
             isContentSearch = false
             contentResults = []
             contentKeyword = "" // H-9: reset cached keyword
+            ghostSuggestion = nil
+            settledTask?.cancel()
             // Bump C++ query generation to cancel any in-flight dispatch_apply scan
             _ = bridge.queryIndices("", maxResults: 0)
             if scanComplete {
@@ -223,6 +228,9 @@ class SearchViewModel: ObservableObject {
                 performSearch(text)
             }
         }
+
+        updateGhostSuggestion()
+        scheduleHistoryRecord()
     }
 
     private func performSearch(_ keyword: String) {
@@ -359,6 +367,13 @@ class SearchViewModel: ObservableObject {
     }
 
     func onWindowFocusChanged(_ focused: Bool) {
+        if !focused {
+            // Record search text to history when window loses focus
+            let text = searchText
+            if text.count >= 2 && !text.lowercased().hasPrefix("infile:") {
+                historyStore.recordQuery(text)
+            }
+        }
         if refreshThrottle.focusChanged(focused) {
             performIndexRefresh()
             scheduleCooldown()
@@ -402,4 +417,39 @@ class SearchViewModel: ObservableObject {
 
     // H-9: Cached to avoid recomputing lowercased() + hasPrefix on every access
     private(set) var contentKeyword: String = ""
+
+    // MARK: - Ghost text autocomplete
+
+    private func updateGhostSuggestion() {
+        let text = searchText
+        guard !text.isEmpty, !text.lowercased().hasPrefix("infile:") else {
+            ghostSuggestion = nil
+            return
+        }
+        if let match = historyStore.bestMatch(for: text),
+           match.lowercased() != text.lowercased() {
+            // User's typed prefix + the rest from the matched history entry
+            ghostSuggestion = text + match.dropFirst(text.count)
+        } else {
+            ghostSuggestion = nil
+        }
+    }
+
+    private func scheduleHistoryRecord() {
+        settledTask?.cancel()
+        let text = searchText
+        guard text.count >= 2, !text.lowercased().hasPrefix("infile:") else { return }
+        settledTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+            guard !Task.isCancelled, let self, self.searchText == text else { return }
+            self.historyStore.recordQuery(text)
+        }
+    }
+
+    func acceptGhostSuggestion() {
+        guard let suggestion = ghostSuggestion else { return }
+        searchText = suggestion
+        ghostSuggestion = nil
+        historyStore.recordQuery(suggestion)
+    }
 }

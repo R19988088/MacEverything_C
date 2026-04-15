@@ -49,7 +49,8 @@ void FileSystemWatcher::startInternal(const std::string& rootPath,
         0.3, // 300ms coalesce latency
         kFSEventStreamCreateFlagFileEvents |
         kFSEventStreamCreateFlagNoDefer |
-        kFSEventStreamCreateFlagUseCFTypes
+        kFSEventStreamCreateFlagUseCFTypes |
+        kFSEventStreamCreateFlagIgnoreSelf
     );
 
     CFRelease(pathsToWatch);
@@ -122,11 +123,6 @@ void FileSystemWatcher::fseventsCallback(
     for (size_t i = 0; i < numEvents; i++) {
         FSEventStreamEventFlags flags = eventFlags[i];
 
-        // Detect journal truncation — need full rescan
-        if (flags & kFSEventStreamEventFlagMustScanSubDirs) {
-            watcher->journalTruncated_.store(true, std::memory_order_relaxed);
-        }
-
         // Skip root-changed meta events
         if (flags & kFSEventStreamEventFlagRootChanged) continue;
 
@@ -139,7 +135,7 @@ void FileSystemWatcher::fseventsCallback(
             continue;
         }
 
-        // Skip system directories that generate noise
+        // Parse path first — needed for exclusion checks below
         CFStringRef cfPath = static_cast<CFStringRef>(CFArrayGetValueAtIndex(paths, static_cast<CFIndex>(i)));
         char pathBuf[PATH_MAX];
         if (!CFStringGetCString(cfPath, pathBuf, sizeof(pathBuf), kCFStringEncodingUTF8)) continue;
@@ -154,6 +150,7 @@ void FileSystemWatcher::fseventsCallback(
             pathStr.find("/com.apple.") != std::string::npos) continue;
 
         // Skip events from app's own excluded directories
+        // (path is inside an exclusion directory)
         bool excluded = false;
         for (const auto& ep : watcher->exclusionPaths_) {
             if (pathStr.size() >= ep.size() && pathStr.compare(0, ep.size(), ep) == 0) {
@@ -162,6 +159,25 @@ void FileSystemWatcher::fseventsCallback(
             }
         }
         if (excluded) continue;
+
+        // Detect journal truncation — need full rescan.
+        // Skip MustScanSubDirs events whose path is an ancestor of an excluded
+        // directory: these are typically triggered by the app's own cache writes
+        // (e.g., path="/Users/.../Library/Caches/" is ancestor of the excluded
+        // ".../Library/Caches/com.maceverything.app").
+        if (flags & kFSEventStreamEventFlagMustScanSubDirs) {
+            bool isExcludedAncestor = false;
+            for (const auto& ep : watcher->exclusionPaths_) {
+                if (ep.size() > pathStr.size() &&
+                    ep.compare(0, pathStr.size(), pathStr) == 0) {
+                    isExcludedAncestor = true;
+                    break;
+                }
+            }
+            if (isExcludedAncestor) continue;
+
+            watcher->journalTruncated_.store(true, std::memory_order_relaxed);
+        }
 
         events.push_back({std::move(pathStr), flags});
     }

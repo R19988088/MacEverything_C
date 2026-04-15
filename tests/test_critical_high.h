@@ -158,8 +158,8 @@ static void testContentIndexBulkLoad() {
         }
     }
 
-    // Save and reload
-    persistence.compact();
+    // Save and reload (force=true since 5 entries < kCompactThreshold)
+    persistence.compact(true);
 
     auto loaded = std::make_shared<ContentIndex>();
     loaded->setExtensions({"txt"});

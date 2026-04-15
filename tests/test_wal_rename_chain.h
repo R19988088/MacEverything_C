@@ -30,8 +30,8 @@ static void runWalRenameChainTest() {
         persistence.walAppendAdd(0, 12345, trigrams1);
         contentIndex->insertFileInfo(0, 12345, std::vector<Trigram>{100, 200, 300});
 
-        // First compact — should succeed cleanly
-        persistence.compact();
+        // First compact — should succeed cleanly (force=true to bypass threshold)
+        persistence.compact(true);
         check(fs::exists(basePath), "RC1: base file created after first compact");
         // WAL should be at standard path, not .new
         check(fs::exists(walPath), "RC1: WAL at standard path after compact");
@@ -44,7 +44,7 @@ static void runWalRenameChainTest() {
 
         // Second compact — regression: previously this would fail because
         // closeAndDelete on old WAL would unlink the new WAL's file
-        persistence.compact();
+        persistence.compact(true);
         check(fs::exists(basePath), "RC2: base file still exists after second compact");
         check(fs::exists(walPath), "RC2: WAL at standard path after second compact");
         check(!fs::exists(walPath + ".new"), "RC2: no leftover .wal.new after second compact");
@@ -54,7 +54,7 @@ static void runWalRenameChainTest() {
         contentIndex->removeFile(1);
 
         // Third compact — ensure no accumulated failures
-        persistence.compact();
+        persistence.compact(true);
         check(fs::exists(walPath), "RC3: WAL at standard path after third compact");
         check(!fs::exists(walPath + ".new"), "RC3: no leftover .wal.new after third compact");
     }

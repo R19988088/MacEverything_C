@@ -279,7 +279,7 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
         std::shared_lock lock(mutex_);
         auto it = fileInfos_.find(fileIndex);
         if (it != fileInfos_.end() && it->second.contentHash == hash) {
-            return true; // already up-to-date
+            return false; // already up-to-date, no change made
         }
     }
 

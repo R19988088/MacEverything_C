@@ -62,6 +62,15 @@ static void runContentIndexTests() {
     auto matches2 = ci2.query("trigram");
     check(!matches2.empty(), "ContentIndex: loaded index can query successfully");
 
+    // Test: indexFile returns false for unchanged file (no spurious WAL writes)
+    ContentIndex ci3;
+    ci3.setExtensions({"txt"});
+    bool first = ci3.indexFile(0, tmpDir + "/text.txt");
+    check(first, "ContentIndex: first indexFile returns true");
+    bool second = ci3.indexFile(0, tmpDir + "/text.txt");
+    check(!second, "ContentIndex: second indexFile (unchanged) returns false");
+    check(ci3.indexedFileCount() == 1, "ContentIndex: still 1 file indexed after duplicate call");
+
     fs::remove_all(tmpDir);
     std::cout << "\n";
 }

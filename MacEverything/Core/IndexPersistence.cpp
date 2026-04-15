@@ -129,9 +129,14 @@ void IndexPersistence::compact(const IndexMetadata& metadata) {
         }
     }
 
-    // 6. Rename new WAL to standard path
+    // 6. Rename new WAL to standard path and update WAL's internal path
     if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
         LOG_ERROR("IndexPersistence", "Failed to rename WAL: " << newWalPath << " -> " << walPath_);
+    } else {
+        // R3-2: Update WAL's internal path to match the renamed file,
+        // so closeAndDelete() on next compact uses the correct path.
+        std::lock_guard<std::mutex> lock(walMutex_);
+        if (wal_) wal_->updatePath(walPath_);
     }
 }
 

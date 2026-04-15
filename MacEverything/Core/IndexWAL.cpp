@@ -221,6 +221,11 @@ void IndexWAL::closeAndDelete() {
     }
 }
 
+void IndexWAL::updatePath(const std::string& newPath) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    path_ = newPath;
+}
+
 bool IndexWAL::writeRecord(FILE* f, const FileRecord& r) {
     uint32_t nameLen = static_cast<uint32_t>(r.name.size());
     if (fwrite(&nameLen, sizeof(uint32_t), 1, f) != 1) return false;

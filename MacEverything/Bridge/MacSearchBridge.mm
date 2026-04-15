@@ -245,6 +245,22 @@
         }
     });
 
+    // R3-1: Acquire single-instance file lock to prevent WAL corruption
+    //        from overlapping processes. Lock file lives next to the index files.
+    {
+        NSString *cacheDir = [NSString stringWithFormat:@"%@/Library/Caches/com.maceverything.app",
+                              NSHomeDirectory()];
+        // Ensure cache directory exists (lock file creation needs it)
+        [[NSFileManager defaultManager] createDirectoryAtPath:cacheDir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
+        std::string lockPath = std::string([cacheDir UTF8String]) + "/.instance.lock";
+        if (!_instanceLock.tryLock(lockPath)) {
+            LOG_WARN("Bridge", "Another instance may be running — proceeding with caution");
+        }
+    }
+
     LOG_INFO("Bridge", "startIncrementalFrom: " << [root UTF8String]);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         auto incrementalStart = std::chrono::steady_clock::now();

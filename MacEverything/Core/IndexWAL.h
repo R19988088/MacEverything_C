@@ -51,6 +51,9 @@ public:
     /// Close and delete the WAL file.
     void closeAndDelete();
 
+    /// Update the internal path after an external rename (e.g., compact rename).
+    void updatePath(const std::string& newPath);
+
     bool isOpen() const { return file_ != nullptr; }
 
     /// CRC32 utility (ISO 3309 / zlib polynomial).

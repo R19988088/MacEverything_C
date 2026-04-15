@@ -284,8 +284,11 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         const auto& pTable = pathTable_;
         const auto& pIndices = pathIndices_;
 
-        // Build a set of name-matched indices to skip (trigramCandidates is sorted)
-        const auto* candidatesPtr = &trigramCandidates;
+        // P1-1: Build O(1) bitset from sorted trigramCandidates to replace binary_search
+        std::vector<bool> isCandidate(totalSize, false);
+        for (uint32_t idx : trigramCandidates) {
+            isCandidate[idx] = true;
+        }
 
         dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
         const auto* genPtr = &queryGeneration_;
@@ -299,23 +302,26 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             for (size_t i = start; i < end; i++) {
                 if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
                 if (records[i].type == 0) continue;
-                // Skip indices already handled by trigram phase
-                if (std::binary_search(candidatesPtr->begin(), candidatesPtr->end(), static_cast<uint32_t>(i))) continue;
+                // P1-1: O(1) bitset check instead of O(log N) binary_search
+                if (isCandidate[i]) continue;
 
-                const auto& rPath = pTable.resolve(pIndices[i]);
-                // Compute lowercase full path on-the-fly (avoids storing lowerPaths_ vector)
-                std::string lowerPath = me::toLower(makeFullPath(rPath, records[i].name));
-                if (lowerPath.find(lowerKey) != std::string::npos) {
-                    const auto& lowerName = lowerNames[i];
+                // P2-3: Check name match first to avoid expensive lowerPath construction
+                const auto& lowerName = lowerNames[i];
+                if (lowerName.find(lowerKey) != std::string::npos) {
+                    uint8_t priority;
+                    if (lowerName == lowerKey) priority = 0;
+                    else if (lowerName.size() >= lowerKey.size() &&
+                             lowerName.compare(0, lowerKey.size(), lowerKey) == 0) priority = 1;
+                    else priority = 2;
+                    const auto& rPath = pTable.resolve(pIndices[i]);
                     uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
-                    if (lowerName.find(lowerKey) != std::string::npos) {
-                        uint8_t priority;
-                        if (lowerName == lowerKey) priority = 0;
-                        else if (lowerName.size() >= lowerKey.size() &&
-                                 lowerName.compare(0, lowerKey.size(), lowerKey) == 0) priority = 1;
-                        else priority = 2;
-                        local.push_back({static_cast<uint32_t>(i), priority, pLen});
-                    } else {
+                    local.push_back({static_cast<uint32_t>(i), priority, pLen});
+                } else {
+                    // Only construct lowerPath when name doesn't match
+                    const auto& rPath = pTable.resolve(pIndices[i]);
+                    std::string lowerPath = me::toLower(makeFullPath(rPath, records[i].name));
+                    if (lowerPath.find(lowerKey) != std::string::npos) {
+                        uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
                         local.push_back({static_cast<uint32_t>(i), uint8_t(3), pLen});
                     }
                 }

@@ -5,7 +5,6 @@
 #include <mutex>
 #include <cstdio>
 #include <cstdint>
-#include <sys/stat.h>
 
 enum class WALOp : uint8_t {
     Add    = 1,
@@ -70,6 +69,7 @@ private:
     uint64_t entryCount_ = 0;
     uint64_t unflushedCount_ = 0;
     uint64_t syncInterval_ = 64;  // fsync every 64 entries by default
+    size_t currentSize_ = 0;
     std::mutex mutex_;
 
     static bool writeRecord(FILE* f, const FileRecord& record);

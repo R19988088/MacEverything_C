@@ -102,7 +102,9 @@ struct ContentSettingsView: View {
         guard dirty else { return }
         bridge.setContentMaxFileSize(UInt64(maxFileSizeMB * 1024 * 1024))
         bridge.setContentExtensions(extensions)
-        bridge.rebuildContentIndex()
+        DispatchQueue.global().async {
+            bridge.rebuildContentIndex()
+        }
         initialExtensions = extensions
         initialMaxFileSizeMB = maxFileSizeMB
     }

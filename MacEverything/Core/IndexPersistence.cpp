@@ -125,6 +125,15 @@ void IndexPersistence::compact(uint64_t lastEventId) {
 }
 
 void IndexPersistence::compact(const IndexMetadata& metadata) {
+    // Skip compaction if no mutations since last compact
+    {
+        std::lock_guard<std::mutex> lock(walMutex_);
+        if (wal_ && !wal_->isDirty()) {
+            LOG_INFO("IndexPersistence", "Skipping compaction — no mutations since last compact");
+            return;
+        }
+    }
+
     // 1. Open a fresh WAL *before* detaching the old one, so there is no
     //    window where mutations are unlogged.
     auto newWal = std::make_shared<IndexWAL>();

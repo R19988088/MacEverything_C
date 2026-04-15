@@ -113,6 +113,7 @@ bool IndexWAL::append(WALOp op, const std::string& fullPath, const FileRecord& r
     fflush(file_);
     entryCount_++;
     unflushedCount_++;
+    dirty_.store(true, std::memory_order_relaxed);
 
     // Batch fsync: only fsync every syncInterval_ entries
     if (syncInterval_ > 0 && unflushedCount_ >= syncInterval_) {

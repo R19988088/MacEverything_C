@@ -273,6 +273,12 @@ void ContentIndexPersistence::attachWAL() {
 }
 
 void ContentIndexPersistence::compact() {
+    // Skip compaction if no mutations since last compact
+    if (!dirty_.load(std::memory_order_relaxed)) {
+        LOG_INFO("ContentIndexPersistence", "Skipping compaction — no mutations since last compact");
+        return;
+    }
+
     // 1. Open a fresh WAL before detaching old one (gap-free swap)
     auto newWal = std::make_shared<ContentIndexWAL>();
     std::string newWalPath = walPath_ + ".new";
@@ -288,6 +294,7 @@ void ContentIndexPersistence::compact() {
         oldWal = wal_;
         wal_ = newWal;
     }
+    dirty_.store(false, std::memory_order_relaxed);
 
     // 3. Write new base file (crash-safety: C-1 fix — write before removing old WAL)
     if (index_->saveToFile(basePath_)) {
@@ -364,6 +371,7 @@ void ContentIndexPersistence::walAppendAdd(uint32_t fileIndex, uint64_t contentH
     std::lock_guard<std::mutex> lock(walMutex_);
     if (wal_) {
         wal_->appendAdd(fileIndex, contentHash, trigrams);
+        dirty_.store(true, std::memory_order_relaxed);
     }
 }
 
@@ -371,5 +379,6 @@ void ContentIndexPersistence::walAppendRemove(uint32_t fileIndex) {
     std::lock_guard<std::mutex> lock(walMutex_);
     if (wal_) {
         wal_->appendRemove(fileIndex);
+        dirty_.store(true, std::memory_order_relaxed);
     }
 }

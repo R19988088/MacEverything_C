@@ -25,6 +25,11 @@ static void runWalRenameChainTest() {
         persistence.load();
         persistence.attachWAL();
 
+        // Add a mutation so the dirty flag is set (required for compact to proceed)
+        std::vector<Trigram> trigrams1 = {100, 200, 300};
+        persistence.walAppendAdd(0, 12345, trigrams1);
+        contentIndex->insertFileInfo(0, 12345, std::vector<Trigram>{100, 200, 300});
+
         // First compact — should succeed cleanly
         persistence.compact();
         check(fs::exists(basePath), "RC1: base file created after first compact");
@@ -32,12 +37,21 @@ static void runWalRenameChainTest() {
         check(fs::exists(walPath), "RC1: WAL at standard path after compact");
         check(!fs::exists(walPath + ".new"), "RC1: no leftover .wal.new after compact");
 
+        // Add another mutation before second compact
+        std::vector<Trigram> trigrams2 = {400, 500};
+        persistence.walAppendAdd(1, 67890, trigrams2);
+        contentIndex->insertFileInfo(1, 67890, std::vector<Trigram>{400, 500});
+
         // Second compact — regression: previously this would fail because
         // closeAndDelete on old WAL would unlink the new WAL's file
         persistence.compact();
         check(fs::exists(basePath), "RC2: base file still exists after second compact");
         check(fs::exists(walPath), "RC2: WAL at standard path after second compact");
         check(!fs::exists(walPath + ".new"), "RC2: no leftover .wal.new after second compact");
+
+        // Add another mutation before third compact
+        persistence.walAppendRemove(1);
+        contentIndex->removeFile(1);
 
         // Third compact — ensure no accumulated failures
         persistence.compact();
@@ -51,17 +65,17 @@ static void runWalRenameChainTest() {
         std::string basePath = tmpDir + "/index.bin";
         std::string walPath = tmpDir + "/index.wal";
 
-        // Add some records so saveToFile has data to write
-        FileRecord rec;
-        rec.name = "test.txt";
-        rec.path = tmpDir;
-        rec.type = 1;
-        rec.size = 100;
-        rec.modTime = time(nullptr);
-        engine->addRecord(std::move(rec));
-
         IndexPersistence persistence(engine, basePath, walPath);
         persistence.attachWAL();
+
+        // Add record AFTER attachWAL so the WAL sees the mutation (sets dirty flag)
+        FileRecord rec1;
+        rec1.name = "test.txt";
+        rec1.path = tmpDir;
+        rec1.type = 1;
+        rec1.size = 100;
+        rec1.modTime = time(nullptr);
+        engine->addRecord(std::move(rec1));
 
         IndexMetadata meta;
         meta.lastEventId = 1;
@@ -71,10 +85,28 @@ static void runWalRenameChainTest() {
         check(fs::exists(walPath), "RI1: WAL at standard path after first compact");
         check(!fs::exists(walPath + ".new"), "RI1: no leftover .wal.new");
 
+        // Add mutation before second compact
+        FileRecord rec2;
+        rec2.name = "test2.txt";
+        rec2.path = tmpDir;
+        rec2.type = 1;
+        rec2.size = 200;
+        rec2.modTime = time(nullptr);
+        engine->addRecord(std::move(rec2));
+
         meta.lastEventId = 2;
         persistence.compact(meta);
         check(fs::exists(walPath), "RI2: WAL at standard path after second compact");
         check(!fs::exists(walPath + ".new"), "RI2: no leftover .wal.new");
+
+        // Add mutation before third compact
+        FileRecord rec3;
+        rec3.name = "test3.txt";
+        rec3.path = tmpDir;
+        rec3.type = 1;
+        rec3.size = 300;
+        rec3.modTime = time(nullptr);
+        engine->addRecord(std::move(rec3));
 
         meta.lastEventId = 3;
         persistence.compact(meta);

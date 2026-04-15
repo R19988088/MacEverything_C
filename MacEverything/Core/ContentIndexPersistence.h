@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include <cstdio>
 #include <sys/stat.h>
 #include <dispatch/dispatch.h>
@@ -103,6 +104,7 @@ private:
     std::string basePath_;
     std::string walPath_;
     std::mutex walMutex_;
+    std::atomic<bool> dirty_{false};
     dispatch_source_t compactionTimer_ = nullptr;
     dispatch_queue_t compactionQueue_ = nullptr;
 };

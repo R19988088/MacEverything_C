@@ -139,17 +139,26 @@ static void testContentIndexBulkLoad() {
     contentIndex->setExtensions({"txt"});
     contentIndex->setMaxFileSize(1024 * 1024);
 
+    // Create persistence with WAL so mutations route through WAL (sets dirty flag)
+    std::string savePath = tmpDir + "/content_index.bin";
+    std::string walPathCH4 = tmpDir + "/content.wal";
+    ContentIndexPersistence persistence(contentIndex, savePath, walPathCH4);
+    persistence.attachWAL();
+
     for (int i = 0; i < 5; i++) {
         std::string filePath = tmpDir + "/file" + std::to_string(i) + ".txt";
         std::ofstream ofs(filePath);
         ofs << "common_keyword unique_word_" << i << " test_content";
         ofs.close();
         contentIndex->indexFile(static_cast<uint32_t>(i), filePath);
+        // Record in WAL so dirty flag is set for compaction
+        ContentFileInfo info;
+        if (contentIndex->getFileInfo(static_cast<uint32_t>(i), info)) {
+            persistence.walAppendAdd(static_cast<uint32_t>(i), info.contentHash, info.trigrams);
+        }
     }
 
     // Save and reload
-    std::string savePath = tmpDir + "/content_index.bin";
-    ContentIndexPersistence persistence(contentIndex, savePath, tmpDir + "/content.wal");
     persistence.compact();
 
     auto loaded = std::make_shared<ContentIndex>();

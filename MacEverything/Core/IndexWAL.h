@@ -5,6 +5,7 @@
 #include <mutex>
 #include <cstdio>
 #include <cstdint>
+#include <atomic>
 
 enum class WALOp : uint8_t {
     Add    = 1,
@@ -42,6 +43,10 @@ public:
     /// Number of entries written since open.
     uint64_t entryCount() const { return entryCount_; }
 
+    /// True if append() has been called since the last clearDirty().
+    bool isDirty() const { return dirty_.load(std::memory_order_relaxed); }
+    void clearDirty() { dirty_.store(false, std::memory_order_relaxed); }
+
     /// Set the number of entries between automatic fsyncs (0 = never auto-fsync).
     void setSyncInterval(uint64_t entries) { syncInterval_ = entries; }
 
@@ -73,6 +78,7 @@ private:
     uint64_t unflushedCount_ = 0;
     uint64_t syncInterval_ = 64;  // fsync every 64 entries by default
     size_t currentSize_ = 0;
+    std::atomic<bool> dirty_{false};
     std::mutex mutex_;
 
     static bool writeRecord(FILE* f, const FileRecord& record);

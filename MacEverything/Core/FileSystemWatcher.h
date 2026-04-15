@@ -15,7 +15,7 @@ public:
     using Callback = std::function<void(std::vector<Event>)>;
     using ReplayDoneCallback = std::function<void()>;
 
-    FileSystemWatcher() = default;
+    explicit FileSystemWatcher(std::string label = "default") : label_(std::move(label)) {}
     ~FileSystemWatcher();
 
     FileSystemWatcher(const FileSystemWatcher&) = delete;
@@ -50,6 +50,7 @@ public:
     void setExclusionPaths(std::vector<std::string> paths);
 
 private:
+    std::string label_;
     FSEventStreamRef stream_ = nullptr;
     dispatch_queue_t queue_ = nullptr;
     Callback callback_;

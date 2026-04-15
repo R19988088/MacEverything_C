@@ -508,6 +508,10 @@
     me::Logger::instance().shutdown();
 }
 
+// Rescan debounce constants
+static constexpr double kRescanDebounceDelaySec = 5.0;
+static constexpr double kRescanThrottleIntervalSec = 300.0;
+
 /// Check if a path is inside a .app bundle (contains ".app/" as a path component boundary).
 static bool isInsideAppBundle(const std::string& path) {
     size_t pos = 0;
@@ -682,14 +686,9 @@ static bool pathEndsWithApp(const std::string& path) {
             }
         }
 
-        // Trigger subtree rescans for MustScanSubDirs directories
+        // Schedule debounced rescan for MustScanSubDirs directories
         if (!rescanDirs.empty()) {
-            for (const auto& dir : rescanDirs) {
-                NSString *dirPath = [NSString stringWithUTF8String:dir.c_str()];
-                if (!dirPath) continue;
-                [strongSelf rescanSubtree:dirPath];
-            }
-            // rescanSubtree will notify UI on completion, no need to set changed here
+            [strongSelf scheduleRescanForPaths:rescanDirs];
         }
 
         if (changed) {
@@ -708,6 +707,17 @@ static bool pathEndsWithApp(const std::string& path) {
 - (void)stopMonitoring {
     // Stop FSEvents first — prevents new lock acquisitions from callbacks
     _watcher->stop();
+
+    // Cancel pending rescan debounce timer and clear state
+    {
+        std::lock_guard<std::mutex> lock(_pendingRescanMutex);
+        if (_rescanDebounceTimer) {
+            dispatch_source_cancel(_rescanDebounceTimer);
+            _rescanDebounceTimer = nil;
+        }
+        _pendingRescanPaths.clear();
+        _lastRescanTime.clear();
+    }
 
     // Stop auto-compaction timers and wait for any in-flight handlers to finish.
     // This ensures no background thread holds the mutex when we return.
@@ -820,6 +830,115 @@ static bool pathEndsWithApp(const std::string& path) {
                                                      modTime:r.modTime]];
     });
     return results;
+}
+
+- (void)scheduleRescanForPaths:(const std::vector<std::string>&)paths {
+    std::lock_guard<std::mutex> lock(_pendingRescanMutex);
+
+    // Merge new paths with pending, applying path subsumption
+    _pendingRescanPaths = mergeRescanPaths(_pendingRescanPaths, paths);
+
+    LOG_INFO("FSWatcher", "Debounce: " << _pendingRescanPaths.size()
+             << " pending rescan path(s), scheduling " << kRescanDebounceDelaySec << "s delay");
+
+    // Cancel existing timer (reset debounce window)
+    if (_rescanDebounceTimer) {
+        dispatch_source_cancel(_rescanDebounceTimer);
+        _rescanDebounceTimer = nil;
+    }
+
+    // Create a new one-shot timer on the mutation queue
+    _rescanDebounceTimer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _mutationQueue);
+
+    uint64_t delaySec = static_cast<uint64_t>(kRescanDebounceDelaySec * NSEC_PER_SEC);
+    dispatch_source_set_timer(_rescanDebounceTimer, dispatch_time(DISPATCH_TIME_NOW, delaySec),
+                              DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 10);
+
+    __weak MacSearchBridge *weakSelf = self;
+    dispatch_source_set_event_handler(_rescanDebounceTimer, ^{
+        MacSearchBridge *strongSelf = weakSelf;
+        if (strongSelf) {
+            [strongSelf flushPendingRescans];
+        }
+    });
+    dispatch_resume(_rescanDebounceTimer);
+}
+
+- (void)flushPendingRescans {
+    // Take pending paths under lock
+    std::set<std::string> pathsToRescan;
+    std::set<std::string> throttledPaths;
+    {
+        std::lock_guard<std::mutex> lock(_pendingRescanMutex);
+        for (const auto& path : _pendingRescanPaths) {
+            if (shouldThrottleRescan(path, _lastRescanTime, kRescanThrottleIntervalSec)) {
+                throttledPaths.insert(path);
+                LOG_INFO("FSWatcher", "Throttled rescan for: " << path
+                         << " (within " << kRescanThrottleIntervalSec << "s window)");
+            } else {
+                pathsToRescan.insert(path);
+            }
+        }
+        _pendingRescanPaths = throttledPaths;
+
+        // Cancel the timer — it already fired
+        if (_rescanDebounceTimer) {
+            dispatch_source_cancel(_rescanDebounceTimer);
+            _rescanDebounceTimer = nil;
+        }
+    }
+
+    if (pathsToRescan.empty() && throttledPaths.empty()) return;
+
+    LOG_INFO("FSWatcher", "Flushing debounced rescan: " << pathsToRescan.size()
+             << " path(s) to rescan, " << throttledPaths.size() << " throttled");
+
+    // Execute rescans
+    for (const auto& path : pathsToRescan) {
+        NSString *dirPath = [NSString stringWithUTF8String:path.c_str()];
+        if (!dirPath) continue;
+        [self rescanSubtree:dirPath];
+
+        // Record rescan time for throttle
+        std::lock_guard<std::mutex> lock(_pendingRescanMutex);
+        _lastRescanTime[path] = std::chrono::steady_clock::now();
+    }
+
+    // Clean up old entries in _lastRescanTime (> 2x throttle interval)
+    {
+        std::lock_guard<std::mutex> lock(_pendingRescanMutex);
+        auto now = std::chrono::steady_clock::now();
+        for (auto it = _lastRescanTime.begin(); it != _lastRescanTime.end(); ) {
+            auto elapsed = std::chrono::duration<double>(now - it->second).count();
+            if (elapsed > kRescanThrottleIntervalSec * 2.0) {
+                it = _lastRescanTime.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // If there are throttled paths, schedule a retry when throttle expires
+    if (!throttledPaths.empty()) {
+        std::lock_guard<std::mutex> lock(_pendingRescanMutex);
+        if (!_rescanDebounceTimer) {
+            _rescanDebounceTimer = dispatch_source_create(
+                DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _mutationQueue);
+            uint64_t delay = static_cast<uint64_t>(kRescanThrottleIntervalSec * NSEC_PER_SEC);
+            dispatch_source_set_timer(_rescanDebounceTimer,
+                                      dispatch_time(DISPATCH_TIME_NOW, delay),
+                                      DISPATCH_TIME_FOREVER, NSEC_PER_SEC);
+            __weak MacSearchBridge *weakSelf = self;
+            dispatch_source_set_event_handler(_rescanDebounceTimer, ^{
+                MacSearchBridge *strongSelf = weakSelf;
+                if (strongSelf) {
+                    [strongSelf flushPendingRescans];
+                }
+            });
+            dispatch_resume(_rescanDebounceTimer);
+        }
+    }
 }
 
 - (void)rescanSubtree:(NSString *)dirPath {

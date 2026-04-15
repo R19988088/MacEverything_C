@@ -7,9 +7,13 @@
 #include "IndexPersistence.h"
 #include "FileSystemWatcher.h"
 #include "InstanceLock.h"
+#include "RescanDebounce.h"
 #include <memory>
 #include <atomic>
 #include <shared_mutex>
+#include <set>
+#include <chrono>
+#include <dispatch/dispatch.h>
 
 /// Class extension exposing ivars and internal methods
 /// shared between MacSearchBridge.mm and MacSearchBridge+Content.mm.
@@ -44,6 +48,11 @@
     std::atomic<uint64_t> _contentIndexGeneration;
     // R3-1: Single-instance file lock to prevent WAL corruption from overlapping processes
     InstanceLock _instanceLock;
+    // Rescan debounce state
+    std::mutex _pendingRescanMutex;
+    std::set<std::string> _pendingRescanPaths;
+    dispatch_source_t _rescanDebounceTimer;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> _lastRescanTime;
 }
 
 /// Thread-safe engine accessor (C-4)

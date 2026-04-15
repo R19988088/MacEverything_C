@@ -53,7 +53,12 @@ struct ContentView: View {
                     Text("Scanning... \(viewModel.scannedCount) items scanned")
                         .foregroundColor(.secondary)
                 } else if viewModel.scanComplete {
-                    if viewModel.isMonitoring {
+                    if viewModel.isSyncing {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Syncing...")
+                            .foregroundColor(.orange)
+                    } else if viewModel.isMonitoring {
                         Circle()
                             .fill(.green)
                             .frame(width: 6, height: 6)

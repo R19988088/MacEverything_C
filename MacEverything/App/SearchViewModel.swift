@@ -38,6 +38,7 @@ class SearchViewModel: ObservableObject {
     @Published var isContentIndexing: Bool = false
     @Published var contentIndexProgress: (indexed: UInt32, total: UInt32)?
     @Published var contentIndexedCount: UInt32 = 0
+    @Published var isSyncing: Bool = false
 
     private let bridge = MacSearchBridge.shared()
     private var searchTask: Task<Void, Never>?
@@ -123,6 +124,7 @@ class SearchViewModel: ObservableObject {
                 self.isScanning = false
                 self.scanComplete = true
                 self.isMonitoring = self.bridge.isMonitoring
+                self.isSyncing = self.bridge.isSyncing
 
                 if !self.searchText.isEmpty {
                     self.performSearch(self.searchText)
@@ -378,6 +380,7 @@ class SearchViewModel: ObservableObject {
     private func performIndexRefresh() {
         totalRecords = bridge.liveRecordCount()
         isMonitoring = bridge.isMonitoring
+        isSyncing = bridge.isSyncing
         contentIndexedCount = bridge.contentIndexedFileCount()
 
         // Skip expensive search/query when app is not focused.

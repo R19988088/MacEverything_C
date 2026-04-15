@@ -25,6 +25,7 @@
     std::atomic<bool> _isContentIndexing;
     std::atomic<bool> _shuttingDown;
     std::atomic<bool> _startupCompleted;
+    std::atomic<bool> _isSyncing;      // index loaded & searchable, background sync in progress
     // C-4: Protects _engine shared_ptr from concurrent read/write
     std::shared_mutex _engineMutex;
     // H-7: Serial queue for index mutations (rescanSubtree, FSEvents)

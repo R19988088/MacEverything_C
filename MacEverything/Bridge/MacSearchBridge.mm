@@ -91,6 +91,7 @@
         _isMonitoring.store(false, std::memory_order_relaxed);
         _isContentIndexing.store(false, std::memory_order_relaxed);
         _shuttingDown.store(false, std::memory_order_relaxed);
+        _isSyncing.store(false, std::memory_order_relaxed);
         _cancelContentIndexing.store(false, std::memory_order_relaxed);
         _contentIndexGeneration.store(0, std::memory_order_relaxed);
         // H-7: Serial queue for mutations
@@ -142,6 +143,10 @@
     return _isMonitoring.load(std::memory_order_relaxed);
 }
 
+- (BOOL)isSyncing {
+    return _isSyncing.load(std::memory_order_relaxed);
+}
+
 - (void)startScanFrom:(NSString *)rootPath
            completion:(void (^)(uint32_t totalRecords))completion {
     _isScanning.store(true, std::memory_order_relaxed);
@@ -174,16 +179,6 @@
             );
         });
         dispatch_resume(timer);
-
-        // Schedule scan timeout: cancel scanner after 45s
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 45 * NSEC_PER_SEC),
-                       dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-            auto s = scannerWeak.lock();
-            if (s && !s->isCancelled()) {
-                LOG_WARN("Bridge", "Scan timeout (45s) — cancelling scanner");
-                s->cancel();
-            }
-        });
 
         scanner->scan(std::string([root UTF8String]));
 
@@ -224,26 +219,12 @@
                   completion:(void (^)(uint32_t totalRecords, BOOL didFullScan))completion {
     _isScanning.store(true, std::memory_order_relaxed);
     _startupCompleted.store(false, std::memory_order_relaxed);
+    _isSyncing.store(false, std::memory_order_relaxed);
     [self stopMonitoring];
 
     NSString *root = [rootPath copy];
     NSString *cache = [cachePath copy];
     NSString *wal = [walPath copy];
-
-    // Global startup timeout: guarantee completion fires within 60s
-    __weak MacSearchBridge *weakTimeoutSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC),
-                   dispatch_get_main_queue(), ^{
-        MacSearchBridge *strongSelf = weakTimeoutSelf;
-        if (!strongSelf) return;
-        bool expected = false;
-        if (strongSelf->_startupCompleted.compare_exchange_strong(expected, true,
-                std::memory_order_acq_rel)) {
-            LOG_WARN("Bridge", "Startup timeout (60s) — firing completion with 0 records");
-            strongSelf->_isScanning.store(false, std::memory_order_relaxed);
-            if (completion) completion(0, YES);
-        }
-    });
 
     LOG_INFO("Bridge", "startIncrementalFrom: " << [root UTF8String]);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -257,95 +238,57 @@
 
         uint64_t lastEventId = persistence->load();
         uint32_t loadedCount = engine->liveRecordCount();
-
-        if (lastEventId > 0 && loadedCount > 0) {
-            // Have a cached index with a valid event ID — try FSEvents replay
-            auto replayDone = std::make_shared<std::atomic<bool>>(false);
-            auto journalTruncated = std::make_shared<std::atomic<bool>>(false);
-
-            __weak MacSearchBridge *weakSelf = self;
-            auto watcherForReplay = std::make_unique<FileSystemWatcher>();
-            auto* watcherPtr = watcherForReplay.get();
-
-            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-
-            watcherPtr->start(
-                std::string([root UTF8String]),
-                lastEventId,
-                [weakSelf, engine](std::vector<FileSystemWatcher::Event> events) {
-                    MacSearchBridge *strongSelf = weakSelf;
-                    if (!strongSelf) return;
-                    [strongSelf applyFSEvents:events toEngine:engine];
-                },
-                [replayDone, journalTruncated, watcherPtr, sem] {
-                    replayDone->store(true);
-                    journalTruncated->store(watcherPtr->isJournalTruncated());
-                    dispatch_semaphore_signal(sem);
-                }
-            );
-
-            // Wait up to 10 seconds for replay to finish
-            long result = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
-            watcherForReplay->stop();
-
-            if (result == 0 && replayDone->load() && !journalTruncated->load()) {
-                // Replay succeeded — use the incrementally-updated index
-                auto incrElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - incrementalStart).count();
-                LOG_INFO("Bridge", "Incremental load succeeded: " << engine->liveRecordCount() << " records in " << incrElapsed << "s");
-                auto sharedPersistence = std::shared_ptr<IndexPersistence>(std::move(persistence));
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    bool expected = false;
-                    if (!self->_startupCompleted.compare_exchange_strong(expected, true,
-                            std::memory_order_acq_rel)) {
-                        return; // timeout already fired completion
-                    }
-
-                    [self setEngine:engine]; // C-4: thread-safe engine swap
-                    [self setPersistence:sharedPersistence]; // C-2: thread-safe persistence swap
-                    self->_isScanning.store(false, std::memory_order_relaxed);
-
-                    sharedPersistence->attachWAL();
-                    // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
-                    sharedPersistence->setContentIndex([self safeContentIndex]);
-
-                    uint32_t count = engine->liveRecordCount();
-                    if (completion) completion(count, NO);
-
-                    [self startMonitoringFrom:root];
-
-                    sharedPersistence->startAutoCompaction(300.0, self->_watcher);
-
-                    // Start content indexing in background
-                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                        [self setupContentPersistence];
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            [self startContentIndexing];
-                        });
-                    });
-                });
-                return;
-            }
-            // Replay failed or journal truncated — fall through to full scan
-            LOG_WARN("Bridge", "FSEvents replay failed or journal truncated — falling back to full scan");
-        }
-
-        // Full scan fallback
         std::string cacheStr([cache UTF8String]);
         std::string walStr([wal UTF8String]);
+
+        if (lastEventId > 0 && loadedCount > 0) {
+            // === Have cached index: deliver immediately, then sync in background ===
+            auto sharedPersistence = std::shared_ptr<IndexPersistence>(std::move(persistence));
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                bool expected = false;
+                if (!self->_startupCompleted.compare_exchange_strong(expected, true,
+                        std::memory_order_acq_rel)) {
+                    return; // should not happen here but guard
+                }
+
+                [self setEngine:engine]; // C-4: thread-safe engine swap
+                [self setPersistence:sharedPersistence]; // C-2: thread-safe persistence swap
+                self->_isScanning.store(false, std::memory_order_relaxed);
+                self->_isSyncing.store(true, std::memory_order_relaxed);
+
+                sharedPersistence->attachWAL();
+                sharedPersistence->setContentIndex([self safeContentIndex]);
+
+                uint32_t count = engine->liveRecordCount();
+                if (completion) completion(count, NO);
+
+                // === Background sync: FSEvents replay or full scan ===
+                [self backgroundSyncEngine:engine
+                               persistence:sharedPersistence
+                               lastEventId:lastEventId
+                                  cacheStr:cacheStr
+                                    walStr:walStr
+                                      root:root
+                          incrementalStart:incrementalStart];
+            });
+            return;
+        }
+
+        // === No cache: full scan (no timeout — user tolerates first startup) ===
         dispatch_async(dispatch_get_main_queue(), ^{
             [self startScanFrom:root completion:^(uint32_t count) {
                 bool expected = false;
                 if (!self->_startupCompleted.compare_exchange_strong(expected, true,
                         std::memory_order_acq_rel)) {
-                    return; // timeout already fired completion
+                    return;
                 }
 
                 auto newPersistence = std::make_shared<IndexPersistence>(
                     [self safeEngine], cacheStr, walStr
                 );
-                [self setPersistence:newPersistence]; // C-2: thread-safe persistence swap
+                [self setPersistence:newPersistence];
                 newPersistence->attachWAL();
-                // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
                 newPersistence->setContentIndex([self safeContentIndex]);
                 newPersistence->startAutoCompaction(300.0, self->_watcher);
 
@@ -355,15 +298,148 @@
                 meta.extra[IndexMetadata::kScanRoot] = std::string([root UTF8String]);
                 meta.extra[IndexMetadata::kAppVersion] = "1.1.0";
                 meta.extra[IndexMetadata::kRecordFormat] = "v3_inode";
-                // Capture OS version
                 NSOperatingSystemVersion osVer = [[NSProcessInfo processInfo] operatingSystemVersion];
                 meta.extra[IndexMetadata::kOSVersion] = [[NSString stringWithFormat:@"%ld.%ld.%ld",
                     (long)osVer.majorVersion, (long)osVer.minorVersion, (long)osVer.patchVersion] UTF8String];
-                auto engine = [self safeEngine];
-                if (engine) engine->saveToFile(cacheStr, meta);
+                auto eng = [self safeEngine];
+                if (eng) eng->saveToFile(cacheStr, meta);
 
                 if (completion) completion(count, YES);
             }];
+        });
+    });
+}
+
+/// Background sync after delivering cached index. Tries FSEvents replay first;
+/// falls back to full scan into the same engine via loadRecords().
+- (void)backgroundSyncEngine:(std::shared_ptr<SearchEngine>)engine
+                  persistence:(std::shared_ptr<IndexPersistence>)sharedPersistence
+                  lastEventId:(uint64_t)lastEventId
+                     cacheStr:(std::string)cacheStr
+                       walStr:(std::string)walStr
+                         root:(NSString *)root
+             incrementalStart:(std::chrono::steady_clock::time_point)incrementalStart {
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // --- Try FSEvents replay ---
+        auto replayDone = std::make_shared<std::atomic<bool>>(false);
+        auto journalTruncated = std::make_shared<std::atomic<bool>>(false);
+
+        __weak MacSearchBridge *weakSelf = self;
+        auto watcherForReplay = std::make_unique<FileSystemWatcher>();
+        auto* watcherPtr = watcherForReplay.get();
+
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+        watcherPtr->start(
+            std::string([root UTF8String]),
+            lastEventId,
+            [weakSelf, engine](std::vector<FileSystemWatcher::Event> events) {
+                MacSearchBridge *strongSelf = weakSelf;
+                if (!strongSelf) return;
+                [strongSelf applyFSEvents:events toEngine:engine];
+            },
+            [replayDone, journalTruncated, watcherPtr, sem] {
+                replayDone->store(true);
+                journalTruncated->store(watcherPtr->isJournalTruncated());
+                dispatch_semaphore_signal(sem);
+            }
+        );
+
+        long result = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+        watcherForReplay->stop();
+
+        if (result == 0 && replayDone->load() && !journalTruncated->load()) {
+            // --- Replay succeeded ---
+            auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - incrementalStart).count();
+            LOG_INFO("Bridge", "Background replay succeeded: " << engine->liveRecordCount() << " records in " << elapsed << "s");
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_isSyncing.store(false, std::memory_order_relaxed);
+                [self startMonitoringFrom:root];
+                sharedPersistence->startAutoCompaction(300.0, self->_watcher);
+
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                    [self setupContentPersistence];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self startContentIndexing];
+                    });
+                });
+                if (self.onIndexChanged) self.onIndexChanged();
+            });
+            return;
+        }
+
+        // --- Replay failed: background full scan into same engine ---
+        LOG_WARN("Bridge", "FSEvents replay failed — background full scan into existing engine");
+
+        auto scanner = std::make_shared<DirectoryScanner>();
+
+        // Progress reporting
+        std::weak_ptr<DirectoryScanner> scannerWeak = scanner;
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), 200 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
+        __weak MacSearchBridge *weakTimerSelf = self;
+        dispatch_source_set_event_handler(timer, ^{
+            MacSearchBridge *strongSelf = weakTimerSelf;
+            if (!strongSelf || !strongSelf.onScanProgress) return;
+            auto s = scannerWeak.lock();
+            if (!s) return;
+            const auto& stats = s->getStats();
+            strongSelf.onScanProgress(
+                stats.fileCount.load(std::memory_order_relaxed),
+                stats.dirCount.load(std::memory_order_relaxed)
+            );
+        });
+        dispatch_resume(timer);
+
+        scanner->scan(std::string([root UTF8String]));
+        dispatch_source_cancel(timer);
+
+        auto freshRecords = scanner->takeResults();
+        // loadRecords uses unique_lock — blocks queries briefly but thread-safe
+        engine->loadRecords(std::move(freshRecords));
+        uint32_t finalCount = engine->liveRecordCount();
+
+        auto scanElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - incrementalStart).count();
+        LOG_INFO("Bridge", "Background scan completed: " << finalCount << " records in " << scanElapsed << "s");
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_isSyncing.store(false, std::memory_order_relaxed);
+
+            // Stop old persistence's auto-compaction before replacing
+            sharedPersistence->stopAutoCompactionAndWait();
+
+            // Replace persistence (old one destructs: detaches WAL, closes file)
+            auto newPersistence = std::make_shared<IndexPersistence>(
+                engine, cacheStr, walStr
+            );
+            [self setPersistence:newPersistence];
+            newPersistence->attachWAL();
+            newPersistence->setContentIndex([self safeContentIndex]);
+
+            [self startMonitoringFrom:root];
+            newPersistence->startAutoCompaction(300.0, self->_watcher);
+
+            // Save snapshot
+            uint64_t eventId = self->_watcher ? self->_watcher->getLastEventId() : 0;
+            IndexMetadata meta;
+            meta.lastEventId = eventId;
+            meta.extra[IndexMetadata::kScanRoot] = std::string([root UTF8String]);
+            meta.extra[IndexMetadata::kAppVersion] = "1.1.0";
+            meta.extra[IndexMetadata::kRecordFormat] = "v3_inode";
+            NSOperatingSystemVersion osVer = [[NSProcessInfo processInfo] operatingSystemVersion];
+            meta.extra[IndexMetadata::kOSVersion] = [[NSString stringWithFormat:@"%ld.%ld.%ld",
+                (long)osVer.majorVersion, (long)osVer.minorVersion, (long)osVer.patchVersion] UTF8String];
+            engine->saveToFile(cacheStr, meta);
+
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                [self setupContentPersistence];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self startContentIndexing];
+                });
+            });
+            if (self.onIndexChanged) self.onIndexChanged();
         });
     });
 }

@@ -119,6 +119,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Whether file system monitoring is active.
 @property (nonatomic, readonly) BOOL isMonitoring;
 
+/// Whether background sync is in progress (index is searchable but may be stale).
+@property (nonatomic, readonly) BOOL isSyncing;
+
 // --- Logging ---
 
 /// Initialize the logging system. Call once at app startup.

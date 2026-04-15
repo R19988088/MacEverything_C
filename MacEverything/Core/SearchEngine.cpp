@@ -755,3 +755,16 @@ uint32_t SearchEngine::indexForPath(const std::string& fullPath) const {
     auto it = pathIndex_.find(me::toLower(fullPath));
     return (it != pathIndex_.end()) ? it->second : UINT32_MAX;
 }
+
+std::vector<FileRecord> SearchEngine::exportRecords() const {
+    std::shared_lock lock(mutex_);
+    std::vector<FileRecord> result;
+    result.reserve(liveCount_.load(std::memory_order_relaxed));
+    for (size_t i = 0; i < records_.size(); i++) {
+        if (records_[i].type == 0) continue; // skip tombstones
+        FileRecord r = records_[i];
+        r.path = pathTable_.resolve(pathIndices_[i]);
+        result.push_back(std::move(r));
+    }
+    return result;
+}

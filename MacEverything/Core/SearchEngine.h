@@ -140,6 +140,9 @@ public:
     /// Look up the record index for a given full path. Returns UINT32_MAX if not found.
     uint32_t indexForPath(const std::string& fullPath) const;
 
+    /// Export a copy of all live records with their paths restored. Thread-safe.
+    std::vector<FileRecord> exportRecords() const;
+
     /// Build the full path from a record's path and name components.
     static std::string makeFullPath(const std::string& path, const std::string& name);
 

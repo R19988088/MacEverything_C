@@ -1,5 +1,7 @@
 #include "IndexPersistence.h"
+#include "StringUtils.h"
 #include "Logger.h"
+#include <algorithm>
 #include <chrono>
 
 IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
@@ -31,35 +33,69 @@ uint64_t IndexPersistence::load() {
         LOG_INFO("IndexPersistence", "No base index found at " << basePath_);
     }
 
-    // 2. Replay WAL entries on top (with 15s timeout)
+    // 2. Batch-merge WAL entries into base records, then load once.
+    //    This avoids per-entry lock+trigram-update overhead that caused timeouts
+    //    with large WALs (190K+ entries).
     auto entries = IndexWAL::readAll(walPath_);
     if (!entries.empty()) {
-        LOG_INFO("IndexPersistence", "Replaying " << entries.size() << " WAL entries");
-        auto replayStart = std::chrono::steady_clock::now();
-        bool timedOut = false;
+        LOG_INFO("IndexPersistence", "Replaying " << entries.size() << " WAL entries (batch mode)");
+
+        // Export current records with paths restored
+        auto records = engine_->exportRecords();
+
+        // Build path->index map for efficient lookup (case-insensitive)
+        std::unordered_map<std::string, size_t> pathMap;
+        pathMap.reserve(records.size());
+        for (size_t i = 0; i < records.size(); i++) {
+            std::string fullPath = SearchEngine::makeFullPath(records[i].path, records[i].name);
+            pathMap[me::toLower(fullPath)] = i;
+        }
+
+        // Apply WAL entries to the records vector
         for (auto& entry : entries) {
-            if (std::chrono::steady_clock::now() - replayStart > std::chrono::seconds(15)) {
-                LOG_WARN("IndexPersistence", "WAL replay timeout (15s) — forcing full scan");
-                timedOut = true;
-                break;
-            }
+            std::string lowerPath = me::toLower(entry.fullPath);
+
             switch (entry.op) {
-                case WALOp::Add:
-                    engine_->addRecord(std::move(entry.record));
+                case WALOp::Add: {
+                    auto it = pathMap.find(lowerPath);
+                    if (it != pathMap.end()) {
+                        // Path already exists — update in place (idempotency)
+                        records[it->second] = std::move(entry.record);
+                    } else {
+                        pathMap[lowerPath] = records.size();
+                        records.push_back(std::move(entry.record));
+                    }
                     break;
-                case WALOp::Remove:
-                    engine_->removeByPath(entry.fullPath);
+                }
+                case WALOp::Remove: {
+                    auto it = pathMap.find(lowerPath);
+                    if (it != pathMap.end()) {
+                        records[it->second].type = 0; // tombstone
+                        pathMap.erase(it);
+                    }
                     break;
-                case WALOp::Update:
-                    engine_->updateByPath(entry.fullPath, std::move(entry.record));
+                }
+                case WALOp::Update: {
+                    auto it = pathMap.find(lowerPath);
+                    if (it != pathMap.end()) {
+                        records[it->second] = std::move(entry.record);
+                    } else {
+                        pathMap[lowerPath] = records.size();
+                        records.push_back(std::move(entry.record));
+                    }
                     break;
+                }
             }
         }
-        if (timedOut) {
-            // Reset engine and return 0 to force full scan
-            engine_->loadRecords({});
-            return 0;
-        }
+
+        // Remove tombstones before batch loading
+        records.erase(
+            std::remove_if(records.begin(), records.end(),
+                [](const FileRecord& r) { return r.type == 0; }),
+            records.end());
+
+        // Batch load all records at once (efficient trigram build + path interning)
+        engine_->loadRecords(std::move(records));
         LOG_INFO("IndexPersistence", "WAL replay done, live records=" << engine_->liveRecordCount());
     }
 

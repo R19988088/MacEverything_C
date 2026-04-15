@@ -69,6 +69,7 @@ namespace fs = std::filesystem;
 #include "tests/test_p2_fixes.h"
 #include "tests/test_logger.h"
 #include "tests/test_instance_lock.h"
+#include "tests/test_wal_batch_replay.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -92,7 +93,8 @@ static void printUsage(const char* prog) {
     std::cout << "  15 (WAL CRC), 16 (recent cache), 17 (query cancel), 18 (critical/high fixes),\n";
     std::cout << "  19 (rapid typing), 20 (path table), 21 (memory optimizations),\n";
     std::cout << "  22 (batch rescan), 23 (IndexPersistence WAL race),\n";
-    std::cout << "  24 (P2 fixes), 25 (logger), 26 (instance lock)\n";
+    std::cout << "  24 (P2 fixes), 25 (logger), 26 (instance lock),\n";
+    std::cout << "  27 (WAL batch replay)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -107,7 +109,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -130,7 +132,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27"};
     }
 
     // Validate root path if scan test is selected
@@ -188,6 +190,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("24")) runP2FixTests();
     if (selectedParts.count("25")) runLoggerTests();
     if (selectedParts.count("26")) runInstanceLockTests();
+    if (selectedParts.count("27")) runWalBatchReplayTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

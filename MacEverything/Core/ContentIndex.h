@@ -37,7 +37,7 @@ public:
     // --- Indexing ---
 
     /// Index a single file's content. Reads the file, extracts trigrams, updates inverted index.
-    /// Returns true if the file was indexed (false if binary, too large, or unreadable).
+    /// Returns true if the file was newly indexed or updated (false if binary, too large, unreadable, or unchanged).
     bool indexFile(uint32_t fileIndex, const std::string& fullPath);
 
     /// Remove a file from the content index.

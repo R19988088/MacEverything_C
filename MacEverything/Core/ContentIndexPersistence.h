@@ -1,13 +1,12 @@
 #pragma once
 #include "ContentIndex.h"
 #include "IndexWAL.h" // for IndexWAL::crc32()
+#include "CompactionTimer.h"
 #include <string>
 #include <memory>
 #include <mutex>
 #include <atomic>
 #include <cstdio>
-#include <sys/stat.h>
-#include <dispatch/dispatch.h>
 
 /// WAL for content index mutations.
 class ContentIndexWAL {
@@ -57,11 +56,20 @@ public:
     static constexpr uint32_t kMagic   = 0x43574C31; // "CWL1"
     static constexpr uint32_t kVersion = 1;
 
+    /// Tracking accessors (aligned with IndexWAL)
+    uint64_t entryCount() const { return entryCount_; }
+    size_t currentSize() const { return currentSize_; }
+    bool isDirty() const { return dirty_.load(std::memory_order_relaxed); }
+    void clearDirty() { dirty_.store(false, std::memory_order_relaxed); }
+
 private:
     FILE* file_ = nullptr;
     std::string path_;
     uint64_t unflushedCount_ = 0;
     uint64_t syncInterval_ = 64;  // fsync every 64 entries by default
+    uint64_t entryCount_ = 0;     // total entries appended
+    size_t currentSize_ = 0;      // in-memory file size tracking
+    std::atomic<bool> dirty_{false}; // set on append, cleared on compact
     std::mutex mutex_;
 };
 
@@ -83,7 +91,11 @@ public:
     void attachWAL();
 
     /// Compact: write new base, clear WAL.
-    void compact();
+    /// If force is false, compaction is skipped when WAL is below threshold.
+    void compact(bool force = false);
+
+    /// Minimum WAL entry count before non-forced compaction triggers.
+    static constexpr uint64_t kCompactThreshold = 50;
 
     /// Start a GCD timer that compacts every intervalSec seconds.
     void startAutoCompaction(double intervalSec);
@@ -98,13 +110,20 @@ public:
     const std::string& basePath() const { return basePath_; }
     const std::string& walPath() const { return walPath_; }
 
+    // Adaptive interval constants
+    static constexpr double kBaseIntervalSec = 300.0;
+    static constexpr double kMinIntervalSec  = 60.0;   // content indexing is heavier
+    static constexpr double kMaxIntervalSec  = 600.0;
+    static constexpr size_t kWALSizeFlushThreshold = 5 * 1024 * 1024; // 5MB
+
 private:
     std::shared_ptr<ContentIndex> index_;
     std::shared_ptr<ContentIndexWAL> wal_;
     std::string basePath_;
     std::string walPath_;
     std::mutex walMutex_;
-    std::atomic<bool> dirty_{false};
-    dispatch_source_t compactionTimer_ = nullptr;
-    dispatch_queue_t compactionQueue_ = nullptr;
+    CompactionTimer timer_;
+
+    /// Compute the next auto-compaction interval based on WAL size and entry count.
+    double computeAdaptiveInterval() const;
 };

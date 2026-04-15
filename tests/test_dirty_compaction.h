@@ -111,14 +111,15 @@ static void testContentIndexPersistenceSkipsCleanCompaction() {
     contentIndex->insertFileInfo(0, 12345, std::move(trigrams));
 
     // First compaction should succeed (dirty from walAppendAdd)
-    persistence.compact();
+    // Use force=true since we're testing dirty detection, not threshold
+    persistence.compact(true);
     check(fs::exists(basePath), "content base should be written after dirty compaction");
 
     auto modTime1 = fs::last_write_time(basePath);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     // Second compaction should be skipped (no mutations)
-    persistence.compact();
+    persistence.compact(true);
 
     auto modTime2 = fs::last_write_time(basePath);
     check(modTime1 == modTime2, "content base should NOT be rewritten when no mutations");
@@ -127,7 +128,7 @@ static void testContentIndexPersistenceSkipsCleanCompaction() {
     persistence.walAppendRemove(0);
     contentIndex->removeFile(0);
 
-    persistence.compact();
+    persistence.compact(true);
 
     auto modTime3 = fs::last_write_time(basePath);
     check(modTime3 != modTime2, "content base SHOULD be rewritten after new mutation");

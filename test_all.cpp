@@ -13,6 +13,7 @@
 #include "MacEverything/Core/FileSystemWatcher.h"
 #include "MacEverything/Core/Logger.h"
 #include "MacEverything/Core/InstanceLock.h"
+#include "MacEverything/Core/CompactionTimer.h"
 #include <chrono>
 #include <iostream>
 #include <iomanip>
@@ -75,6 +76,9 @@ namespace fs = std::filesystem;
 #include "tests/test_dirty_compaction.h"
 #include "tests/test_compact_threshold.h"
 #include "tests/test_paged_persistence.h"
+#include "tests/test_compaction_timer.h"
+#include "tests/test_content_wal_tracking.h"
+#include "tests/test_content_compact_threshold.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -101,7 +105,9 @@ static void printUsage(const char* prog) {
     std::cout << "  24 (P2 fixes), 25 (logger), 26 (instance lock),\n";
     std::cout << "  27 (WAL batch replay), 28 (WAL rename chain),\n";
     std::cout << "  29 (rescan debounce), 30 (dirty compaction),\n";
-    std::cout << "  31 (compact threshold), 32 (paged persistence)\n";
+    std::cout << "  31 (compact threshold), 32 (paged persistence),\n";
+    std::cout << "  33 (compaction timer), 34 (content WAL tracking),\n";
+    std::cout << "  35 (content compact threshold)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -116,7 +122,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -139,7 +145,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35"};
     }
 
     // Validate root path if scan test is selected
@@ -203,6 +209,9 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("30")) runDirtyCompactionTests();
     if (selectedParts.count("31")) runCompactThresholdTests();
     if (selectedParts.count("32")) runPagedPersistenceTests();
+    if (selectedParts.count("33")) runCompactionTimerTests();
+    if (selectedParts.count("34")) runContentWalTrackingTests();
+    if (selectedParts.count("35")) runContentCompactThresholdTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

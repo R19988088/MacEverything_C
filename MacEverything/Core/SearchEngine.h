@@ -215,4 +215,14 @@ private:
     void rebuildRecentCache();
     void addToRecentCache(uint32_t idx, time_t modTime);
     void removeFromRecentCache(uint32_t idx, time_t modTime);
+
+    /// Build trigram index from standalone data (no member access, used by COW compaction)
+    static std::unordered_map<Trigram, std::vector<uint32_t>>
+        buildTrigramIndexFromData(const std::vector<FileRecord>& records,
+                                  const std::vector<std::string>& lowerNames);
+
+    /// Build recent cache from standalone data (no member access, used by COW compaction)
+    static std::set<RecentEntry>
+        buildRecentCacheFromData(const std::vector<FileRecord>& records,
+                                 uint32_t cacheSize);
 };

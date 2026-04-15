@@ -1,8 +1,9 @@
 #pragma once
-// Part 14: WAL Replay Timeout
+// Part 14: WAL Batch Replay (formerly WAL Replay Timeout)
+// Tests the batch WAL replay path that replaced per-entry replay.
 
 static void runWalReplayTimeoutTest() {
-    std::cout << "═══ Part 14: WAL Replay Timeout ═══\n\n";
+    std::cout << "═══ Part 14: WAL Batch Replay ═══\n\n";
 
     std::string tmpDir = "/tmp/maceverything_wal_timeout_" + std::to_string(getpid());
     fs::create_directories(tmpDir);
@@ -22,7 +23,7 @@ static void runWalReplayTimeoutTest() {
         engine->saveToFile(basePath, meta);
     }
 
-    // Write a modest WAL (not timing-dependent — just test the code path works)
+    // Write a WAL with Add entries
     {
         IndexWAL wal;
         wal.open(walPath);
@@ -33,23 +34,23 @@ static void runWalReplayTimeoutTest() {
         wal.close();
     }
 
-    // Test: normal WAL replay should succeed (within 15s timeout)
+    // Test: batch WAL replay merges correctly
     {
         auto testEngine = std::make_shared<SearchEngine>();
         IndexPersistence persistence(testEngine, basePath, walPath);
         uint64_t eventId = persistence.load();
-        check(eventId == 42, "C14: WAL replay succeeded, eventId preserved");
+        check(eventId == 42, "C14: WAL batch replay succeeded, eventId preserved");
         check(testEngine->liveRecordCount() == 1100, "C14: All records loaded (100 base + 1000 WAL)");
     }
 
-    // Test: verify the timeout code path compiles and the engine can be reset
+    // Test: verify loadRecords({}) still works for engine reset
     {
         auto testEngine = std::make_shared<SearchEngine>();
         std::vector<FileRecord> records;
         records.push_back({"test.txt", "/tmp", 1, 100, time(nullptr), 1, 1});
         testEngine->loadRecords(std::move(records));
         check(testEngine->liveRecordCount() == 1, "C14: Engine has 1 record before reset");
-        testEngine->loadRecords({}); // same reset used in timeout path
+        testEngine->loadRecords({}); // reset
         check(testEngine->liveRecordCount() == 0, "C14: Engine reset via loadRecords({}) works");
     }
 

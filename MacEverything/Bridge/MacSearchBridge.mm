@@ -968,6 +968,17 @@ static bool pathEndsWithApp(const std::string& path) {
         // trigram index once, instead of per-record remove+add (O(N²) → O(N))
         engine->batchRescanPrefix(dir, std::move(freshRecords));
 
+        // P0: Prevent unbounded vector growth from tombstone accumulation.
+        // If tombstones exceed 30% of total records, compact in-place.
+        uint32_t total = engine->recordCount();
+        uint32_t live  = engine->liveRecordCount();
+        if (total > live && (total - live) > total * 3 / 10) {
+            auto remap = engine->compactRecords();
+            if (!remap.empty() && strongSelf->_contentIndex) {
+                strongSelf->_contentIndex->remapFileIndices(remap);
+            }
+        }
+
         // Notify UI
         dispatch_async(dispatch_get_main_queue(), ^{
             MacSearchBridge *strongSelf = weakSelf;

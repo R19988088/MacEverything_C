@@ -118,18 +118,24 @@ void IndexPersistence::attachWAL() {
     }
 }
 
-void IndexPersistence::compact(uint64_t lastEventId) {
+void IndexPersistence::compact(uint64_t lastEventId, bool force) {
     IndexMetadata meta;
     meta.lastEventId = lastEventId;
-    compact(meta);
+    compact(meta, force);
 }
 
-void IndexPersistence::compact(const IndexMetadata& metadata) {
+void IndexPersistence::compact(const IndexMetadata& metadata, bool force) {
     // Skip compaction if no mutations since last compact
     {
         std::lock_guard<std::mutex> lock(walMutex_);
         if (wal_ && !wal_->isDirty()) {
             LOG_INFO("IndexPersistence", "Skipping compaction — no mutations since last compact");
+            return;
+        }
+        // Skip compaction if WAL has too few entries (not worth the I/O cost)
+        if (!force && wal_ && wal_->entryCount() < kCompactThreshold) {
+            LOG_INFO("IndexPersistence", "Skipping compaction — only "
+                      << wal_->entryCount() << " entries (threshold=" << kCompactThreshold << ")");
             return;
         }
     }

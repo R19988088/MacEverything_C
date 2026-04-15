@@ -26,11 +26,14 @@ public:
     /// Start logging mutations to WAL.
     void attachWAL();
 
+    /// Minimum WAL entry count before compaction proceeds (unless forced).
+    static constexpr uint64_t kCompactThreshold = 100;
+
     /// Write a new base snapshot with metadata, clear WAL.
-    void compact(uint64_t lastEventId);
+    void compact(uint64_t lastEventId, bool force = false);
 
     /// Write a new base snapshot with full metadata, clear WAL.
-    void compact(const IndexMetadata& metadata);
+    void compact(const IndexMetadata& metadata, bool force = false);
 
     /// Set the ContentIndex so compaction can propagate index remapping.
     void setContentIndex(std::shared_ptr<ContentIndex> ci) { contentIndex_ = std::move(ci); }

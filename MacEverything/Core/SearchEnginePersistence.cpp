@@ -3,6 +3,7 @@
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#include <fcntl.h>
 #include <unistd.h>
 
 // --- Persistence format constants ---
@@ -67,6 +68,9 @@ bool SearchEngine::saveToFile(const std::string& filePath, const IndexMetadata& 
     std::string tmpPath = filePath + ".tmp";
     FILE* f = fopen(tmpPath.c_str(), "wb");
     if (!f) return false;
+
+    // P2: Bypass page cache to avoid evicting hot search data after compaction
+    fcntl(fileno(f), F_NOCACHE, 1);
 
     // Helper to check fwrite return values
     bool writeOk = true;

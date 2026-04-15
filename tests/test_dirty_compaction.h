@@ -68,7 +68,7 @@ static void testIndexPersistenceSkipsCleanCompaction() {
     engine->addRecord(std::move(rec));
 
     // First compaction should succeed (WAL is dirty from addOrUpdate)
-    persistence.compact(1);
+    persistence.compact(1, /*force=*/true);
     check(fs::exists(basePath), "base index should be written after dirty compaction");
 
     // Get file modification time after first compaction

@@ -79,7 +79,7 @@ static void runCompactContentIndexTest() {
 
     IndexMetadata meta;
     meta.lastEventId = 42;
-    persistence->compact(meta);
+    persistence->compact(meta, /*force=*/true);
 
     check(contentIndex->indexedFileCount() == 3, "C1: ContentIndex still has 3 files after IndexPersistence::compact()");
 

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = SearchViewModel()
+    @State private var scrollViewID = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -148,12 +149,12 @@ struct ContentView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(viewModel.contentResults) { item in
                                 ContentResultRow(item: item, keyword: viewModel.contentKeyword)
-                                    .fixedSize(horizontal: false, vertical: true)
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 2)
                             }
                         }
                     }
+                    .id(scrollViewID)
 
                     if viewModel.totalMatches > 0 {
                         HStack {
@@ -199,7 +200,6 @@ struct ContentView: View {
                         }
                         ForEach(viewModel.displayItems) { item in
                             ResultRow(item: item, keyword: viewModel.searchText)
-                                .fixedSize(horizontal: false, vertical: true)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 2)
                                 .id(item.id)
@@ -221,6 +221,7 @@ struct ContentView: View {
                         }
                     }
                 }
+                .id(scrollViewID)
                 .animation(.easeInOut(duration: 0.25), value: viewModel.showingRecent)
 
                 if viewModel.totalMatches > 0 {
@@ -245,6 +246,9 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             viewModel.onWindowFocusChanged(false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didDeminiaturizeNotification)) { _ in
+            scrollViewID += 1
         }
     }
 }

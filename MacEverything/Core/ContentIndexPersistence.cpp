@@ -1,6 +1,8 @@
 #include "ContentIndexPersistence.h"
 #include "Logger.h"
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
 
 // ============================================================
 // ContentIndexWAL
@@ -287,14 +289,10 @@ void ContentIndexPersistence::compact() {
         wal_ = newWal;
     }
 
-    // 3. Write new base file BEFORE deleting old WAL (crash-safety: C-1 fix)
+    // 3. Write new base file (crash-safety: C-1 fix — write before removing old WAL)
     if (index_->saveToFile(basePath_)) {
         LOG_INFO("ContentIndexPersistence", "Compacted content index, files="
                   << index_->indexedFileCount());
-        // 4. Only delete old WAL after base file is safely written
-        if (oldWal) {
-            oldWal->closeAndDelete();
-        }
     } else {
         LOG_ERROR("ContentIndexPersistence", "Failed to write content base index"
                   << " — keeping old WAL for recovery");
@@ -302,16 +300,27 @@ void ContentIndexPersistence::compact() {
         if (oldWal) {
             oldWal->close();
         }
+        return;
     }
 
-    // 5. Rename new WAL to standard path and update WAL's internal path
+    // 4. Rename new WAL from .wal.new to .wal.
+    //    POSIX rename atomically replaces the old .wal directory entry,
+    //    so old WAL's inode is unlinked from the directory — its fd remains
+    //    valid but the file is gone once the fd is closed.
+    //    This avoids the self-propagating failure chain: we never call
+    //    closeAndDelete() on oldWal, so there's no risk of unlinking the
+    //    new WAL's file.
     if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
-        LOG_ERROR("ContentIndexPersistence", "Failed to rename WAL: " << newWalPath << " -> " << walPath_);
+        LOG_ERROR("ContentIndexPersistence", "Failed to rename WAL: " << newWalPath
+                  << " -> " << walPath_ << " (errno=" << errno << ": " << strerror(errno) << ")");
     } else {
-        // R3-2: Update WAL's internal path to match the renamed file,
-        // so closeAndDelete() on next compact uses the correct path.
         std::lock_guard<std::mutex> lock(walMutex_);
         if (wal_) wal_->updatePath(walPath_);
+    }
+
+    // 5. Close old WAL (just close fd — rename already replaced the directory entry)
+    if (oldWal) {
+        oldWal->close();
     }
 }
 

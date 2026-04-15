@@ -36,7 +36,7 @@ static void runWalRaceIndexPersistenceTest() {
         compactors.emplace_back([&]() {
             while (!stop.load(std::memory_order_relaxed)) {
                 persistence->compact(static_cast<uint64_t>(
-                    compactCount.load(std::memory_order_relaxed)));
+                    compactCount.load(std::memory_order_relaxed)), /*force=*/true);
                 compactCount.fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
@@ -52,7 +52,7 @@ static void runWalRaceIndexPersistenceTest() {
 
     // Test 2: attachWAL + compact() interleaving
     persistence->attachWAL();
-    persistence->compact(999);
+    persistence->compact(999, /*force=*/true);
     check(true, "H1: attachWAL + compact interleaving safe");
 
     persistence.reset();

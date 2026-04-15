@@ -498,7 +498,7 @@
     if (persistence) {
         // H-1: Set content index so compaction can propagate remap (C-3: safe accessor)
         persistence->setContentIndex([self safeContentIndex]);
-        persistence->compact(lastEventId);
+        persistence->compact(lastEventId, /*force=*/true);
     }
     auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
     if (contentPersistence) {

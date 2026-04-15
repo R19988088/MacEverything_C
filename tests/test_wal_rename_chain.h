@@ -81,7 +81,7 @@ static void runWalRenameChainTest() {
         meta.lastEventId = 1;
 
         // Multiple compacts in sequence — all should succeed
-        persistence.compact(meta);
+        persistence.compact(meta, /*force=*/true);
         check(fs::exists(walPath), "RI1: WAL at standard path after first compact");
         check(!fs::exists(walPath + ".new"), "RI1: no leftover .wal.new");
 
@@ -95,7 +95,7 @@ static void runWalRenameChainTest() {
         engine->addRecord(std::move(rec2));
 
         meta.lastEventId = 2;
-        persistence.compact(meta);
+        persistence.compact(meta, /*force=*/true);
         check(fs::exists(walPath), "RI2: WAL at standard path after second compact");
         check(!fs::exists(walPath + ".new"), "RI2: no leftover .wal.new");
 
@@ -109,7 +109,7 @@ static void runWalRenameChainTest() {
         engine->addRecord(std::move(rec3));
 
         meta.lastEventId = 3;
-        persistence.compact(meta);
+        persistence.compact(meta, /*force=*/true);
         check(fs::exists(walPath), "RI3: WAL at standard path after third compact");
         check(!fs::exists(walPath + ".new"), "RI3: no leftover .wal.new");
     }

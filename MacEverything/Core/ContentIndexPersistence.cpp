@@ -207,6 +207,11 @@ void ContentIndexWAL::closeAndDelete() {
     }
 }
 
+void ContentIndexWAL::updatePath(const std::string& newPath) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    path_ = newPath;
+}
+
 // ============================================================
 // ContentIndexPersistence
 // ============================================================
@@ -299,9 +304,14 @@ void ContentIndexPersistence::compact() {
         }
     }
 
-    // 5. Rename new WAL to standard path
+    // 5. Rename new WAL to standard path and update WAL's internal path
     if (rename(newWalPath.c_str(), walPath_.c_str()) != 0) {
         LOG_ERROR("ContentIndexPersistence", "Failed to rename WAL: " << newWalPath << " -> " << walPath_);
+    } else {
+        // R3-2: Update WAL's internal path to match the renamed file,
+        // so closeAndDelete() on next compact uses the correct path.
+        std::lock_guard<std::mutex> lock(walMutex_);
+        if (wal_) wal_->updatePath(walPath_);
     }
 }
 

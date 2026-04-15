@@ -46,6 +46,9 @@ public:
     void closeAndDelete();
     bool isOpen() const { return file_ != nullptr; }
 
+    /// Update the internal path after an external rename (e.g., compact rename).
+    void updatePath(const std::string& newPath);
+
     /// Maximum WAL file size (20 MB).
     static constexpr size_t kMaxWALSize = 20 * 1024 * 1024;
 

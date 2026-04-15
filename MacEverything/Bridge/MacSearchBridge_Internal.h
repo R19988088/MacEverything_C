@@ -6,6 +6,7 @@
 #include "ContentIndexPersistence.h"
 #include "IndexPersistence.h"
 #include "FileSystemWatcher.h"
+#include "InstanceLock.h"
 #include <memory>
 #include <atomic>
 #include <shared_mutex>
@@ -40,6 +41,8 @@
     dispatch_semaphore_t _contentIndexingSemaphore;
     // P0-1: Generation counter to detect stale content indexing completions
     std::atomic<uint64_t> _contentIndexGeneration;
+    // R3-1: Single-instance file lock to prevent WAL corruption from overlapping processes
+    InstanceLock _instanceLock;
 }
 
 /// Thread-safe engine accessor (C-4)

@@ -144,6 +144,10 @@ uint16_t HttpServer::port() const {
     return port_;
 }
 
+void HttpServer::setAdminCallbacks(AdminCallbacks callbacks) {
+    adminCallbacks_ = std::move(callbacks);
+}
+
 // ---------------------------------------------------------------------------
 // Accept loop & connection handling
 // ---------------------------------------------------------------------------
@@ -169,7 +173,7 @@ void HttpServer::acceptLoop() {
 }
 
 void HttpServer::handleConnection(int clientFd) {
-    // Read request (up to 8KB — sufficient for simple API requests)
+    // Read request headers + partial body (up to 8KB initial read)
     char buf[8192];
     ssize_t n = ::recv(clientFd, buf, sizeof(buf) - 1, 0);
     if (n <= 0) {
@@ -179,6 +183,33 @@ void HttpServer::handleConnection(int clientFd) {
     buf[n] = '\0';
 
     std::string raw(buf, static_cast<size_t>(n));
+
+    // If Content-Length header is present, ensure we have the full body
+    auto clPos = raw.find("Content-Length:");
+    if (clPos == std::string::npos) clPos = raw.find("content-length:");
+    if (clPos != std::string::npos) {
+        size_t valStart = clPos + 15; // strlen("Content-Length:")
+        while (valStart < raw.size() && raw[valStart] == ' ') ++valStart;
+        size_t valEnd = raw.find("\r\n", valStart);
+        if (valEnd != std::string::npos) {
+            size_t contentLength = std::stoul(raw.substr(valStart, valEnd - valStart));
+            size_t headerEnd = raw.find("\r\n\r\n");
+            if (headerEnd != std::string::npos) {
+                size_t bodyStart = headerEnd + 4;
+                size_t bodyHave = raw.size() - bodyStart;
+                // Read remaining body bytes if needed (up to 64KB limit)
+                size_t needed = (contentLength > 65536) ? 0 : contentLength;
+                while (bodyHave < needed) {
+                    char extra[4096];
+                    ssize_t m = ::recv(clientFd, extra, sizeof(extra), 0);
+                    if (m <= 0) break;
+                    raw.append(extra, static_cast<size_t>(m));
+                    bodyHave += static_cast<size_t>(m);
+                }
+            }
+        }
+    }
+
     auto req = parseRequest(raw);
     std::string response = route(req);
 
@@ -237,6 +268,13 @@ HttpServer::HttpRequest HttpServer::parseRequest(const std::string& raw) {
             pos = (ampPos == std::string::npos) ? qs.size() : ampPos + 1;
         }
     }
+
+    // Extract body (everything after \r\n\r\n)
+    size_t headerEnd = raw.find("\r\n\r\n");
+    if (headerEnd != std::string::npos) {
+        req.body = raw.substr(headerEnd + 4);
+    }
+
     return req;
 }
 
@@ -245,20 +283,30 @@ HttpServer::HttpRequest HttpServer::parseRequest(const std::string& raw) {
 // ---------------------------------------------------------------------------
 
 std::string HttpServer::route(const HttpRequest& req) {
-    if (req.method != "GET") {
+    if (req.method == "GET") {
+        if (req.path == "/api/search") {
+            return handleSearch(req.query);
+        } else if (req.path == "/api/search/content") {
+            return handleContentSearch(req.query);
+        } else if (req.path == "/api/recent") {
+            return handleRecent(req.query);
+        } else if (req.path == "/api/status") {
+            return handleStatus();
+        } else if (req.path == "/api/health") {
+            return handleHealth();
+        } else if (req.path == "/api/content/config") {
+            return handleGetContentConfig();
+        }
+    } else if (req.method == "POST") {
+        if (req.path == "/api/index/rebuild") {
+            return handleRebuildIndex();
+        } else if (req.path == "/api/content/rebuild") {
+            return handleRebuildContentIndex();
+        } else if (req.path == "/api/content/config") {
+            return handleSetContentConfig(req.body);
+        }
+    } else {
         return errorResponse(405, "Method not allowed");
-    }
-
-    if (req.path == "/api/search") {
-        return handleSearch(req.query);
-    } else if (req.path == "/api/search/content") {
-        return handleContentSearch(req.query);
-    } else if (req.path == "/api/recent") {
-        return handleRecent(req.query);
-    } else if (req.path == "/api/status") {
-        return handleStatus();
-    } else if (req.path == "/api/health") {
-        return handleHealth();
     }
 
     return errorResponse(404, "Not found");
@@ -403,6 +451,110 @@ std::string HttpServer::handleHealth() {
 }
 
 // ---------------------------------------------------------------------------
+// Admin endpoint handlers
+// ---------------------------------------------------------------------------
+
+std::string HttpServer::handleRebuildIndex() {
+    if (!adminCallbacks_.onRebuildIndex) {
+        return errorResponse(503, "Admin callbacks not configured");
+    }
+    adminCallbacks_.onRebuildIndex();
+    return jsonResponse(202, "{\"message\":\"Index rebuild started\"}");
+}
+
+std::string HttpServer::handleRebuildContentIndex() {
+    if (!adminCallbacks_.onRebuildContentIndex) {
+        return errorResponse(503, "Admin callbacks not configured");
+    }
+    adminCallbacks_.onRebuildContentIndex();
+    return jsonResponse(202, "{\"message\":\"Content index rebuild started\"}");
+}
+
+std::string HttpServer::handleGetContentConfig() {
+    if (!adminCallbacks_.onGetContentExtensions || !adminCallbacks_.onGetContentMaxFileSize) {
+        return errorResponse(503, "Admin callbacks not configured");
+    }
+
+    auto exts = adminCallbacks_.onGetContentExtensions();
+    uint64_t maxSize = adminCallbacks_.onGetContentMaxFileSize();
+
+    std::ostringstream json;
+    json << "{\"extensions\":[";
+    for (size_t i = 0; i < exts.size(); ++i) {
+        if (i > 0) json << ',';
+        json << "\"" << jsonEscapeString(exts[i]) << "\"";
+    }
+    json << "],\"maxFileSize\":" << maxSize << "}";
+    return jsonResponse(200, json.str());
+}
+
+std::string HttpServer::handleSetContentConfig(const std::string& body) {
+    if (!adminCallbacks_.onSetContentConfig ||
+        !adminCallbacks_.onGetContentExtensions ||
+        !adminCallbacks_.onGetContentMaxFileSize) {
+        return errorResponse(503, "Admin callbacks not configured");
+    }
+
+    // Simple JSON parsing for {"extensions":["a","b"],"maxFileSize":123}
+    // Supports partial updates: only set fields present in the body.
+    auto currentExts = adminCallbacks_.onGetContentExtensions();
+    uint64_t currentMaxSize = adminCallbacks_.onGetContentMaxFileSize();
+
+    bool hasExtensions = false;
+    std::vector<std::string> newExts;
+
+    // Parse "extensions":[...]
+    auto extPos = body.find("\"extensions\"");
+    if (extPos != std::string::npos) {
+        auto arrStart = body.find('[', extPos);
+        auto arrEnd = body.find(']', arrStart);
+        if (arrStart != std::string::npos && arrEnd != std::string::npos) {
+            hasExtensions = true;
+            std::string arrContent = body.substr(arrStart + 1, arrEnd - arrStart - 1);
+            // Extract quoted strings
+            size_t pos = 0;
+            while (pos < arrContent.size()) {
+                auto qStart = arrContent.find('"', pos);
+                if (qStart == std::string::npos) break;
+                auto qEnd = arrContent.find('"', qStart + 1);
+                if (qEnd == std::string::npos) break;
+                newExts.push_back(arrContent.substr(qStart + 1, qEnd - qStart - 1));
+                pos = qEnd + 1;
+            }
+        }
+    }
+
+    // Parse "maxFileSize":number
+    uint64_t newMaxSize = currentMaxSize;
+    auto msPos = body.find("\"maxFileSize\"");
+    if (msPos != std::string::npos) {
+        auto colonPos = body.find(':', msPos + 13);
+        if (colonPos != std::string::npos) {
+            size_t numStart = colonPos + 1;
+            while (numStart < body.size() && body[numStart] == ' ') ++numStart;
+            size_t numEnd = numStart;
+            while (numEnd < body.size() && body[numEnd] >= '0' && body[numEnd] <= '9') ++numEnd;
+            if (numEnd > numStart) {
+                newMaxSize = std::stoull(body.substr(numStart, numEnd - numStart));
+            }
+        }
+    }
+
+    const auto& finalExts = hasExtensions ? newExts : currentExts;
+    adminCallbacks_.onSetContentConfig(finalExts, newMaxSize);
+
+    // Build response
+    std::ostringstream json;
+    json << "{\"message\":\"Content config updated\",\"extensions\":[";
+    for (size_t i = 0; i < finalExts.size(); ++i) {
+        if (i > 0) json << ',';
+        json << "\"" << jsonEscapeString(finalExts[i]) << "\"";
+    }
+    json << "],\"maxFileSize\":" << newMaxSize << "}";
+    return jsonResponse(200, json.str());
+}
+
+// ---------------------------------------------------------------------------
 // HTTP response builders
 // ---------------------------------------------------------------------------
 
@@ -410,6 +562,7 @@ std::string HttpServer::jsonResponse(int status, const std::string& body) {
     const char* statusText = "OK";
     switch (status) {
         case 200: statusText = "OK"; break;
+        case 202: statusText = "Accepted"; break;
         case 400: statusText = "Bad Request"; break;
         case 404: statusText = "Not Found"; break;
         case 405: statusText = "Method Not Allowed"; break;

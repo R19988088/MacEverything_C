@@ -485,6 +485,52 @@
         _httpServer = std::make_shared<HttpServer>();
     }
     _httpServer->start(port, _engine, _contentIndex);
+
+    // Inject admin callbacks so the HTTP API can trigger management operations
+    __weak MacSearchBridge *weakSelf = self;
+    HttpServer::AdminCallbacks callbacks;
+
+    callbacks.onRebuildIndex = [weakSelf] {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"rebuildIndex" object:nil];
+        });
+    };
+
+    callbacks.onRebuildContentIndex = [weakSelf] {
+        MacSearchBridge *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            [strongSelf rebuildContentIndex];
+        });
+    };
+
+    callbacks.onSetContentConfig = [weakSelf](const std::vector<std::string>& exts, uint64_t maxSize) {
+        MacSearchBridge *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        auto ci = [strongSelf safeContentIndex];
+        if (!ci) return;
+        ci->setExtensions(exts);
+        ci->setMaxFileSize(maxSize);
+    };
+
+    callbacks.onGetContentExtensions = [weakSelf]() -> std::vector<std::string> {
+        MacSearchBridge *strongSelf = weakSelf;
+        if (!strongSelf) return {};
+        auto ci = [strongSelf safeContentIndex];
+        if (!ci) return {};
+        return ci->getExtensions();
+    };
+
+    callbacks.onGetContentMaxFileSize = [weakSelf]() -> uint64_t {
+        MacSearchBridge *strongSelf = weakSelf;
+        if (!strongSelf) return 0;
+        auto ci = [strongSelf safeContentIndex];
+        if (!ci) return 0;
+        return ci->getMaxFileSize();
+    };
+
+    _httpServer->setAdminCallbacks(std::move(callbacks));
 }
 
 - (void)stopHttpServer {

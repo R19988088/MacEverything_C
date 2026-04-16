@@ -2,6 +2,7 @@
 build/
 test_all
 benchmark
+maceverything-daemon
 *.o
 *.dmg
 

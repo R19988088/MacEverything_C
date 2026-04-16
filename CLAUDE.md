@@ -39,7 +39,7 @@ hdiutil create -volname MacEverything -srcfolder build/Release/MacEverything.app
 3. **隔离开发（worktree）**：**所有变更**都在独立 `git worktree` 中开发，避免污染当前检出目录；分支命名清晰（如 `feat/...`、`fix/...`）。
 4. **合回主分支**：开发完成后经 code review（若流程要求）、CI/本地测试通过后，合并回 `master`（优先 merge 或按项目约定 rebase），删除已完成任务的 worktree 与远程分支。 开发完成后**一定要提交变更,合并回master分支**
 5. 对于新的功能,可以根据需要,启动subagent并行开发, 提升开发效率
-6. 每次完成后, 输出一个md文档到docs/changelog/里面,名字使用"{数字}-xxxx"格式, 数字根据docs/changelog/下最大的文件递增, 内容为详细描述这次变更的规划和实施情况等等, commit
+6. 每次完成后, 输出一个md文档到docs/changelog/里面,名字使用"{数字}-xxxx"格式, 数字根据docs/changelog/下最大的文件递增, 内容为详细描述这次变更的规划和实施情况等等, 然后commit
 
 Agent 在接到功能或 bug 任务时，应先输出简短计划与测试清单，再进入实现。
 

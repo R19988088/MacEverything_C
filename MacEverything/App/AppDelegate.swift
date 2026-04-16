@@ -10,9 +10,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacSearchBridge.initializeLogger()
 
+        let shouldMinimize = Self.shouldStartMinimized()
+
         // Delay by one frame to let SwiftUI create the window
         DispatchQueue.main.async { [weak self] in
             self?.mainSearchWindow = NSApp.windows.first { $0.title == "MacEverything" }
+            if shouldMinimize {
+                self?.mainSearchWindow?.orderOut(nil)
+                NSApp.hide(nil)
+            }
         }
         hotkeyManager = HotkeyManager()
         hotkeyManager?.register()
@@ -102,5 +108,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Launch Mode Detection
+
+    private static func shouldStartMinimized() -> Bool {
+        if CommandLine.arguments.contains("--minimized") {
+            return true
+        }
+        if let event = NSAppleEventManager.shared().currentAppleEvent,
+           event.eventID == kAEOpenApplication,
+           event.paramDescriptor(forKeyword: keyAEPropData)?.stringValue == "com.apple.loginwindow" {
+            return true
+        }
+        return false
     }
 }

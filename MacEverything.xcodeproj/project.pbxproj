@@ -39,7 +39,18 @@
 		A100001E /* SearchHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002E; };
 		A100001F /* PagedIndexWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000030; };
 		A1000020 /* CompactionTimer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000031; };
+		B1000001 /* MacEverythingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B3000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A8000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A5000001;
+			remoteInfo = MacEverything;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		A2000001 /* MacEverythingApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEverythingApp.swift; sourceTree = "<group>"; };
@@ -93,9 +104,18 @@
 		A2000030 /* PagedIndexWriter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PagedIndexWriter.cpp; sourceTree = "<group>"; };
 		A2000031 /* CompactionTimer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompactionTimer.cpp; sourceTree = "<group>"; };
 		A2000032 /* CompactionTimer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompactionTimer.h; sourceTree = "<group>"; };
+		B2000001 /* MacEverythingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEverythingUITests.swift; sourceTree = "<group>"; };
+		B2000002 /* MacEverythingUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacEverythingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXResourcesBuildPhase section */
+		BB000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A3000002 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -107,6 +127,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		BA000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A3000001 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -119,10 +146,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		B4000001 /* MacEverythingUITests */ = {
+			isa = PBXGroup;
+			children = (
+				B2000001 /* MacEverythingUITests.swift */,
+			);
+			path = MacEverythingUITests;
+			sourceTree = "<group>";
+		};
 		A4000001 /* Root */ = {
 			isa = PBXGroup;
 			children = (
 				A4000002 /* MacEverything */,
+				B4000001 /* MacEverythingUITests */,
 				A4000006 /* Frameworks */,
 				A4000007 /* Products */,
 			);
@@ -220,6 +256,7 @@
 			isa = PBXGroup;
 			children = (
 				A2000099 /* MacEverything.app */,
+				B2000002 /* MacEverythingUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -243,6 +280,24 @@
 			productName = MacEverything;
 			productReference = A2000099 /* MacEverything.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B5000001 /* MacEverythingUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B9000001 /* Build configuration list for PBXNativeTarget "MacEverythingUITests" */;
+			buildPhases = (
+				B6000001 /* Sources */,
+				BA000001 /* Frameworks */,
+				BB000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B7000001 /* PBXTargetDependency */,
+			);
+			name = MacEverythingUITests;
+			productName = MacEverythingUITests;
+			productReference = B2000002 /* MacEverythingUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -268,6 +323,7 @@
 			projectRoot = "";
 			targets = (
 				A5000001 /* MacEverything */,
+				B5000001 /* MacEverythingUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -309,7 +365,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B6000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B1000001 /* MacEverythingUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B7000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A5000001 /* MacEverything */;
+			targetProxy = B3000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A9000001 /* Debug */ = {
@@ -402,6 +474,40 @@
 			};
 			name = Release;
 		};
+		B8000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.MacEverythingUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = MacEverything;
+			};
+			name = Debug;
+		};
+		B8000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.MacEverythingUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = MacEverything;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -419,6 +525,15 @@
 			buildConfigurations = (
 				A9000003 /* Debug */,
 				A9000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B9000001 /* Build configuration list for PBXNativeTarget "MacEverythingUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B8000001 /* Debug */,
+				B8000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -103,6 +103,7 @@ struct ResultRow: View {
             return NSItemProvider(object: NSURL(fileURLWithPath: fullPath))
         }
         .onTapGesture(count: 2) { openFile(item) }
+        .accessibilityIdentifier("resultRow")
     }
 
     private func fileIcon(for item: FileItem) -> Image {

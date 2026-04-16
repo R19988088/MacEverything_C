@@ -98,6 +98,58 @@ static void runContentCompactionGuardTests() {
         check(ci->indexedFileCount() == 0, "Guard: no files indexed, compact was a no-op");
     }
 
+    // Test 4: force=true compacts even when isDirty() is false.
+    //   Simulates the restart scenario: WAL has stale entries from a previous
+    //   session (replayed on load), but no new mutations in this session.
+    //   Without force, compact skips because isDirty()==false.
+    //   With force=true (used on exit), compact must execute.
+    {
+        fs::remove_all(tmpDir);
+        fs::create_directories(tmpDir);
+
+        auto ci = std::make_shared<ContentIndex>();
+
+        // Create a text file and index it
+        std::string testFile = tmpDir + "/test_force.txt";
+        {
+            std::ofstream ofs(testFile);
+            ofs << "force compact test content for trigram indexing here";
+        }
+        ci->setExtensions({"txt"});
+        ci->indexFile(1, testFile);
+        check(ci->isFileIndexed(1), "Force: file 1 indexed");
+
+        // Save base index, then create a WAL with an "add" entry
+        ci->saveToFile(basePath);
+        {
+            ContentIndexWAL wal;
+            wal.open(walPath);
+            wal.setSyncInterval(0);
+            // Read back trigrams from WAL-compatible source: re-extract from file
+            std::vector<Trigram> trigrams = ContentIndex::extractTrigrams(
+                "force compact test content for trigram indexing here");
+            wal.appendAdd(1, 12345, trigrams);
+            wal.close();
+        }
+
+        // Reload fresh — simulates restart. WAL has entries but isDirty()=false after replay.
+        auto ci2 = std::make_shared<ContentIndex>();
+        ci2->setExtensions({"txt"});
+        ContentIndexPersistence cip2(ci2, basePath, walPath);
+        cip2.load();
+        cip2.attachWAL();
+
+        // Non-forced compact should skip (WAL not dirty in this session)
+        cip2.compact(/*force=*/false);
+        // WAL file should still exist with entries
+        check(fs::exists(walPath), "Force: WAL still exists after non-forced compact skip");
+
+        // Forced compact should execute even though isDirty() is false
+        cip2.compact(/*force=*/true);
+        // After forced compact, the base file should be updated and WAL should be fresh
+        check(ci2->isFileIndexed(1), "Force: file 1 still indexed after forced compact");
+    }
+
     // Cleanup
     fs::remove_all(tmpDir);
 

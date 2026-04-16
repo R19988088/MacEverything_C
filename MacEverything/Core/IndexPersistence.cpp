@@ -142,17 +142,33 @@ void IndexPersistence::flush(uint64_t lastEventId, bool force) {
 }
 
 void IndexPersistence::flush(const IndexMetadata& metadata, bool force) {
-    // Skip if no mutations
+    // Skip logic:
+    //   - No WAL → skip.
+    //   - force=true: skip only if WAL file is header-only (no entries at all,
+    //     including stale entries from a previous session).
+    //   - Otherwise: skip if not dirty or below threshold.
+    static constexpr size_t kWALHeaderSize = 2 * sizeof(uint32_t); // magic + version
     {
         std::lock_guard<std::mutex> lock(walMutex_);
-        if (wal_ && !wal_->isDirty()) {
-            LOG_INFO("IndexPersistence", "Skipping flush — no mutations since last flush");
+        if (!wal_) {
+            LOG_INFO("IndexPersistence", "Skipping flush — no WAL");
             return;
         }
-        if (!force && wal_ && wal_->entryCount() < kCompactThreshold) {
-            LOG_INFO("IndexPersistence", "Skipping flush — only "
-                      << wal_->entryCount() << " entries (threshold=" << kCompactThreshold << ")");
-            return;
+        if (force) {
+            if (wal_->currentSize() <= kWALHeaderSize) {
+                LOG_INFO("IndexPersistence", "Skipping flush — WAL is empty");
+                return;
+            }
+        } else {
+            if (!wal_->isDirty()) {
+                LOG_INFO("IndexPersistence", "Skipping flush — no mutations since last flush");
+                return;
+            }
+            if (wal_->entryCount() < kCompactThreshold) {
+                LOG_INFO("IndexPersistence", "Skipping flush — only "
+                          << wal_->entryCount() << " entries (threshold=" << kCompactThreshold << ")");
+                return;
+            }
         }
     }
 

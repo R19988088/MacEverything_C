@@ -282,18 +282,35 @@ void ContentIndexPersistence::attachWAL() {
 }
 
 void ContentIndexPersistence::compact(bool force) {
-    // Multi-tier skip: (1) no mutations → skip
+    // Multi-tier skip logic:
+    //   - No WAL → skip.
+    //   - force=true: skip only if WAL file is header-only (no entries at all,
+    //     including stale entries from a previous session that weren't compacted).
+    //     This ensures exit compaction flushes replayed-but-uncompacted WAL data.
+    //   - Otherwise: skip if not dirty or below threshold.
+    static constexpr size_t kWALHeaderSize = 2 * sizeof(uint32_t); // magic + version
     {
         std::lock_guard<std::mutex> lock(walMutex_);
-        if (!wal_ || !wal_->isDirty()) {
-            LOG_INFO("ContentIndexPersistence", "Skipping compaction — no mutations since last compact");
+        if (!wal_) {
+            LOG_INFO("ContentIndexPersistence", "Skipping compaction — no WAL");
             return;
         }
-        // (2) below threshold and not forced → skip
-        if (!force && wal_->entryCount() < kCompactThreshold) {
-            LOG_INFO("ContentIndexPersistence", "Skipping compaction — below threshold ("
-                      << wal_->entryCount() << " < " << kCompactThreshold << ")");
-            return;
+        if (force) {
+            // Only skip if WAL file is truly empty (header-only, no stale entries)
+            if (wal_->currentSize() <= kWALHeaderSize) {
+                LOG_INFO("ContentIndexPersistence", "Skipping compaction — WAL is empty");
+                return;
+            }
+        } else {
+            if (!wal_->isDirty()) {
+                LOG_INFO("ContentIndexPersistence", "Skipping compaction — no mutations since last compact");
+                return;
+            }
+            if (wal_->entryCount() < kCompactThreshold) {
+                LOG_INFO("ContentIndexPersistence", "Skipping compaction — below threshold ("
+                          << wal_->entryCount() << " < " << kCompactThreshold << ")");
+                return;
+            }
         }
     }
 

@@ -34,10 +34,14 @@ ContentIndex::indexFile 已有完整的 modTime 早退逻辑（检查 `modTime >
    - 当文件内容 hash 匹配但 `lastModTime` 不一致（如 v1 持久化数据 `lastModTime=0`），更新 `lastModTime` 并返回 `true` 以触发 WAL 持久化
    - 确保旧数据在首次全量索引后升级到带 modTime 的状态，后续启动可走 modTime 早退路径
 
+4. **readFileIfText 失败路径更新 lastModTime**：
+   - 已索引文件变得不可读（被删除、变为二进制、超出大小限制）时，`readFileIfText()` 返回空但 `lastModTime` 永远不被更新，导致每次启动都重试 I/O
+   - 现在当 `readFileIfText()` 失败且文件已在索引中、`modTime > 0` 时，更新 `lastModTime` 以确保后续启动走 modTime 早退路径
+
 ## 测试
 
-- `test_content_modtime.h`（Part 38）— 17 项测试全部通过（含 Test 5: hash-match 升级 lastModTime）
-- `--fast` 全量单元测试 — 全部通过
+- `test_content_modtime.h`（Part 38）— 20 项测试全部通过（含 Test 5: hash-match 升级 lastModTime, Test 6: 不可读文件升级 lastModTime）
+- `--fast` 全量单元测试 — 10727 项全部通过
 - xcodebuild Release 构建通过
 
 ## 预期效果

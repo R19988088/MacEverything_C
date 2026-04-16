@@ -479,7 +479,23 @@
     }
 }
 
+- (void)startHttpServer:(uint16_t)port {
+    std::shared_lock lock(_engineMutex);
+    if (!_httpServer) {
+        _httpServer = std::make_shared<HttpServer>();
+    }
+    _httpServer->start(port, _engine, _contentIndex);
+}
+
+- (void)stopHttpServer {
+    std::shared_lock lock(_engineMutex);
+    if (_httpServer) {
+        _httpServer->stop();
+    }
+}
+
 - (void)prepareForTermination {
+    [self stopHttpServer];
     LOG_INFO("Bridge", "prepareForTermination started");
     // 1. Signal all background work to stop immediately
     _shuttingDown.store(true);

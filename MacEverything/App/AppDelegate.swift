@@ -17,6 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeyManager = HotkeyManager()
         hotkeyManager?.register()
         setupStatusBar()
+        MacSearchBridge.shared().startHttpServer(19860)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

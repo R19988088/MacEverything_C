@@ -100,6 +100,9 @@ public:
     /// Returns the number of pruned entries.
     uint32_t pruneStaleEntries(const std::unordered_set<uint32_t>& validFileIndices);
 
+    /// Return the list of fileIndex keys currently in the content index. Thread-safe.
+    std::vector<uint32_t> getIndexedFileIndices() const;
+
     // --- Helpers (public for testing) ---
 
     /// Check if a filename has an allowed extension.

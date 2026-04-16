@@ -76,7 +76,7 @@ Agent 在接到功能或 bug 任务时，应先输出简短计划与测试清单
    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project MacEverything.xcodeproj -scheme MacEverything -configuration Release build SYMROOT=build
    hdiutil create -volname MacEverything -srcfolder build/Release/MacEverything.app -ov -format UDZO /Users/wujian/data/project/mac_everything/MacEverything.dmg
    ```
-3. **启动 app**：打开打包好的 dmg 并运行 MacEverything.app
+3. **启动 app**：打开打包好的 dmg 并运行 MacEverything.app, 使用`open MacEverything.app --args --minimized`启动后最小化,降低对用户的打扰
 4. **通过 HTTP 服务做功能验证**：使用 `curl` 等工具对 `http://localhost:19860` 进行与本次变更相关的测试，验证功能正确性
 
 ---

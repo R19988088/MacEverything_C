@@ -4,13 +4,18 @@ FRAMEWORKS = -framework CoreServices
 CORE_SRCS = $(wildcard MacEverything/Core/*.cpp)
 
 # === Build targets ===
-.PHONY: test test-fast test-slow test-all build clean app dmg help
+.PHONY: test test-fast test-slow test-all build clean app dmg daemon help
 
 test_all: test_all.cpp $(CORE_SRCS)
 	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) $^ -o $@
 
 benchmark: benchmark.cpp $(CORE_SRCS)
 	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) $^ -o $@
+
+maceverything-daemon: MacEverything/CLI/daemon_main.cpp $(CORE_SRCS)
+	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) -IMacEverything/Core $^ -o $@
+
+daemon: maceverything-daemon
 
 # === Lint targets ===
 lint-bridge:
@@ -46,7 +51,7 @@ dmg: app
 
 # === Cleanup ===
 clean:
-	rm -f test_all benchmark
+	rm -f test_all benchmark maceverything-daemon
 	rm -rf build/
 
 # === Help ===
@@ -58,5 +63,6 @@ help:
 	@echo "  make test-all   - Run all tests"
 	@echo "  make app        - Build MacEverything.app via Xcode"
 	@echo "  make dmg        - Build + package into DMG"
+	@echo "  make daemon     - Build CLI daemon (maceverything-daemon)"
 	@echo "  make benchmark  - Build benchmark binary"
 	@echo "  make clean      - Remove build artifacts"

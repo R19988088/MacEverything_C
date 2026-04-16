@@ -1,184 +1,13 @@
 #import "MacSearchBridge_Internal.h"
-#include <dispatch/dispatch.h>
-#include <unistd.h>
-
-@implementation MacSearchBridge (ContentInternal)
-
-// C-3: Thread-safe accessor for _contentIndex (mirrors safeEngine pattern)
-- (std::shared_ptr<ContentIndex>)safeContentIndex {
-    std::shared_lock lock(_contentMutex);
-    return _contentIndex;
-}
-
-- (void)startContentIndexing {
-    auto engine = [self safeEngine]; // C-4
-    auto contentIndex = [self safeContentIndex]; // C-3
-    if (!engine || !contentIndex) return;
-    _isContentIndexing.store(true, std::memory_order_relaxed);
-    _cancelContentIndexing.store(false, std::memory_order_relaxed); // H-8: reset cancel flag
-    LOG_INFO("Bridge", "Content indexing started");
-
-    auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
-    auto* cancelFlag = &_cancelContentIndexing; // H-8
-    __weak MacSearchBridge *weakSelf = self;
-
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        auto contentStart = std::chrono::steady_clock::now();
-        // Build a lightweight list of (index, fullPath) for regular files under one lock,
-        // avoiding 4.5M getRecord() copies that each reconstruct path strings.
-        struct FileEntry { uint32_t idx; std::string fullPath; time_t modTime; };
-        auto fileEntries = std::make_shared<std::vector<FileEntry>>();
-        {
-            uint32_t total = engine->recordCount();
-            std::vector<uint32_t> allIndices;
-            allIndices.reserve(total);
-            for (uint32_t i = 0; i < total; i++) allIndices.push_back(i);
-
-            fileEntries->reserve(total);
-            engine->forEachRecordWithPath(allIndices, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
-                if (r.type != 1) return; // only regular files
-                fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name), r.modTime});
-            });
-        }
-
-        uint32_t total = static_cast<uint32_t>(fileEntries->size());
-        auto indexed = std::make_shared<std::atomic<uint32_t>>(0);
-        auto lastReported = std::make_shared<std::atomic<uint32_t>>(0);
-
-        // H3 fix: Use dispatch_apply for parallel content indexing.
-        // contentIndex->indexFile() is internally thread-safe (acquires its own lock).
-        // contentPersistence->walAppendAdd() is also thread-safe (WAL has its own mutex).
-        // This overlaps file I/O across threads for significant speedup.
-        dispatch_queue_t concurrentQ = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
-        const auto& entries = *fileEntries;
-        dispatch_apply(total, concurrentQ, ^(size_t i) {
-            MacSearchBridge *strongSelf = weakSelf;
-            if (!strongSelf) return;
-            if (strongSelf->_shuttingDown.load(std::memory_order_relaxed)) return;
-            if (cancelFlag->load(std::memory_order_relaxed)) return;
-
-            const auto& entry = entries[i];
-            bool didIndex = contentIndex->indexFile(entry.idx, entry.fullPath, entry.modTime);
-
-            if (didIndex && contentPersistence) {
-                ContentFileInfo info;
-                if (contentIndex->getFileInfo(entry.idx, info)) {
-                    contentPersistence->walAppendAdd(entry.idx, info.contentHash, info.trigrams, info.lastModTime);
-                }
-            }
-
-            uint32_t current = indexed->fetch_add(1, std::memory_order_relaxed) + 1;
-
-            // Report progress every 500 files
-            if (current - lastReported->load(std::memory_order_relaxed) >= 500) {
-                lastReported->store(current, std::memory_order_relaxed);
-                uint32_t c = current;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    MacSearchBridge *strongSelf = weakSelf;
-                    if (strongSelf && strongSelf.onContentIndexProgress) {
-                        strongSelf.onContentIndexProgress(c, total);
-                    }
-                });
-            }
-        });
-
-        auto contentElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - contentStart).count();
-        uint32_t totalIndexed = contentIndex->indexedFileCount();
-        LOG_INFO("Bridge", "Content indexing completed: " << totalIndexed << " files in " << contentElapsed << "s");
-
-        // Emit one-time "Startup complete" log with total elapsed time
-        {
-            MacSearchBridge *strongSelf = weakSelf;
-            if (strongSelf) {
-                bool expected = false;
-                if (strongSelf->_startupReported.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-                    auto totalElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - strongSelf->_appStartTime).count();
-                    LOG_INFO("Bridge", "Startup complete: " << totalElapsed << "s (scan/replay + content indexing)");
-                }
-            }
-        }
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            MacSearchBridge *strongSelf = weakSelf;
-            if (strongSelf) {
-                strongSelf->_isContentIndexing.store(false, std::memory_order_relaxed);
-                // P-5: Signal semaphore so rebuildContentIndex/prepareForTermination can wait
-                dispatch_semaphore_signal(strongSelf->_contentIndexingSemaphore);
-                if (strongSelf.onContentIndexComplete) {
-                    strongSelf.onContentIndexComplete(totalIndexed);
-                }
-            }
-        });
-    });
-}
-
-- (void)setupContentPersistence {
-    auto contentIndex = [self safeContentIndex]; // C-3: thread-safe access
-    if (!contentIndex) return;
-
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-    NSString *cachesDir = [paths firstObject];
-    NSString *appCacheDir = [cachesDir stringByAppendingPathComponent:@"com.maceverything.app"];
-
-    // Ensure directory exists
-    NSError *dirError = nil;
-    if (![[NSFileManager defaultManager] createDirectoryAtPath:appCacheDir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:&dirError]) {
-        LOG_ERROR("Bridge", "Failed to create content index directory: " << [[dirError localizedDescription] UTF8String]);
-        return;
-    }
-
-    std::string basePath = std::string([[appCacheDir stringByAppendingPathComponent:@"content_index.bin"] UTF8String]);
-    std::string walPath = std::string([[appCacheDir stringByAppendingPathComponent:@"content_index.wal"] UTF8String]);
-
-    auto newContentPersistence = std::make_shared<ContentIndexPersistence>(contentIndex, basePath, walPath);
-    [self setContentPersistence:newContentPersistence]; // C-3: thread-safe assignment
-    newContentPersistence->load();
-    newContentPersistence->attachWAL();
-    newContentPersistence->startAutoCompaction(300.0);
-}
-
-// C-5: Accept engine parameter to avoid re-reading potentially stale _engine
-- (void)updateContentIndexForPath:(const std::string&)fullPath
-                          removed:(BOOL)removed
-                           engine:(std::shared_ptr<SearchEngine>)engine {
-    auto contentIndex = [self safeContentIndex]; // C-3
-    if (!engine || !contentIndex) return;
-
-    auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
-
-    if (removed) {
-        uint32_t fileIndex = engine->indexForPath(fullPath);
-        if (fileIndex != UINT32_MAX && contentIndex->isFileIndexed(fileIndex)) {
-            contentIndex->removeFile(fileIndex);
-            if (contentPersistence) {
-                contentPersistence->walAppendRemove(fileIndex);
-            }
-        }
-    } else {
-        uint32_t fileIndex = engine->indexForPath(fullPath);
-        if (fileIndex != UINT32_MAX) {
-            bool didIndex = contentIndex->indexFile(fileIndex, fullPath);
-            if (didIndex && contentPersistence) {
-                ContentFileInfo info;
-                if (contentIndex->getFileInfo(fileIndex, info)) {
-                    contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams, info.lastModTime);
-                }
-            }
-        }
-    }
-}
-
-@end
+#import "MacSearchBridge+Content.h"
+#include "Logger.h"
 
 @implementation MacSearchBridge (Content)
 
 - (NSArray<MEContentResult *> *)queryContent:(NSString *)keyword maxResults:(uint32_t)maxResults {
     auto queryStart = std::chrono::steady_clock::now();
-    auto engine = [self safeEngine]; // C-4
-    auto contentIndex = [self safeContentIndex]; // C-3
+    auto engine = _serviceEngine->safeEngine();
+    auto contentIndex = _serviceEngine->safeContentIndex();
     if (!engine || !contentIndex) return @[];
 
     std::string key([keyword UTF8String]);
@@ -187,7 +16,7 @@
     auto matches = contentIndex->query(key, maxResults);
     if (matches.empty()) return @[];
 
-    // Pre-resolve file paths (needs engine lock, do it once)
+    // Pre-resolve file paths
     struct CandidateInfo {
         uint32_t fileIndex;
         std::string name;
@@ -198,7 +27,7 @@
     candidates.reserve(matches.size());
     for (const auto& match : matches) {
         auto record = engine->getRecord(match.fileIndex);
-        if (record.type == 0) continue; // skip tombstones
+        if (record.type == 0) continue;
         CandidateInfo info;
         info.fileIndex = match.fileIndex;
         info.name = std::move(record.name);
@@ -209,7 +38,7 @@
 
     if (candidates.empty()) return @[];
 
-    // Parallel snippet generation using dispatch_apply
+    // Parallel snippet generation
     struct SnippetResult {
         std::string snippet;
         uint32_t offset = 0;
@@ -228,33 +57,31 @@
         }
     });
 
-    // Collect valid results (single-threaded, no lock needed)
     NSMutableArray<MEContentResult *> *results = [NSMutableArray arrayWithCapacity:candidates.size()];
     for (size_t i = 0; i < candidates.size(); i++) {
         if (!snippetResults[i].valid) continue;
         NSString *nsFileName = [NSString stringWithUTF8String:candidates[i].name.c_str()];
         NSString *nsFilePath = [NSString stringWithUTF8String:candidates[i].fullPath.c_str()];
         NSString *nsSnippet = [NSString stringWithUTF8String:snippetResults[i].snippet.c_str()];
-        if (!nsFileName || !nsFilePath || !nsSnippet) continue; // H-1: skip non-UTF-8 file names/snippets
-        MEContentResult *result = [[MEContentResult alloc]
+        if (!nsFileName || !nsFilePath || !nsSnippet) continue;
+        [results addObject:[[MEContentResult alloc]
             initWithFileName:nsFileName
                     filePath:nsFilePath
                      snippet:nsSnippet
                  matchOffset:snippetResults[i].offset
-                    fileType:candidates[i].fileType];
-        [results addObject:result];
+                    fileType:candidates[i].fileType]];
     }
 
     auto queryElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - queryStart).count();
     if (queryElapsed > 0.1) {
-        LOG_INFO("Bridge", "queryContent(\"" << key << "\") returned " << results.count << " results in " << queryElapsed << "s");
+        LOG_INFO("Bridge", "queryContent(\"" << key << "\") returned " << (uint32_t)results.count << " results in " << queryElapsed << "s");
     }
 
     return results;
 }
 
 - (void)setContentExtensions:(NSArray<NSString *> *)extensions {
-    auto contentIndex = [self safeContentIndex]; // C-3
+    auto contentIndex = _serviceEngine->safeContentIndex();
     if (!contentIndex) return;
     std::vector<std::string> exts;
     exts.reserve(extensions.count);
@@ -265,19 +92,19 @@
 }
 
 - (void)setContentMaxFileSize:(uint64_t)bytes {
-    auto contentIndex = [self safeContentIndex]; // C-3
+    auto contentIndex = _serviceEngine->safeContentIndex();
     if (contentIndex) {
         contentIndex->setMaxFileSize(bytes);
     }
 }
 
 - (uint32_t)contentIndexedFileCount {
-    auto contentIndex = [self safeContentIndex]; // C-3
+    auto contentIndex = _serviceEngine->safeContentIndex();
     return contentIndex ? contentIndex->indexedFileCount() : 0;
 }
 
 - (NSArray<NSString *> *)contentGetExtensions {
-    auto contentIndex = [self safeContentIndex]; // C-3
+    auto contentIndex = _serviceEngine->safeContentIndex();
     if (!contentIndex) return @[];
     auto exts = contentIndex->getExtensions();
     NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:exts.size()];
@@ -290,53 +117,12 @@
 }
 
 - (uint64_t)contentGetMaxFileSize {
-    auto contentIndex = [self safeContentIndex]; // C-3
+    auto contentIndex = _serviceEngine->safeContentIndex();
     return contentIndex ? contentIndex->getMaxFileSize() : (1 * 1024 * 1024);
 }
 
 - (void)rebuildContentIndex {
-    auto engine = [self safeEngine]; // C-4
-    auto contentIndex = [self safeContentIndex]; // C-3
-    if (!engine || !contentIndex) return;
-
-    // P-5: Cancel in-flight content indexing and wait via semaphore (not spin-wait)
-    // P0-1: Increment generation instead of replacing semaphore to avoid race
-    _contentIndexGeneration.fetch_add(1, std::memory_order_acq_rel);
-    if (_isContentIndexing.load(std::memory_order_relaxed)) {
-        _cancelContentIndexing.store(true, std::memory_order_relaxed);
-        dispatch_semaphore_wait(_contentIndexingSemaphore,
-                                dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
-    }
-
-    // H8 fix: Stop old persistence's auto-compaction timer before replacing,
-    // to prevent timer firing into a dangling reference.
-    // C-3: Thread-safe access via safeContentPersistence/setContentPersistence
-    {
-        auto oldContentPersistence = [self safeContentPersistence];
-        if (oldContentPersistence) {
-            oldContentPersistence->stopAutoCompactionAndWait();
-        }
-        [self setContentPersistence:nullptr];
-    }
-
-    // C-3: Replace _contentIndex under exclusive lock
-    {
-        auto exts = contentIndex->getExtensions();
-        auto maxSize = contentIndex->getMaxFileSize();
-
-        auto newIndex = std::make_shared<ContentIndex>();
-        newIndex->setExtensions(exts);
-        newIndex->setMaxFileSize(maxSize);
-
-        std::unique_lock lock(_contentMutex);
-        _contentIndex = newIndex;
-    }
-
-    // Re-setup persistence with fresh index
-    [self setupContentPersistence];
-
-    // Re-index all files
-    [self startContentIndexing];
+    _serviceEngine->rebuildContentIndex();
 }
 
 @end

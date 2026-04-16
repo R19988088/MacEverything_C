@@ -1,0 +1,190 @@
+#include "ServiceEngine.h"
+#include "Logger.h"
+#include <filesystem>
+#include <dispatch/dispatch.h>
+
+namespace fs = std::filesystem;
+
+// ═══════════════════════════════════════════════════════
+//  Content persistence setup
+// ═══════════════════════════════════════════════════════
+
+void ServiceEngine::setupContentPersistence() {
+    auto contentIndex = safeContentIndex();
+    if (!contentIndex) return;
+
+    std::string cacheDir = config_.cachePath;
+    fs::create_directories(cacheDir);
+
+    std::string basePath = cacheDir + "/content_index.bin";
+    std::string walPath  = cacheDir + "/content_index.wal";
+
+    auto newContentPersistence = std::make_shared<ContentIndexPersistence>(contentIndex, basePath, walPath);
+    setContentPersistence(newContentPersistence);
+    newContentPersistence->load();
+    newContentPersistence->attachWAL();
+    newContentPersistence->startAutoCompaction(300.0);
+}
+
+// ═══════════════════════════════════════════════════════
+//  Content indexing (parallel via dispatch_apply)
+// ═══════════════════════════════════════════════════════
+
+void ServiceEngine::startContentIndexing() {
+    auto engine = safeEngine();
+    auto contentIndex = safeContentIndex();
+    if (!engine || !contentIndex) return;
+
+    isContentIndexing_.store(true, std::memory_order_relaxed);
+    cancelContentIndexing_.store(false, std::memory_order_relaxed);
+    uint64_t myGeneration = contentIndexGeneration_.load(std::memory_order_acquire);
+
+    LOG_INFO("ServiceEngine", "Content indexing started");
+
+    auto contentPersistence = safeContentPersistence();
+
+    dispatch_group_async(backgroundGroup_, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        auto contentStart = std::chrono::steady_clock::now();
+
+        // Build lightweight list of (index, fullPath) for regular files
+        struct FileEntry { uint32_t idx; std::string fullPath; };
+        auto fileEntries = std::make_shared<std::vector<FileEntry>>();
+        {
+            uint32_t total = engine->recordCount();
+            std::vector<uint32_t> allIndices;
+            allIndices.reserve(total);
+            for (uint32_t i = 0; i < total; i++) allIndices.push_back(i);
+
+            fileEntries->reserve(total);
+            engine->forEachRecordWithPath(allIndices, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
+                if (r.type != 1) return; // only regular files
+                fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name)});
+            });
+        }
+
+        uint32_t total = static_cast<uint32_t>(fileEntries->size());
+        auto indexed = std::make_shared<std::atomic<uint32_t>>(0);
+        auto lastReported = std::make_shared<std::atomic<uint32_t>>(0);
+
+        dispatch_queue_t concurrentQ = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+        const auto& entries = *fileEntries;
+
+        dispatch_apply(total, concurrentQ, ^(size_t i) {
+            if (this->shuttingDown_.load(std::memory_order_relaxed)) return;
+            if (this->cancelContentIndexing_.load(std::memory_order_relaxed)) return;
+            if (this->contentIndexGeneration_.load(std::memory_order_acquire) != myGeneration) return;
+
+            const auto& entry = entries[i];
+            bool didIndex = contentIndex->indexFile(entry.idx, entry.fullPath);
+
+            if (didIndex && contentPersistence) {
+                ContentFileInfo info;
+                if (contentIndex->getFileInfo(entry.idx, info)) {
+                    contentPersistence->walAppendAdd(entry.idx, info.contentHash, info.trigrams);
+                }
+            }
+
+            uint32_t current = indexed->fetch_add(1, std::memory_order_relaxed) + 1;
+
+            // Report progress every 500 files
+            if (current - lastReported->load(std::memory_order_relaxed) >= 500) {
+                lastReported->store(current, std::memory_order_relaxed);
+                if (this->onContentIndexProgress) {
+                    this->onContentIndexProgress(current, total);
+                }
+            }
+        });
+
+        auto contentElapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - contentStart).count();
+        uint32_t totalIndexed = contentIndex->indexedFileCount();
+        LOG_INFO("ServiceEngine", "Content indexing completed: "
+                 << totalIndexed << " files in " << contentElapsed << "s");
+
+        this->isContentIndexing_.store(false, std::memory_order_relaxed);
+        dispatch_semaphore_signal(this->contentIndexingSemaphore_);
+
+        if (this->onContentIndexComplete) {
+            this->onContentIndexComplete(totalIndexed);
+        }
+    });
+}
+
+// ═══════════════════════════════════════════════════════
+//  Rebuild content index (cancel in-flight, clear, re-index)
+// ═══════════════════════════════════════════════════════
+
+void ServiceEngine::rebuildContentIndex() {
+    auto engine = safeEngine();
+    auto contentIndex = safeContentIndex();
+    if (!engine || !contentIndex) return;
+
+    // Cancel in-flight content indexing and wait
+    contentIndexGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    if (isContentIndexing_.load(std::memory_order_relaxed)) {
+        cancelContentIndexing_.store(true, std::memory_order_relaxed);
+        dispatch_semaphore_wait(contentIndexingSemaphore_,
+                                dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    }
+
+    // Stop old content persistence
+    {
+        auto oldCP = safeContentPersistence();
+        if (oldCP) {
+            oldCP->stopAutoCompactionAndWait();
+        }
+        setContentPersistence(nullptr);
+    }
+
+    // Replace contentIndex under exclusive lock
+    {
+        auto exts = contentIndex->getExtensions();
+        auto maxSize = contentIndex->getMaxFileSize();
+
+        auto newIndex = std::make_shared<ContentIndex>();
+        newIndex->setExtensions(exts);
+        newIndex->setMaxFileSize(maxSize);
+
+        std::unique_lock lock(contentMutex_);
+        contentIndex_ = newIndex;
+    }
+
+    // Re-setup persistence and re-index
+    setupContentPersistence();
+    startContentIndexing();
+}
+
+// ═══════════════════════════════════════════════════════
+//  Per-file content update (called from FSEvents path)
+// ═══════════════════════════════════════════════════════
+
+void ServiceEngine::updateContentForPath(
+    const std::string& fullPath, bool removed,
+    std::shared_ptr<SearchEngine> engine)
+{
+    auto contentIndex = safeContentIndex();
+    if (!engine || !contentIndex) return;
+
+    auto contentPersistence = safeContentPersistence();
+
+    if (removed) {
+        uint32_t fileIndex = engine->indexForPath(fullPath);
+        if (fileIndex != UINT32_MAX && contentIndex->isFileIndexed(fileIndex)) {
+            contentIndex->removeFile(fileIndex);
+            if (contentPersistence) {
+                contentPersistence->walAppendRemove(fileIndex);
+            }
+        }
+    } else {
+        uint32_t fileIndex = engine->indexForPath(fullPath);
+        if (fileIndex != UINT32_MAX) {
+            bool didIndex = contentIndex->indexFile(fileIndex, fullPath);
+            if (didIndex && contentPersistence) {
+                ContentFileInfo info;
+                if (contentIndex->getFileInfo(fileIndex, info)) {
+                    contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams);
+                }
+            }
+        }
+    }
+}

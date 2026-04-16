@@ -16,7 +16,8 @@ benchmark: benchmark.cpp $(CORE_SRCS)
 lint-bridge:
 	$(CXX) $(CXXFLAGS) -fsyntax-only -fobjc-arc -x objective-c++ \
 		-IMacEverything/Core -IMacEverything/Bridge \
-		MacEverything/Bridge/MacSearchBridge.mm
+		MacEverything/Bridge/MacSearchBridge.mm \
+		MacEverything/Bridge/MacSearchBridge+Content.mm
 
 # === Test targets ===
 test: test-fast

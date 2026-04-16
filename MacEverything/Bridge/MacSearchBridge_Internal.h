@@ -60,9 +60,6 @@
 /// Thread-safe engine accessor (C-4)
 - (std::shared_ptr<SearchEngine>)safeEngine;
 
-/// Thread-safe content index accessor (C-3)
-- (std::shared_ptr<ContentIndex>)safeContentIndex;
-
 /// Thread-safe persistence accessors (C-2)
 - (std::shared_ptr<IndexPersistence>)safePersistence;
 - (void)setPersistence:(std::shared_ptr<IndexPersistence>)persistence;
@@ -70,6 +67,14 @@
 /// Thread-safe content persistence accessors (C-3)
 - (std::shared_ptr<ContentIndexPersistence>)safeContentPersistence;
 - (void)setContentPersistence:(std::shared_ptr<ContentIndexPersistence>)persistence;
+
+@end
+
+/// Internal methods for the Content category (implemented in MacSearchBridge+Content.mm).
+@interface MacSearchBridge (ContentInternal)
+
+/// Thread-safe content index accessor (C-3)
+- (std::shared_ptr<ContentIndex>)safeContentIndex;
 
 /// Content indexing lifecycle
 - (void)startContentIndexing;

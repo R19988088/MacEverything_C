@@ -1,4 +1,5 @@
 #import "MacSearchBridge_Internal.h"
+#import "MacSearchBridge+Content.h"
 #include "DirectoryScanner.h"
 #include <sys/stat.h>
 

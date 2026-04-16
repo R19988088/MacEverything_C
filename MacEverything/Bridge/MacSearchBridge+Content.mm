@@ -2,7 +2,7 @@
 #include <dispatch/dispatch.h>
 #include <unistd.h>
 
-@implementation MacSearchBridge (Content)
+@implementation MacSearchBridge (ContentInternal)
 
 // C-3: Thread-safe accessor for _contentIndex (mirrors safeEngine pattern)
 - (std::shared_ptr<ContentIndex>)safeContentIndex {
@@ -127,6 +127,41 @@
     newContentPersistence->attachWAL();
     newContentPersistence->startAutoCompaction(300.0);
 }
+
+// C-5: Accept engine parameter to avoid re-reading potentially stale _engine
+- (void)updateContentIndexForPath:(const std::string&)fullPath
+                          removed:(BOOL)removed
+                           engine:(std::shared_ptr<SearchEngine>)engine {
+    auto contentIndex = [self safeContentIndex]; // C-3
+    if (!engine || !contentIndex) return;
+
+    auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
+
+    if (removed) {
+        uint32_t fileIndex = engine->indexForPath(fullPath);
+        if (fileIndex != UINT32_MAX && contentIndex->isFileIndexed(fileIndex)) {
+            contentIndex->removeFile(fileIndex);
+            if (contentPersistence) {
+                contentPersistence->walAppendRemove(fileIndex);
+            }
+        }
+    } else {
+        uint32_t fileIndex = engine->indexForPath(fullPath);
+        if (fileIndex != UINT32_MAX) {
+            bool didIndex = contentIndex->indexFile(fileIndex, fullPath);
+            if (didIndex && contentPersistence) {
+                ContentFileInfo info;
+                if (contentIndex->getFileInfo(fileIndex, info)) {
+                    contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams);
+                }
+            }
+        }
+    }
+}
+
+@end
+
+@implementation MacSearchBridge (Content)
 
 - (NSArray<MEContentResult *> *)queryContent:(NSString *)keyword maxResults:(uint32_t)maxResults {
     auto queryStart = std::chrono::steady_clock::now();
@@ -290,37 +325,6 @@
 
     // Re-index all files
     [self startContentIndexing];
-}
-
-// C-5: Accept engine parameter to avoid re-reading potentially stale _engine
-- (void)updateContentIndexForPath:(const std::string&)fullPath
-                          removed:(BOOL)removed
-                           engine:(std::shared_ptr<SearchEngine>)engine {
-    auto contentIndex = [self safeContentIndex]; // C-3
-    if (!engine || !contentIndex) return;
-
-    auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
-
-    if (removed) {
-        uint32_t fileIndex = engine->indexForPath(fullPath);
-        if (fileIndex != UINT32_MAX && contentIndex->isFileIndexed(fileIndex)) {
-            contentIndex->removeFile(fileIndex);
-            if (contentPersistence) {
-                contentPersistence->walAppendRemove(fileIndex);
-            }
-        }
-    } else {
-        uint32_t fileIndex = engine->indexForPath(fullPath);
-        if (fileIndex != UINT32_MAX) {
-            bool didIndex = contentIndex->indexFile(fileIndex, fullPath);
-            if (didIndex && contentPersistence) {
-                ContentFileInfo info;
-                if (contentIndex->getFileInfo(fileIndex, info)) {
-                    contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams);
-                }
-            }
-        }
-    }
 }
 
 @end

@@ -485,10 +485,18 @@
     if (!_httpServer) {
         _httpServer = std::make_shared<HttpServer>();
     }
-    _httpServer->start(port, _engine, _contentIndex);
+    __weak MacSearchBridge *weakSelf = self;
+    _httpServer->start(port,
+        [weakSelf]() -> std::shared_ptr<SearchEngine> {
+            MacSearchBridge *s = weakSelf;
+            return s ? [s safeEngine] : nullptr;
+        },
+        [weakSelf]() -> std::shared_ptr<ContentIndex> {
+            MacSearchBridge *s = weakSelf;
+            return s ? [s safeContentIndex] : nullptr;
+        });
 
     // Inject admin callbacks so the HTTP API can trigger management operations
-    __weak MacSearchBridge *weakSelf = self;
     HttpServer::AdminCallbacks callbacks;
 
     callbacks.onRebuildIndex = [weakSelf] {

@@ -79,12 +79,12 @@ HttpServer::~HttpServer() {
 }
 
 void HttpServer::start(uint16_t port,
-                       std::shared_ptr<SearchEngine> engine,
-                       std::shared_ptr<ContentIndex> contentIndex) {
+                       EngineGetter engineGetter,
+                       ContentIndexGetter contentIndexGetter) {
     if (running_.load(std::memory_order_relaxed)) return;
 
-    engine_ = std::move(engine);
-    contentIndex_ = std::move(contentIndex);
+    getEngine_ = std::move(engineGetter);
+    getContentIndex_ = std::move(contentIndexGetter);
 
     serverFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (serverFd_ < 0) {
@@ -331,14 +331,17 @@ std::string HttpServer::handleSearch(
         if (v > 0) limit = static_cast<uint32_t>(std::min(v, 10000));
     }
 
+    auto engine = getEngine_();
+    if (!engine) return errorResponse(503, "Engine not available");
+
     auto start = std::chrono::steady_clock::now();
-    auto indices = engine_->query(keyword, limit);
+    auto indices = engine->query(keyword, limit);
 
     std::ostringstream json;
     json << "{\"results\":[";
 
     bool first = true;
-    engine_->forEachRecordWithPath(indices,
+    engine->forEachRecordWithPath(indices,
         [&](uint32_t /*idx*/, const FileRecord& r, const std::string& dirPath) {
             if (!first) json << ',';
             first = false;
@@ -375,20 +378,23 @@ std::string HttpServer::handleContentSearch(
         if (v > 0) limit = static_cast<uint32_t>(std::min(v, 10000));
     }
 
-    if (!contentIndex_) {
+    auto contentIndex = getContentIndex_();
+    if (!contentIndex) {
         return errorResponse(503, "Content index not available");
     }
+    auto engine = getEngine_();
+    if (!engine) return errorResponse(503, "Engine not available");
 
-    auto matches = contentIndex_->query(keyword, limit);
+    auto matches = contentIndex->query(keyword, limit);
 
     std::ostringstream json;
     json << "{\"results\":[";
 
     bool first = true;
     for (const auto& match : matches) {
-        FileRecord rec = engine_->getRecord(match.fileIndex);
+        FileRecord rec = engine->getRecord(match.fileIndex);
         if (rec.type == 0) continue; // tombstoned
-        std::string dirPath = engine_->resolveRecordPath(match.fileIndex);
+        std::string dirPath = engine->resolveRecordPath(match.fileIndex);
         std::string fullPath = SearchEngine::makeFullPath(dirPath, rec.name);
 
         if (!first) json << ',';
@@ -413,13 +419,16 @@ std::string HttpServer::handleRecent(
         if (v > 0) limit = static_cast<uint32_t>(std::min(v, 10000));
     }
 
-    auto indices = engine_->recentIndices(limit);
+    auto engine = getEngine_();
+    if (!engine) return errorResponse(503, "Engine not available");
+
+    auto indices = engine->recentIndices(limit);
 
     std::ostringstream json;
     json << "{\"results\":[";
 
     bool first = true;
-    engine_->forEachRecordWithPath(indices,
+    engine->forEachRecordWithPath(indices,
         [&](uint32_t /*idx*/, const FileRecord& r, const std::string& dirPath) {
             if (!first) json << ',';
             first = false;
@@ -437,11 +446,13 @@ std::string HttpServer::handleRecent(
 }
 
 std::string HttpServer::handleStatus() {
+    auto engine = getEngine_();
+    auto contentIndex = getContentIndex_();
     std::ostringstream json;
-    json << "{\"recordCount\":" << engine_->recordCount()
-         << ",\"liveRecordCount\":" << engine_->liveRecordCount()
+    json << "{\"recordCount\":" << (engine ? engine->recordCount() : 0)
+         << ",\"liveRecordCount\":" << (engine ? engine->liveRecordCount() : 0)
          << ",\"contentIndexedFileCount\":"
-         << (contentIndex_ ? contentIndex_->indexedFileCount() : 0)
+         << (contentIndex ? contentIndex->indexedFileCount() : 0)
          << "}";
     return jsonResponse(200, json.str());
 }

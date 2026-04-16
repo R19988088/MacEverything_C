@@ -27,9 +27,12 @@ public:
     HttpServer(const HttpServer&) = delete;
     HttpServer& operator=(const HttpServer&) = delete;
 
+    using EngineGetter = std::function<std::shared_ptr<SearchEngine>()>;
+    using ContentIndexGetter = std::function<std::shared_ptr<ContentIndex>()>;
+
     void start(uint16_t port,
-               std::shared_ptr<SearchEngine> engine,
-               std::shared_ptr<ContentIndex> contentIndex);
+               EngineGetter engineGetter,
+               ContentIndexGetter contentIndexGetter);
     void stop();
     bool isRunning() const;
     uint16_t port() const;
@@ -65,8 +68,8 @@ private:
     std::string jsonResponse(int status, const std::string& body);
     std::string errorResponse(int status, const std::string& message);
 
-    std::shared_ptr<SearchEngine> engine_;
-    std::shared_ptr<ContentIndex> contentIndex_;
+    EngineGetter getEngine_;
+    ContentIndexGetter getContentIndex_;
     AdminCallbacks adminCallbacks_;
     std::atomic<bool> running_{false};
     int serverFd_{-1};

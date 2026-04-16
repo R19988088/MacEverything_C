@@ -80,6 +80,7 @@ namespace fs = std::filesystem;
 #include "tests/test_content_wal_tracking.h"
 #include "tests/test_content_compact_threshold.h"
 #include "tests/test_content_compaction_guard.h"
+#include "tests/test_fswatcher_eventid.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -109,7 +110,8 @@ static void printUsage(const char* prog) {
     std::cout << "  31 (compact threshold), 32 (paged persistence),\n";
     std::cout << "  33 (compaction timer), 34 (content WAL tracking),\n";
     std::cout << "  35 (content compact threshold),\n";
-    std::cout << "  36 (content compaction guard)\n";
+    std::cout << "  36 (content compaction guard),\n";
+    std::cout << "  37 (FSWatcher eventId)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -124,7 +126,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -147,7 +149,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37"};
     }
 
     // Validate root path if scan test is selected
@@ -215,6 +217,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("34")) runContentWalTrackingTests();
     if (selectedParts.count("35")) runContentCompactThresholdTests();
     if (selectedParts.count("36")) runContentCompactionGuardTests();
+    if (selectedParts.count("37")) runFSWatcherEventIdTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

@@ -27,9 +27,18 @@ void FileSystemWatcher::setExclusionPaths(std::vector<std::string> paths) {
     exclusionPaths_ = std::move(paths);
 }
 
+FSEventStreamEventId FileSystemWatcher::getCurrentSystemEventId() {
+    return FSEventsGetCurrentEventId();
+}
+
+void FileSystemWatcher::setEarlyAbortSemaphore(void* sem) {
+    earlyAbortSem_ = sem;
+}
+
 void FileSystemWatcher::startInternal(const std::string& rootPath,
                                        FSEventStreamEventId sinceEventId) {
     journalTruncated_.store(false, std::memory_order_relaxed);
+    totalEventsReceived_.store(0, std::memory_order_relaxed);
 
     CFStringRef path = CFStringCreateWithCString(kCFAllocatorDefault,
                                                   rootPath.c_str(),
@@ -115,6 +124,9 @@ void FileSystemWatcher::fseventsCallback(
         watcher->lastEventId_.store(eventIds[numEvents - 1], std::memory_order_relaxed);
     }
 
+    // Accumulate total raw events received (for replay diagnostics)
+    watcher->totalEventsReceived_.fetch_add(numEvents, std::memory_order_relaxed);
+
     CFArrayRef paths = static_cast<CFArrayRef>(eventPaths);
     std::vector<Event> events;
     events.reserve(numEvents);
@@ -178,6 +190,10 @@ void FileSystemWatcher::fseventsCallback(
             if (isExcludedAncestor) continue;
 
             watcher->journalTruncated_.store(true, std::memory_order_relaxed);
+            // Signal early abort so replay waiter doesn't block for the full timeout
+            if (watcher->earlyAbortSem_) {
+                dispatch_semaphore_signal(static_cast<dispatch_semaphore_t>(watcher->earlyAbortSem_));
+            }
         }
 
         events.push_back({std::move(pathStr), flags});

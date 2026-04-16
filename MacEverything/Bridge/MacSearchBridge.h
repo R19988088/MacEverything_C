@@ -122,6 +122,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// Whether background sync is in progress (index is searchable but may be stale).
 @property (nonatomic, readonly) BOOL isSyncing;
 
+// --- HTTP Server ---
+
+/// Start the embedded HTTP API server on the given port (127.0.0.1 only).
+- (void)startHttpServer:(uint16_t)port;
+
+/// Stop the embedded HTTP API server.
+- (void)stopHttpServer;
+
 // --- Logging ---
 
 /// Initialize the logging system. Call once at app startup.

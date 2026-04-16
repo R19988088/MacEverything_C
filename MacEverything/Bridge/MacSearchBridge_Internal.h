@@ -6,6 +6,7 @@
 #include "ContentIndexPersistence.h"
 #include "IndexPersistence.h"
 #include "FileSystemWatcher.h"
+#include "HttpServer.h"
 #include "InstanceLock.h"
 #include "RescanDebounce.h"
 #include <memory>
@@ -53,6 +54,7 @@
     std::set<std::string> _pendingRescanPaths;
     dispatch_source_t _rescanDebounceTimer;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> _lastRescanTime;
+    std::shared_ptr<HttpServer> _httpServer;
 }
 
 /// Thread-safe engine accessor (C-4)

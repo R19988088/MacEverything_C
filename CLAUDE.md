@@ -66,6 +66,19 @@ Agent 在接到功能或 bug 任务时，应先输出简短计划与测试清单
 - **禁止**在 `test_all.cpp` 中直接实现测试函数，`test_all.cpp` 仅负责 include 测试模块、CLI 参数解析和 `main()` 调度
 
 
+## 6. 变更验收（每次变更完成后必须执行）
+
+每次有新变更合并到 master 后，必须执行以下验收流程：
+
+1. **退出当前运行的 app**（如果正在运行）
+2. **在 master 分支上构建并打包**：
+   ```bash
+   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project MacEverything.xcodeproj -scheme MacEverything -configuration Release build SYMROOT=build
+   hdiutil create -volname MacEverything -srcfolder build/Release/MacEverything.app -ov -format UDZO /Users/wujian/data/project/mac_everything/MacEverything.dmg
+   ```
+3. **启动 app**：打开打包好的 dmg 并运行 MacEverything.app
+4. **通过 HTTP 服务做功能验证**：使用 `curl` 等工具对 `http://localhost:19860` 进行与本次变更相关的测试，验证功能正确性
+
 ---
 
 ## 快速自检（Agent 收尾前）

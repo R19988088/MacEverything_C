@@ -192,6 +192,7 @@ void ServiceEngine::startIncremental(StartupCallback completion) {
             engine, cacheStr, walStr, pagesStr, ptableStr);
 
         uint64_t lastEventId = persistence->load();
+        auto indexLoadDone = std::chrono::steady_clock::now();
         uint32_t loadedCount = engine->liveRecordCount();
 
         if (lastEventId > 0 && loadedCount > 0) {
@@ -220,7 +221,7 @@ void ServiceEngine::startIncremental(StartupCallback completion) {
             uint32_t count = engine->liveRecordCount();
             if (completion) completion(count, false);
 
-            this->backgroundSyncEngine(engine, sharedPersistence, lastEventId, incrementalStart);
+            this->backgroundSyncEngine(engine, sharedPersistence, lastEventId, incrementalStart, indexLoadDone);
             return;
         }
 
@@ -265,7 +266,8 @@ void ServiceEngine::backgroundSyncEngine(
     std::shared_ptr<SearchEngine> engine,
     std::shared_ptr<IndexPersistence> sharedPersistence,
     uint64_t lastEventId,
-    std::chrono::steady_clock::time_point incrementalStart)
+    std::chrono::steady_clock::time_point incrementalStart,
+    std::chrono::steady_clock::time_point indexLoadDone)
 {
     dispatch_group_async(backgroundGroup_, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Try FSEvents replay
@@ -295,10 +297,15 @@ void ServiceEngine::backgroundSyncEngine(
 
         if (result == 0 && replayDone->load() && !journalTruncated->load()) {
             // Replay succeeded
-            auto elapsed = std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - incrementalStart).count();
-            LOG_INFO("ServiceEngine", "Background replay succeeded: "
-                     << engine->liveRecordCount() << " records in " << elapsed << "s");
+            auto now = std::chrono::steady_clock::now();
+            auto loadTime = std::chrono::duration<double>(indexLoadDone - incrementalStart).count();
+            auto replayTime = std::chrono::duration<double>(now - indexLoadDone).count();
+            auto totalTime = std::chrono::duration<double>(now - incrementalStart).count();
+            LOG_INFO("ServiceEngine", "Incremental startup completed: "
+                     << engine->liveRecordCount() << " records — "
+                     << "index load " << loadTime << "s, "
+                     << "FSEvents replay " << replayTime << "s, "
+                     << "total " << totalTime << "s");
 
             this->isSyncing_.store(false, std::memory_order_relaxed);
             this->startMonitoring();
@@ -342,10 +349,15 @@ void ServiceEngine::backgroundSyncEngine(
         engine->loadRecords(std::move(freshRecords));
         uint32_t finalCount = engine->liveRecordCount();
 
-        auto scanElapsed = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - incrementalStart).count();
+        auto scanNow = std::chrono::steady_clock::now();
+        auto loadTime = std::chrono::duration<double>(indexLoadDone - incrementalStart).count();
+        auto scanTime = std::chrono::duration<double>(scanNow - indexLoadDone).count();
+        auto totalTime = std::chrono::duration<double>(scanNow - incrementalStart).count();
         LOG_INFO("ServiceEngine", "Background scan completed: "
-                 << finalCount << " records in " << scanElapsed << "s");
+                 << finalCount << " records — "
+                 << "index load " << loadTime << "s, "
+                 << "rescan " << scanTime << "s, "
+                 << "total " << totalTime << "s");
 
         this->isSyncing_.store(false, std::memory_order_relaxed);
 

@@ -1,7 +1,7 @@
 #pragma once
 #include "ContentIndex.h"
 #include "IndexWAL.h" // for IndexWAL::crc32()
-#include "CompactionTimer.h"
+#include <dispatch/dispatch.h>
 #include <string>
 #include <memory>
 #include <mutex>
@@ -98,8 +98,9 @@ public:
     /// Minimum WAL entry count before non-forced compaction triggers.
     static constexpr uint64_t kCompactThreshold = 50;
 
-    /// Start a GCD timer that compacts every intervalSec seconds.
-    void startAutoCompaction(double intervalSec);
+    /// Prepare the compaction queue. Compaction is event-driven: it fires
+    /// after WAL mutations, not on a fixed timer.
+    void startAutoCompaction(double intervalSec = 0);
 
     /// Stop auto-compaction and wait for in-flight compaction to finish.
     void stopAutoCompactionAndWait();
@@ -111,11 +112,8 @@ public:
     const std::string& basePath() const { return basePath_; }
     const std::string& walPath() const { return walPath_; }
 
-    // Adaptive interval constants
-    static constexpr double kBaseIntervalSec = 300.0;
-    static constexpr double kMinIntervalSec  = 60.0;   // content indexing is heavier
-    static constexpr double kMaxIntervalSec  = 600.0;
-    static constexpr size_t kWALSizeFlushThreshold = 5 * 1024 * 1024; // 5MB
+    /// Delay before event-driven compaction fires after the last mutation.
+    static constexpr double kCompactionDelaySec = 60.0;
 
 private:
     std::shared_ptr<ContentIndex> index_;
@@ -123,8 +121,9 @@ private:
     std::string basePath_;
     std::string walPath_;
     std::mutex walMutex_;
-    CompactionTimer timer_;
+    dispatch_queue_t compactionQueue_ = nullptr;
+    std::atomic<bool> compactionScheduled_{false};
 
-    /// Compute the next auto-compaction interval based on WAL size and entry count.
-    double computeAdaptiveInterval() const;
+    /// Schedule a compaction after kCompactionDelaySec. Called from walAppend*.
+    void scheduleCompaction();
 };

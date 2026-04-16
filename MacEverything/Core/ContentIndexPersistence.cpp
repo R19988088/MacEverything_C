@@ -376,59 +376,60 @@ void ContentIndexPersistence::compact(bool force) {
     }
 }
 
-void ContentIndexPersistence::startAutoCompaction(double intervalSec) {
-    timer_.stopAndWait();
-
-    auto* self = this;
-    timer_.start(intervalSec, [self]() {
-        self->compact();
-
-        // Adjust interval based on current WAL state
-        double newInterval = self->computeAdaptiveInterval();
-        self->timer_.reschedule(newInterval);
-    }, "com.maceverything.content.compaction");
-
-    LOG_INFO("ContentIndexPersistence", "Auto-compaction started (initial interval " << intervalSec << "s)");
+void ContentIndexPersistence::startAutoCompaction(double /*intervalSec*/) {
+    stopAutoCompactionAndWait();
+    compactionQueue_ = dispatch_queue_create(
+        "com.maceverything.content.compaction", DISPATCH_QUEUE_SERIAL);
+    LOG_INFO("ContentIndexPersistence", "Auto-compaction started (event-driven)");
 }
 
 void ContentIndexPersistence::stopAutoCompactionAndWait() {
-    timer_.stopAndWait();
+    if (compactionQueue_) {
+        // Drain any pending work
+        dispatch_sync(compactionQueue_, ^{});
+        dispatch_release(compactionQueue_);
+        compactionQueue_ = nullptr;
+    }
+    compactionScheduled_.store(false, std::memory_order_relaxed);
 }
 
-double ContentIndexPersistence::computeAdaptiveInterval() const {
-    size_t walSize = 0;
-    uint64_t entries = 0;
-    {
-        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(walMutex_));
-        if (wal_) {
-            walSize = wal_->currentSize();
-            entries = wal_->entryCount();
-        }
+void ContentIndexPersistence::scheduleCompaction() {
+    if (!compactionQueue_) return;
+
+    // Only schedule if not already pending
+    bool expected = false;
+    if (!compactionScheduled_.compare_exchange_strong(expected, true,
+            std::memory_order_acq_rel)) {
+        return;
     }
 
-    // WAL size override — large WAL needs urgent flush
-    if (walSize > kWALSizeFlushThreshold) {
-        return kMinIntervalSec;
-    }
-    // Many entries — use base interval
-    if (entries > kCompactThreshold * 2) {
-        return kBaseIntervalSec;
-    }
-    // Otherwise — slow down
-    return kMaxIntervalSec;
+    auto delaySec = kCompactionDelaySec;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(delaySec * NSEC_PER_SEC)),
+        compactionQueue_,
+        ^{
+            this->compactionScheduled_.store(false, std::memory_order_relaxed);
+            this->compact();
+        });
 }
 
 void ContentIndexPersistence::walAppendAdd(uint32_t fileIndex, uint64_t contentHash,
                                             const std::vector<Trigram>& trigrams, time_t lastModTime) {
-    std::lock_guard<std::mutex> lock(walMutex_);
-    if (wal_) {
-        wal_->appendAdd(fileIndex, contentHash, trigrams, lastModTime);
+    {
+        std::lock_guard<std::mutex> lock(walMutex_);
+        if (wal_) {
+            wal_->appendAdd(fileIndex, contentHash, trigrams, lastModTime);
+        }
     }
+    scheduleCompaction();
 }
 
 void ContentIndexPersistence::walAppendRemove(uint32_t fileIndex) {
-    std::lock_guard<std::mutex> lock(walMutex_);
-    if (wal_) {
-        wal_->appendRemove(fileIndex);
+    {
+        std::lock_guard<std::mutex> lock(walMutex_);
+        if (wal_) {
+            wal_->appendRemove(fileIndex);
+        }
     }
+    scheduleCompaction();
 }

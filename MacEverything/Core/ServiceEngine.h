@@ -86,7 +86,8 @@ private:
     void backgroundSyncEngine(std::shared_ptr<SearchEngine> engine,
                               std::shared_ptr<IndexPersistence> persistence,
                               uint64_t lastEventId,
-                              std::chrono::steady_clock::time_point incrementalStart);
+                              std::chrono::steady_clock::time_point incrementalStart,
+                              std::chrono::steady_clock::time_point indexLoadDone);
     IndexMetadata buildMetadata();
 
     // ── FSEvents methods (ServiceEngine+FSEvents.cpp) ──

@@ -571,7 +571,7 @@
     }
     auto contentPersistence = [self safeContentPersistence]; // C-3: thread-safe access
     if (contentPersistence) {
-        contentPersistence->compact();
+        contentPersistence->compact(/*force=*/true);
     }
     LOG_INFO("Bridge", "prepareForTermination completed");
     LOG_INFO("Logger", "=== Log session ended ===");

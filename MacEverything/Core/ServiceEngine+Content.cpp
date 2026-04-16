@@ -79,20 +79,39 @@ void ServiceEngine::startContentIndexing() {
     dispatch_group_async(backgroundGroup_, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         auto contentStart = std::chrono::steady_clock::now();
 
-        // Build lightweight list of (index, fullPath, modTime) for regular files
+        // Build lightweight list of (index, fullPath, modTime) for regular files.
+        // Two-phase: if content index already has entries (restart), check only
+        // those files (incremental). Otherwise full scan (first run).
         struct FileEntry { uint32_t idx; std::string fullPath; time_t modTime; };
         auto fileEntries = std::make_shared<std::vector<FileEntry>>();
         {
-            uint32_t total = engine->recordCount();
-            std::vector<uint32_t> allIndices;
-            allIndices.reserve(total);
-            for (uint32_t i = 0; i < total; i++) allIndices.push_back(i);
+            auto indexedIndices = contentIndex->getIndexedFileIndices();
+            bool incremental = !indexedIndices.empty();
 
-            fileEntries->reserve(total);
-            engine->forEachRecordWithPath(allIndices, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
-                if (r.type != 1) return; // only regular files
-                fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name), r.modTime});
-            });
+            if (incremental) {
+                // Incremental mode: only check already-indexed files
+                fileEntries->reserve(indexedIndices.size());
+                engine->forEachRecordWithPath(indexedIndices, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
+                    if (r.type != 1) return;
+                    fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name), r.modTime});
+                });
+                LOG_INFO("ServiceEngine", "Content indexing: incremental mode, "
+                         << fileEntries->size() << " previously-indexed files to check");
+            } else {
+                // Full scan: first run, no persisted content index
+                uint32_t total = engine->recordCount();
+                std::vector<uint32_t> allIndices;
+                allIndices.reserve(total);
+                for (uint32_t i = 0; i < total; i++) allIndices.push_back(i);
+
+                fileEntries->reserve(total);
+                engine->forEachRecordWithPath(allIndices, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
+                    if (r.type != 1) return;
+                    fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name), r.modTime});
+                });
+                LOG_INFO("ServiceEngine", "Content indexing: full scan mode, "
+                         << fileEntries->size() << " regular files to index");
+            }
         }
 
         uint32_t total = static_cast<uint32_t>(fileEntries->size());

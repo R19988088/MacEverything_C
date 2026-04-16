@@ -12,7 +12,7 @@
 #include <map>
 #include <set>
 
-class IndexWAL;
+#include "IndexWAL.h"
 
 /// Deduplication table for directory path strings.
 /// Interns unique paths and returns a compact uint32_t index.
@@ -100,6 +100,10 @@ public:
     /// Returns the number of old records removed. Thread-safe.
     uint32_t batchRescanPrefix(const std::string& pathPrefix,
                                std::vector<FileRecord>&& freshRecords);
+
+    /// Replay WAL entries in-place using pathIndex_ for O(1) lookups.
+    /// Skips WAL writes (entries came FROM the WAL). Thread-safe.
+    void replayWALEntries(std::vector<WALEntry>&& entries);
 
     /// Number of live (non-tombstoned) records.
     uint32_t liveRecordCount() const { return liveCount_.load(std::memory_order_relaxed); }

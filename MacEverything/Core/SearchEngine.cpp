@@ -951,3 +951,101 @@ std::vector<FileRecord> SearchEngine::exportRecords() const {
     }
     return result;
 }
+
+void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
+    if (entries.empty()) return;
+
+    std::unique_lock lock(mutex_);
+
+    for (auto& e : entries) {
+        std::string lowerFull = me::toLower(e.fullPath);
+
+        switch (e.op) {
+        case WALOp::Add: {
+            // If path already exists (duplicate Add), tombstone old record first
+            auto existIt = pathIndex_.find(lowerFull);
+            if (existIt != pathIndex_.end()) {
+                uint32_t oldIdx = existIt->second;
+                removeTrigramsForRecord(oldIdx);
+                records_[oldIdx].type = 0;
+                markPageDirty(oldIdx);
+                records_[oldIdx].name.clear();
+                records_[oldIdx].size = 0;
+                records_[oldIdx].modTime = 0;
+                lowerNames_[oldIdx].clear();
+                pathIndex_.erase(existIt);
+                liveCount_.fetch_sub(1, std::memory_order_relaxed);
+            }
+
+            uint32_t idx = static_cast<uint32_t>(records_.size());
+            std::string lower = me::toLower(e.record.name);
+            uint32_t pIdx = pathTable_.intern(e.record.path);
+            e.record.path.clear();
+            e.record.path.shrink_to_fit();
+
+            records_.push_back(std::move(e.record));
+            lowerNames_.push_back(lower);
+            pathIndices_.push_back(pIdx);
+            pathIndex_[lowerFull] = idx;
+            addTrigramsForRecord(idx, lower);
+            if (idx / kRecordsPerPage >= dirtyPages_.size()) {
+                dirtyPages_.resize(idx / kRecordsPerPage + 1, false);
+            }
+            markPageDirty(idx);
+            liveCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        case WALOp::Remove: {
+            auto it = pathIndex_.find(lowerFull);
+            if (it == pathIndex_.end()) break; // silently ignore
+            uint32_t idx = it->second;
+            removeTrigramsForRecord(idx);
+            records_[idx].type = 0;
+            markPageDirty(idx);
+            records_[idx].name.clear();
+            records_[idx].size = 0;
+            records_[idx].modTime = 0;
+            lowerNames_[idx].clear();
+            pathIndex_.erase(it);
+            liveCount_.fetch_sub(1, std::memory_order_relaxed);
+            break;
+        }
+        case WALOp::Update: {
+            // Remove old record if exists
+            auto it = pathIndex_.find(lowerFull);
+            if (it != pathIndex_.end()) {
+                uint32_t oldIdx = it->second;
+                removeTrigramsForRecord(oldIdx);
+                records_[oldIdx].type = 0;
+                markPageDirty(oldIdx);
+                records_[oldIdx].name.clear();
+                records_[oldIdx].size = 0;
+                records_[oldIdx].modTime = 0;
+                lowerNames_[oldIdx].clear();
+                pathIndex_.erase(it);
+                liveCount_.fetch_sub(1, std::memory_order_relaxed);
+            }
+            // Add updated record
+            uint32_t newIdx = static_cast<uint32_t>(records_.size());
+            std::string lower = me::toLower(e.record.name);
+            uint32_t pIdx = pathTable_.intern(e.record.path);
+            e.record.path.clear();
+            e.record.path.shrink_to_fit();
+
+            records_.push_back(std::move(e.record));
+            lowerNames_.push_back(lower);
+            pathIndices_.push_back(pIdx);
+            pathIndex_[lowerFull] = newIdx;
+            addTrigramsForRecord(newIdx, lower);
+            if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
+                dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
+            }
+            markPageDirty(newIdx);
+            liveCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        }
+    }
+
+    rebuildRecentCache();
+}

@@ -220,6 +220,28 @@ static void runContentModTimeTests() {
         check(idx.indexedFileCount() == 0, "T8: 0 entries after prune");
     }
 
+    // --- Test 9: getIndexedFileIndices returns correct key set ---
+    {
+        ContentIndex idx;
+        std::vector<Trigram> tris = {ContentIndex::makeTrigram('a','b','c')};
+        idx.insertFileInfo(3, 111, std::vector<Trigram>(tris), 100);
+        idx.insertFileInfo(7, 222, std::vector<Trigram>(tris), 200);
+        idx.insertFileInfo(15, 333, std::vector<Trigram>(tris), 300);
+
+        auto indices = idx.getIndexedFileIndices();
+        std::sort(indices.begin(), indices.end());
+        check(indices.size() == 3, "T9: getIndexedFileIndices returns 3 entries");
+        check(indices[0] == 3 && indices[1] == 7 && indices[2] == 15,
+              "T9: getIndexedFileIndices returns correct indices {3,7,15}");
+    }
+
+    // --- Test 10: getIndexedFileIndices on empty index returns empty ---
+    {
+        ContentIndex idx;
+        auto indices = idx.getIndexedFileIndices();
+        check(indices.empty(), "T10: empty ContentIndex returns empty vector");
+    }
+
     // Cleanup
     fs::remove_all(tmpDir);
 

@@ -1,8 +1,5 @@
 #include "IndexPersistence.h"
-#include "StringUtils.h"
 #include "Logger.h"
-#include <algorithm>
-#include <chrono>
 #include <cerrno>
 #include <cstring>
 
@@ -60,61 +57,11 @@ uint64_t IndexPersistence::load() {
         }
     }
 
-    // 3. Batch-merge WAL entries into base records
+    // 3. In-place WAL replay using pathIndex_ for O(1) lookups
     auto entries = IndexWAL::readAll(walPath_);
     if (!entries.empty()) {
-        LOG_INFO("IndexPersistence", "Replaying " << entries.size() << " WAL entries (batch mode)");
-
-        auto records = engine_->exportRecords();
-
-        std::unordered_map<std::string, size_t> pathMap;
-        pathMap.reserve(records.size());
-        for (size_t i = 0; i < records.size(); i++) {
-            std::string fullPath = SearchEngine::makeFullPath(records[i].path, records[i].name);
-            pathMap[me::toLower(fullPath)] = i;
-        }
-
-        for (auto& entry : entries) {
-            std::string lowerPath = me::toLower(entry.fullPath);
-
-            switch (entry.op) {
-                case WALOp::Add: {
-                    auto it = pathMap.find(lowerPath);
-                    if (it != pathMap.end()) {
-                        records[it->second] = std::move(entry.record);
-                    } else {
-                        pathMap[lowerPath] = records.size();
-                        records.push_back(std::move(entry.record));
-                    }
-                    break;
-                }
-                case WALOp::Remove: {
-                    auto it = pathMap.find(lowerPath);
-                    if (it != pathMap.end()) {
-                        records[it->second].type = 0;
-                        pathMap.erase(it);
-                    }
-                    break;
-                }
-                case WALOp::Update: {
-                    auto it = pathMap.find(lowerPath);
-                    if (it != pathMap.end()) {
-                        records[it->second] = std::move(entry.record);
-                    } else {
-                        pathMap[lowerPath] = records.size();
-                        records.push_back(std::move(entry.record));
-                    }
-                    break;
-                }
-            }
-        }
-
-        records.erase(
-            std::remove_if(records.begin(), records.end(),
-                [](const FileRecord& r) { return r.type == 0; }),
-            records.end());
-
-        engine_->loadRecords(std::move(records));
+        LOG_INFO("IndexPersistence", "Replaying " << entries.size() << " WAL entries (in-place mode)");
+        engine_->replayWALEntries(std::move(entries));
         LOG_INFO("IndexPersistence", "WAL replay done, live records=" << engine_->liveRecordCount());
     }
 

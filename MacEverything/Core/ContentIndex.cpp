@@ -433,6 +433,16 @@ bool ContentIndex::isFileIndexed(uint32_t fileIndex) const {
     return fileInfos_.count(fileIndex) > 0;
 }
 
+std::vector<uint32_t> ContentIndex::getIndexedFileIndices() const {
+    std::shared_lock lock(mutex_);
+    std::vector<uint32_t> result;
+    result.reserve(fileInfos_.size());
+    for (const auto& [idx, _] : fileInfos_) {
+        result.push_back(idx);
+    }
+    return result;
+}
+
 void ContentIndex::insertFileInfo(uint32_t fileIndex, uint64_t contentHash, std::vector<Trigram>&& trigrams, time_t lastModTime) {
     std::unique_lock lock(mutex_);
 

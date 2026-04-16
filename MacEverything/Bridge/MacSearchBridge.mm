@@ -314,7 +314,12 @@
                 newPersistence->setContentIndex([self safeContentIndex]);
                 newPersistence->startAutoCompaction(300.0, self->_watcher);
 
-                uint64_t eventId = self->_watcher ? self->_watcher->getLastEventId() : 0;
+                // Use system API to get current eventId — live watcher started with
+                // kFSEventStreamEventIdSinceNow so getLastEventId() returns 0 until
+                // a callback fires. getCurrentSystemEventId() avoids this race.
+                uint64_t eventId = FileSystemWatcher::getCurrentSystemEventId();
+                LOG_INFO("Bridge", "First startup: persisting lastEventId=" << eventId
+                         << " (system API)");
                 IndexMetadata meta;
                 meta.lastEventId = eventId;
                 meta.extra[IndexMetadata::kScanRoot] = std::string([root UTF8String]);
@@ -352,6 +357,9 @@
 
         dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 
+        // Fix 3: Set early abort semaphore so journal truncation signals immediately
+        watcherPtr->setEarlyAbortSemaphore((__bridge void*)sem);
+
         watcherPtr->start(
             std::string([root UTF8String]),
             lastEventId,
@@ -367,7 +375,10 @@
             }
         );
 
-        long result = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+        // 30s timeout: journal truncation triggers early abort via semaphore,
+        // so we won't actually wait 30s in that case. For large event volumes,
+        // 30s gives enough headroom vs the old 10s.
+        long result = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
         watcherForReplay->stop();
 
         if (result == 0 && replayDone->load() && !journalTruncated->load()) {
@@ -391,8 +402,20 @@
             return;
         }
 
-        // --- Replay failed: background full scan into same engine ---
-        LOG_WARN("Bridge", "FSEvents replay failed — background full scan into existing engine");
+        // --- Replay failed: classify failure reason for diagnostics ---
+        if (result != 0) {
+            LOG_WARN("Bridge", "FSEvents replay timed out after 30s"
+                     " (received " << watcherPtr->totalEventsReceived() << " raw events"
+                     ", journalTruncated=" << journalTruncated->load() << ")");
+        } else if (journalTruncated->load()) {
+            LOG_WARN("Bridge", "FSEvents replay completed but journal was truncated"
+                     " (received " << watcherPtr->totalEventsReceived() << " raw events)");
+        } else {
+            LOG_WARN("Bridge", "FSEvents replay failed — unknown reason"
+                     " (replayDone=" << replayDone->load()
+                     << ", received " << watcherPtr->totalEventsReceived() << " raw events)");
+        }
+        LOG_WARN("Bridge", "Falling back to background full scan into existing engine");
 
         auto scanner = std::make_shared<DirectoryScanner>();
 
@@ -445,8 +468,11 @@
             [self startMonitoringFrom:root];
             newPersistence->startAutoCompaction(300.0, self->_watcher);
 
-            // Save snapshot via paged persistence
-            uint64_t eventId = self->_watcher ? self->_watcher->getLastEventId() : 0;
+            // Save snapshot via paged persistence — use system API to get current
+            // eventId (same fix as first-startup path: live watcher returns 0).
+            uint64_t eventId = FileSystemWatcher::getCurrentSystemEventId();
+            LOG_INFO("Bridge", "Background fallback: persisting lastEventId=" << eventId
+                     << " (system API)");
             IndexMetadata meta;
             meta.lastEventId = eventId;
             meta.extra[IndexMetadata::kScanRoot] = std::string([root UTF8String]);

@@ -54,6 +54,7 @@ struct ContentResultRow: View {
             return NSItemProvider(object: NSURL(fileURLWithPath: item.filePath))
         }
         .onTapGesture(count: 2) { openFile() }
+        .accessibilityIdentifier("contentResultRow")
     }
 
     private func directoryPath(_ fullPath: String) -> String {

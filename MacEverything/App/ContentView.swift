@@ -25,6 +25,7 @@ struct ContentView: View {
                     }
                     // Actual text field (in front)
                     TextField("Search files... (infile: for content search)", text: $viewModel.searchText)
+                        .accessibilityIdentifier("searchField")
                         .textFieldStyle(.plain)
                         .font(.system(size: 26))
                         .onChange(of: viewModel.searchText) {
@@ -48,6 +49,7 @@ struct ContentView: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("clearButton")
                 }
             }
             .padding(.horizontal, 16)
@@ -86,6 +88,7 @@ struct ContentView: View {
                     }
                     Text("\(viewModel.totalRecords) files indexed")
                         .foregroundColor(.secondary)
+                        .accessibilityIdentifier("indexedCount")
                     if viewModel.isContentIndexing, let progress = viewModel.contentIndexProgress {
                         Text("·")
                             .foregroundColor(.secondary)
@@ -99,6 +102,7 @@ struct ContentView: View {
                             .foregroundColor(.secondary)
                         Text("\(viewModel.totalMatches) matches")
                             .foregroundColor(.secondary)
+                            .accessibilityIdentifier("matchCount")
                         Text("·")
                             .foregroundColor(.secondary)
                         Text(String(format: "%.1fms", viewModel.queryTimeMs))
@@ -111,6 +115,7 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(Color(nsColor: .controlBackgroundColor))
+            .accessibilityIdentifier("statusBar")
 
             Divider()
 
@@ -178,6 +183,7 @@ struct ContentView: View {
                         }
                     }
                     .id(scrollViewID)
+                    .accessibilityIdentifier("contentResultsList")
 
                     if viewModel.totalMatches > 0 {
                         HStack {
@@ -196,6 +202,7 @@ struct ContentView: View {
                     Spacer()
                     Text("No results found")
                         .foregroundColor(.secondary)
+                        .accessibilityIdentifier("noResultsLabel")
                     Spacer()
                 }
             } else {
@@ -245,6 +252,7 @@ struct ContentView: View {
                     }
                 }
                 .id(scrollViewID)
+                .accessibilityIdentifier("fileResultsList")
                 .animation(.easeInOut(duration: 0.25), value: viewModel.showingRecent)
 
                 if viewModel.totalMatches > 0 {

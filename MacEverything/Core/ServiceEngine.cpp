@@ -209,6 +209,11 @@ void ServiceEngine::startIncremental(StartupCallback completion) {
             this->isScanning_.store(false, std::memory_order_relaxed);
             this->isSyncing_.store(true, std::memory_order_relaxed);
 
+            // Auto-start HTTP server once engine is available
+            if (config_.httpPort > 0) {
+                this->startHttpServer(config_.httpPort);
+            }
+
             sharedPersistence->attachWAL();
             sharedPersistence->setContentIndex(this->safeContentIndex());
 
@@ -241,6 +246,11 @@ void ServiceEngine::startIncremental(StartupCallback completion) {
 
             auto meta = this->buildMetadata();
             newPersistence->flush(meta, /*force=*/true);
+
+            // Auto-start HTTP server once engine is available
+            if (config_.httpPort > 0) {
+                this->startHttpServer(config_.httpPort);
+            }
 
             if (completion) completion(count, true);
         });

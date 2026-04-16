@@ -88,7 +88,11 @@
         config.scanRoot = "/";
         config.cachePath = PathUtils::getDefaultCachePath();
         config.logPath = PathUtils::getDefaultLogPath();
+        config.httpPort = 19860;
         _serviceEngine = std::make_shared<ServiceEngine>(config);
+
+        // Pre-install admin callbacks so HttpServer has them when auto-started
+        [self _installAdminCallbacks];
     }
     return self;
 }
@@ -174,8 +178,7 @@
     _serviceEngine->compactIndex();
 }
 
-- (void)startHttpServer:(uint16_t)port {
-    // Set up admin callbacks that dispatch to main queue / NSNotificationCenter
+- (void)_installAdminCallbacks {
     HttpServer::AdminCallbacks callbacks;
 
     callbacks.onRebuildIndex = [] {
@@ -220,6 +223,10 @@
     };
 
     _serviceEngine->adminCallbacks = std::move(callbacks);
+}
+
+- (void)startHttpServer:(uint16_t)port {
+    [self _installAdminCallbacks];
     _serviceEngine->startHttpServer(port);
 }
 

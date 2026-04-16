@@ -42,8 +42,9 @@ void ServiceEngine::setupContentPersistence() {
         if (pruned > 0) {
             LOG_INFO("ServiceEngine", "Pruned " << pruned
                       << " stale content entries after load");
-            // Force-flush the pruned state so it doesn't reappear on next restart
-            newContentPersistence->compact(true);
+            // Save the pruned state directly to base file.  WAL isn't attached
+            // yet, so compact() would skip — write the base file instead.
+            contentIndex->saveToFile(basePath);
         }
     }
 

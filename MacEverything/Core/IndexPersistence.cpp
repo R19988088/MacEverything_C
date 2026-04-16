@@ -261,6 +261,12 @@ void IndexPersistence::fullCompact(const IndexMetadata& metadata) {
     auto remap = engine_->compactRecords();
     if (!remap.empty() && contentIndex_) {
         contentIndex_->remapFileIndices(remap);
+        // Flush content index to disk so its base file stays in sync with the
+        // search engine's compacted indices.  Without this, the content base
+        // file retains old indices that point to wrong records after restart.
+        if (contentPersistence_) {
+            contentPersistence_->compact(true);
+        }
     }
 
     // 4. Full rewrite paged files

@@ -95,6 +95,11 @@ public:
     /// Remap fileIndices after SearchEngine compaction. Thread-safe.
     void remapFileIndices(const std::unordered_map<uint32_t, uint32_t>& remap);
 
+    /// Remove content entries whose fileIndex points to a non-regular-file record
+    /// in the search engine (e.g., after search engine compaction shifted indices).
+    /// Returns the number of pruned entries.
+    uint32_t pruneStaleEntries(const std::unordered_set<uint32_t>& validFileIndices);
+
     // --- Helpers (public for testing) ---
 
     /// Check if a filename has an allowed extension.

@@ -3,6 +3,7 @@
 
 #include <fstream>
 #include <filesystem>
+#include <unordered_set>
 #include <sys/stat.h>
 
 static void runContentModTimeTests() {
@@ -174,6 +175,49 @@ static void runContentModTimeTests() {
         // Third call with same modTime should skip via early exit
         bool third = idx.indexFile(0, delFile, newMod);
         check(!third, "T6: third call with same modTime skips (early exit)");
+    }
+
+    // --- Test 7: pruneStaleEntries removes entries not in validFileIndices ---
+    {
+        ContentIndex idx;
+        idx.setExtensions({"txt"});
+
+        // Write test file back for indexing
+        {
+            std::ofstream ofs(testFile);
+            ofs << "hello world test content for trigram indexing";
+        }
+
+        // Index file at indices 0, 5, 10
+        idx.indexFile(0, testFile, fileModTime);
+        // Insert synthetic entries for indices 5 and 10 (simulates WAL replay)
+        std::vector<Trigram> tris = {ContentIndex::makeTrigram('x','y','z')};
+        idx.insertFileInfo(5, 999, std::vector<Trigram>(tris), 100);
+        idx.insertFileInfo(10, 888, std::vector<Trigram>(tris), 200);
+        check(idx.indexedFileCount() == 3, "T7: 3 entries before prune");
+
+        // Only index 0 and 10 are "valid regular files"
+        std::unordered_set<uint32_t> valid = {0, 10};
+        uint32_t pruned = idx.pruneStaleEntries(valid);
+        check(pruned == 1, "T7: pruned 1 stale entry (index 5)");
+        check(idx.indexedFileCount() == 2, "T7: 2 entries after prune");
+        check(idx.isFileIndexed(0), "T7: index 0 still present");
+        check(!idx.isFileIndexed(5), "T7: index 5 removed");
+        check(idx.isFileIndexed(10), "T7: index 10 still present");
+    }
+
+    // --- Test 8: pruneStaleEntries with empty valid set removes all ---
+    {
+        ContentIndex idx;
+        std::vector<Trigram> tris = {ContentIndex::makeTrigram('a','b','c')};
+        idx.insertFileInfo(1, 111, std::vector<Trigram>(tris), 100);
+        idx.insertFileInfo(2, 222, std::vector<Trigram>(tris), 200);
+        check(idx.indexedFileCount() == 2, "T8: 2 entries before prune");
+
+        std::unordered_set<uint32_t> empty;
+        uint32_t pruned = idx.pruneStaleEntries(empty);
+        check(pruned == 2, "T8: pruned all entries when valid set is empty");
+        check(idx.indexedFileCount() == 0, "T8: 0 entries after prune");
     }
 
     // Cleanup

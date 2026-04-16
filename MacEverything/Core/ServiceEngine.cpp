@@ -388,6 +388,7 @@ void ServiceEngine::compactIndex() {
         LOG_TIMER("ServiceEngine", "compactIndex");
         uint64_t eventId = watcher_->getLastEventId();
         persistence->setContentIndex(safeContentIndex());
+        persistence->setContentIndexPersistence(safeContentPersistence());
         persistence->compact(eventId);
     }
 }
@@ -445,6 +446,7 @@ void ServiceEngine::shutdown() {
     auto persistence = safePersistence();
     if (persistence) {
         persistence->setContentIndex(safeContentIndex());
+        persistence->setContentIndexPersistence(safeContentPersistence());
         persistence->compact(lastEventId, /*force=*/true);
     }
     auto cp = safeContentPersistence();

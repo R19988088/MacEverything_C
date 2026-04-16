@@ -1,6 +1,7 @@
 #include "ServiceEngine.h"
 #include "Logger.h"
 #include <filesystem>
+#include <unordered_set>
 #include <dispatch/dispatch.h>
 
 namespace fs = std::filesystem;
@@ -11,7 +12,8 @@ namespace fs = std::filesystem;
 
 void ServiceEngine::setupContentPersistence() {
     auto contentIndex = safeContentIndex();
-    if (!contentIndex) return;
+    auto engine = safeEngine();
+    if (!contentIndex || !engine) return;
 
     std::string cacheDir = config_.cachePath;
     fs::create_directories(cacheDir);
@@ -22,8 +24,38 @@ void ServiceEngine::setupContentPersistence() {
     auto newContentPersistence = std::make_shared<ContentIndexPersistence>(contentIndex, basePath, walPath);
     setContentPersistence(newContentPersistence);
     newContentPersistence->load();
+
+    // Prune content entries whose fileIndex no longer points to a regular file
+    // in the search engine.  This handles accumulated drift from search engine
+    // compactions that remapped indices after the content base file was saved.
+    {
+        uint32_t total = engine->recordCount();
+        std::unordered_set<uint32_t> validFileIndices;
+        validFileIndices.reserve(total);
+        for (uint32_t i = 0; i < total; i++) {
+            FileRecord rec = engine->getRecord(i);
+            if (rec.type == 1) {
+                validFileIndices.insert(i);
+            }
+        }
+        uint32_t pruned = contentIndex->pruneStaleEntries(validFileIndices);
+        if (pruned > 0) {
+            LOG_INFO("ServiceEngine", "Pruned " << pruned
+                      << " stale content entries after load");
+            // Force-flush the pruned state so it doesn't reappear on next restart
+            newContentPersistence->compact(true);
+        }
+    }
+
     newContentPersistence->attachWAL();
     newContentPersistence->startAutoCompaction(300.0);
+
+    // Wire content persistence into IndexPersistence so fullCompact() can
+    // flush content index after remapping file indices.
+    auto persistence = safePersistence();
+    if (persistence) {
+        persistence->setContentIndexPersistence(newContentPersistence);
+    }
 }
 
 // ═══════════════════════════════════════════════════════

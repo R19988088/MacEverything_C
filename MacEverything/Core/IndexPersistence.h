@@ -1,6 +1,7 @@
 #pragma once
 #include "SearchEngine.h"
 #include "ContentIndex.h"
+#include "ContentIndexPersistence.h"
 #include "IndexWAL.h"
 #include "PagedIndexWriter.h"
 #include "FileSystemWatcher.h"
@@ -48,6 +49,9 @@ public:
     /// Set the ContentIndex so compaction can propagate index remapping.
     void setContentIndex(std::shared_ptr<ContentIndex> ci) { contentIndex_ = std::move(ci); }
 
+    /// Set the ContentIndexPersistence so fullCompact can flush content index after remap.
+    void setContentIndexPersistence(std::shared_ptr<ContentIndexPersistence> cp) { contentPersistence_ = std::move(cp); }
+
     /// Start a GCD timer that flushes with adaptive interval.
     void startAutoCompaction(double intervalSec, std::shared_ptr<FileSystemWatcher> watcher);
 
@@ -68,6 +72,7 @@ public:
 private:
     std::shared_ptr<SearchEngine> engine_;
     std::shared_ptr<ContentIndex> contentIndex_;
+    std::shared_ptr<ContentIndexPersistence> contentPersistence_;
     std::shared_ptr<IndexWAL> wal_;
     std::unique_ptr<PagedIndexWriter> pagedWriter_;
     std::string basePath_;   // legacy v3 path (index.bin)

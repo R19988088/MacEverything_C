@@ -411,6 +411,23 @@ void ContentIndex::remapFileIndices(const std::unordered_map<uint32_t, uint32_t>
     }
 }
 
+uint32_t ContentIndex::pruneStaleEntries(const std::unordered_set<uint32_t>& validFileIndices) {
+    std::unique_lock lock(mutex_);
+
+    std::vector<uint32_t> toRemove;
+    for (auto& [fileIdx, info] : fileInfos_) {
+        if (validFileIndices.find(fileIdx) == validFileIndices.end()) {
+            toRemove.push_back(fileIdx);
+        }
+    }
+
+    for (uint32_t idx : toRemove) {
+        removeFileInternal(idx);
+    }
+
+    return static_cast<uint32_t>(toRemove.size());
+}
+
 bool ContentIndex::isFileIndexed(uint32_t fileIndex) const {
     std::shared_lock lock(mutex_);
     return fileInfos_.count(fileIndex) > 0;

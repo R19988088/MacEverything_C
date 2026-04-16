@@ -278,7 +278,24 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath, ti
 
     // Single-pass read: open file once, read content, check for binary
     std::string content = readFileIfText(fullPath, maxSize);
-    if (content.empty()) return false;
+    if (content.empty()) {
+        // File unreadable (deleted/binary/too large) but already indexed:
+        // update lastModTime so future runs skip I/O via early exit
+        if (modTime > 0) {
+            std::shared_lock lock(mutex_);
+            auto it = fileInfos_.find(fileIndex);
+            if (it != fileInfos_.end() && it->second.lastModTime != modTime) {
+                lock.unlock();
+                std::unique_lock wlock(mutex_);
+                auto wit = fileInfos_.find(fileIndex);
+                if (wit != fileInfos_.end()) {
+                    wit->second.lastModTime = modTime;
+                }
+                return true; // signal WAL persist
+            }
+        }
+        return false;
+    }
 
     uint64_t hash = hashContent(content);
     auto trigrams = extractTrigrams(content);

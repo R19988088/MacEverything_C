@@ -140,6 +140,42 @@ static void runContentModTimeTests() {
         check(!third, "T5: third call with same modTime skips (modTime early exit)");
     }
 
+    // --- Test 6: Unreadable file (deleted) updates lastModTime for indexed entry ---
+    {
+        ContentIndex idx;
+        idx.setExtensions({"txt"});
+
+        // Write and index a file normally
+        std::string delFile = tmpDir + "/willdelete.txt";
+        {
+            std::ofstream ofs(delFile);
+            ofs << "content that will be deleted soon";
+        }
+
+        struct stat dst;
+        stat(delFile.c_str(), &dst);
+        time_t delModTime = dst.st_mtime;
+
+        bool first = idx.indexFile(0, delFile, delModTime);
+        check(first, "T6: first indexFile returns true");
+        check(idx.indexedFileCount() == 1, "T6: file count is 1");
+
+        // Delete the file, then re-index with a new modTime
+        fs::remove(delFile);
+        time_t newMod = delModTime + 120;
+
+        bool second = idx.indexFile(0, delFile, newMod);
+        check(second, "T6: deleted file → indexFile returns true (lastModTime updated)");
+
+        ContentFileInfo info;
+        idx.getFileInfo(0, info);
+        check(info.lastModTime == newMod, "T6: stored lastModTime updated despite file unreadable");
+
+        // Third call with same modTime should skip via early exit
+        bool third = idx.indexFile(0, delFile, newMod);
+        check(!third, "T6: third call with same modTime skips (early exit)");
+    }
+
     // Cleanup
     fs::remove_all(tmpDir);
 

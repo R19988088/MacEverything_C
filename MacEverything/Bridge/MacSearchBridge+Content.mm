@@ -303,7 +303,7 @@
 
     if (removed) {
         uint32_t fileIndex = engine->indexForPath(fullPath);
-        if (fileIndex != UINT32_MAX) {
+        if (fileIndex != UINT32_MAX && contentIndex->isFileIndexed(fileIndex)) {
             contentIndex->removeFile(fileIndex);
             if (contentPersistence) {
                 contentPersistence->walAppendRemove(fileIndex);

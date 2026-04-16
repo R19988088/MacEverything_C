@@ -43,7 +43,7 @@ bool ContentIndexWAL::open(const std::string& walPath) {
 }
 
 bool ContentIndexWAL::appendAdd(uint32_t fileIndex, uint64_t contentHash,
-                                 const std::vector<Trigram>& trigrams) {
+                                 const std::vector<Trigram>& trigrams, time_t lastModTime) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!file_) return false;
 
@@ -62,6 +62,10 @@ bool ContentIndexWAL::appendAdd(uint32_t fileIndex, uint64_t contentHash,
     if (triCount > 0) {
         buf.append(reinterpret_cast<const char*>(trigrams.data()), sizeof(Trigram) * triCount);
     }
+
+    // V2: append lastModTime as int64_t
+    int64_t modTime64 = static_cast<int64_t>(lastModTime);
+    buf.append(reinterpret_cast<const char*>(&modTime64), sizeof(int64_t));
 
     // Write entry + CRC32
     if (fwrite(buf.data(), 1, buf.size(), file_) != buf.size()) return false;
@@ -155,6 +159,11 @@ std::vector<ContentIndexWAL::Entry> ContentIndexWAL::readAll(const std::string& 
 
             entry.trigrams.resize(triCount);
             if (triCount > 0 && fread(entry.trigrams.data(), sizeof(Trigram), triCount, f) != triCount) break;
+
+            // V2: read lastModTime
+            int64_t modTime64;
+            if (fread(&modTime64, sizeof(int64_t), 1, f) != 1) break;
+            entry.lastModTime = static_cast<time_t>(modTime64);
         }
 
         // Read and verify CRC32
@@ -257,7 +266,7 @@ bool ContentIndexPersistence::load() {
         for (auto& entry : entries) {
             switch (entry.op) {
                 case ContentIndexWAL::Entry::Add:
-                    index_->insertFileInfo(entry.fileIndex, entry.contentHash, std::move(entry.trigrams));
+                    index_->insertFileInfo(entry.fileIndex, entry.contentHash, std::move(entry.trigrams), entry.lastModTime);
                     break;
                 case ContentIndexWAL::Entry::Remove:
                     index_->removeFile(entry.fileIndex);
@@ -410,10 +419,10 @@ double ContentIndexPersistence::computeAdaptiveInterval() const {
 }
 
 void ContentIndexPersistence::walAppendAdd(uint32_t fileIndex, uint64_t contentHash,
-                                            const std::vector<Trigram>& trigrams) {
+                                            const std::vector<Trigram>& trigrams, time_t lastModTime) {
     std::lock_guard<std::mutex> lock(walMutex_);
     if (wal_) {
-        wal_->appendAdd(fileIndex, contentHash, trigrams);
+        wal_->appendAdd(fileIndex, contentHash, trigrams, lastModTime);
     }
 }
 

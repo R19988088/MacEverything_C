@@ -22,6 +22,7 @@ struct ContentMatch {
 struct ContentFileInfo {
     uint64_t contentHash;     // simple hash of file content for change detection
     std::vector<Trigram> trigrams; // all trigrams extracted from this file
+    time_t lastModTime = 0;   // file modification time for incremental indexing
 };
 
 /// Trigram-based inverted index for full-text content search.
@@ -38,7 +39,8 @@ public:
 
     /// Index a single file's content. Reads the file, extracts trigrams, updates inverted index.
     /// Returns true if the file was newly indexed or updated (false if binary, too large, unreadable, or unchanged).
-    bool indexFile(uint32_t fileIndex, const std::string& fullPath);
+    /// If modTime > 0 and matches the stored lastModTime, skips I/O entirely (incremental optimization).
+    bool indexFile(uint32_t fileIndex, const std::string& fullPath, time_t modTime = 0);
 
     /// Remove a file from the content index.
     void removeFile(uint32_t fileIndex);
@@ -85,7 +87,7 @@ public:
     bool getFileInfo(uint32_t fileIndex, ContentFileInfo& info) const;
 
     /// Directly insert file info (for WAL replay / load).
-    void insertFileInfo(uint32_t fileIndex, uint64_t contentHash, std::vector<Trigram>&& trigrams);
+    void insertFileInfo(uint32_t fileIndex, uint64_t contentHash, std::vector<Trigram>&& trigrams, time_t lastModTime = 0);
 
     /// Directly remove file info and update inverted index.
     void removeFileInternal(uint32_t fileIndex);

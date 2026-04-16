@@ -14,7 +14,7 @@
 
 // --- Magic and version for binary persistence ---
 static constexpr char CONTENT_MAGIC[4] = {'M', 'E', 'C', 'I'};
-static constexpr uint32_t CONTENT_FORMAT_VERSION = 1;
+static constexpr uint32_t CONTENT_FORMAT_VERSION = 2;
 
 ContentIndex::ContentIndex() {
     // No default extensions — content indexing is opt-in.
@@ -250,7 +250,7 @@ std::string ContentIndex::generateSnippet(const std::string& path,
 
 // --- Indexing ---
 
-bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
+bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath, time_t modTime) {
     // Check extension (read lock for config)
     {
         std::shared_lock lock(mutex_);
@@ -258,6 +258,15 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
         size_t lastSlash = fullPath.rfind('/');
         std::string filename = (lastSlash != std::string::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
         if (extensions_.empty() || !hasAllowedExtensionLocked(filename)) return false;
+    }
+
+    // Early exit: if modTime unchanged, skip expensive I/O
+    if (modTime > 0) {
+        std::shared_lock lock(mutex_);
+        auto it = fileInfos_.find(fileIndex);
+        if (it != fileInfos_.end() && it->second.lastModTime == modTime) {
+            return false; // file not modified
+        }
     }
 
     // Single I/O: read content and check for binary in one pass
@@ -315,6 +324,7 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath) {
     ContentFileInfo info;
     info.contentHash = hash;
     info.trigrams = std::move(trigrams);
+    info.lastModTime = modTime;
     fileInfos_[fileIndex] = std::move(info);
 
     return true;
@@ -379,7 +389,7 @@ bool ContentIndex::isFileIndexed(uint32_t fileIndex) const {
     return fileInfos_.count(fileIndex) > 0;
 }
 
-void ContentIndex::insertFileInfo(uint32_t fileIndex, uint64_t contentHash, std::vector<Trigram>&& trigrams) {
+void ContentIndex::insertFileInfo(uint32_t fileIndex, uint64_t contentHash, std::vector<Trigram>&& trigrams, time_t lastModTime) {
     std::unique_lock lock(mutex_);
 
     // Remove old if exists
@@ -397,6 +407,7 @@ void ContentIndex::insertFileInfo(uint32_t fileIndex, uint64_t contentHash, std:
     ContentFileInfo info;
     info.contentHash = contentHash;
     info.trigrams = std::move(trigrams);
+    info.lastModTime = lastModTime;
     fileInfos_[fileIndex] = std::move(info);
 }
 
@@ -553,7 +564,7 @@ bool ContentIndex::saveToFile(const std::string& path) const {
     uint32_t fileCount = static_cast<uint32_t>(fileInfos_.size());
     safeWrite(&fileCount, sizeof(uint32_t), 1);
 
-    // Per-file: fileIndex(4) + contentHash(8) + trigramCount(4) + trigrams(4 each)
+    // Per-file: fileIndex(4) + contentHash(8) + trigramCount(4) + trigrams(4 each) + lastModTime(8)
     for (const auto& [fileIndex, info] : fileInfos_) {
         if (!ok) break;
         safeWrite(&fileIndex, sizeof(uint32_t), 1);
@@ -563,6 +574,9 @@ bool ContentIndex::saveToFile(const std::string& path) const {
         if (triCount > 0) {
             safeWrite(info.trigrams.data(), sizeof(Trigram), triCount);
         }
+        // V2: write lastModTime as int64_t for cross-platform consistency
+        int64_t modTime = static_cast<int64_t>(info.lastModTime);
+        safeWrite(&modTime, sizeof(int64_t), 1);
     }
 
     // H-2: fsync before close to ensure data reaches disk before rename
@@ -638,6 +652,17 @@ bool ContentIndex::loadFromFile(const std::string& path) {
             return false;
         }
 
+        // V2: read lastModTime (version 1 compat: default to 0)
+        time_t lastModTime = 0;
+        if (version >= 2) {
+            int64_t modTime64;
+            if (fread(&modTime64, sizeof(int64_t), 1, f) != 1) {
+                fclose(f);
+                return false;
+            }
+            lastModTime = static_cast<time_t>(modTime64);
+        }
+
         // H4 fix: Use push_back during bulk load — O(1) per insert instead of
         // O(N) sorted insertion. Final sort+dedup happens below after all entries.
         for (Trigram tri : trigrams) {
@@ -647,6 +672,7 @@ bool ContentIndex::loadFromFile(const std::string& path) {
         ContentFileInfo info;
         info.contentHash = contentHash;
         info.trigrams = std::move(trigrams);
+        info.lastModTime = lastModTime;
         newFileInfos[fileIndex] = std::move(info);
     }
 

@@ -95,6 +95,7 @@
         _isSyncing.store(false, std::memory_order_relaxed);
         _cancelContentIndexing.store(false, std::memory_order_relaxed);
         _contentIndexGeneration.store(0, std::memory_order_relaxed);
+        _startupReported.store(false, std::memory_order_relaxed);
         // H-7: Serial queue for mutations
         _mutationQueue = dispatch_queue_create("com.maceverything.mutation", DISPATCH_QUEUE_SERIAL);
         // P-5: Semaphore for waiting on content indexing completion
@@ -243,6 +244,9 @@
         }
     }
 
+    _appStartTime = std::chrono::steady_clock::now();
+    _startupReported.store(false, std::memory_order_relaxed);
+
     LOG_INFO("Bridge", "startIncrementalFrom: " << [root UTF8String]);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         auto incrementalStart = std::chrono::steady_clock::now();
@@ -275,6 +279,9 @@
                 [self setPersistence:sharedPersistence]; // C-2: thread-safe persistence swap
                 self->_isScanning.store(false, std::memory_order_relaxed);
                 self->_isSyncing.store(true, std::memory_order_relaxed);
+
+                // Delayed HttpServer start: engine is now set, HttpServer captures live shared_ptrs
+                [self startHttpServer:19860];
 
                 sharedPersistence->attachWAL();
                 sharedPersistence->setContentIndex([self safeContentIndex]);
@@ -310,6 +317,9 @@
                     [self safeEngine], cacheStr, walStr, freshPagesStr, freshPtableStr
                 );
                 [self setPersistence:newPersistence];
+                // Delayed HttpServer start: engine is now set after full scan
+                [self startHttpServer:19860];
+
                 newPersistence->attachWAL();
                 newPersistence->setContentIndex([self safeContentIndex]);
                 newPersistence->startAutoCompaction(300.0, self->_watcher);

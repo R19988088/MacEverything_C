@@ -26,7 +26,7 @@
         auto contentStart = std::chrono::steady_clock::now();
         // Build a lightweight list of (index, fullPath) for regular files under one lock,
         // avoiding 4.5M getRecord() copies that each reconstruct path strings.
-        struct FileEntry { uint32_t idx; std::string fullPath; };
+        struct FileEntry { uint32_t idx; std::string fullPath; time_t modTime; };
         auto fileEntries = std::make_shared<std::vector<FileEntry>>();
         {
             uint32_t total = engine->recordCount();
@@ -37,7 +37,7 @@
             fileEntries->reserve(total);
             engine->forEachRecordWithPath(allIndices, [&](uint32_t idx, const FileRecord& r, const std::string& path) {
                 if (r.type != 1) return; // only regular files
-                fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name)});
+                fileEntries->push_back({idx, SearchEngine::makeFullPath(path, r.name), r.modTime});
             });
         }
 
@@ -58,12 +58,12 @@
             if (cancelFlag->load(std::memory_order_relaxed)) return;
 
             const auto& entry = entries[i];
-            bool didIndex = contentIndex->indexFile(entry.idx, entry.fullPath);
+            bool didIndex = contentIndex->indexFile(entry.idx, entry.fullPath, entry.modTime);
 
             if (didIndex && contentPersistence) {
                 ContentFileInfo info;
                 if (contentIndex->getFileInfo(entry.idx, info)) {
-                    contentPersistence->walAppendAdd(entry.idx, info.contentHash, info.trigrams);
+                    contentPersistence->walAppendAdd(entry.idx, info.contentHash, info.trigrams, info.lastModTime);
                 }
             }
 
@@ -85,6 +85,18 @@
         auto contentElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - contentStart).count();
         uint32_t totalIndexed = contentIndex->indexedFileCount();
         LOG_INFO("Bridge", "Content indexing completed: " << totalIndexed << " files in " << contentElapsed << "s");
+
+        // Emit one-time "Startup complete" log with total elapsed time
+        {
+            MacSearchBridge *strongSelf = weakSelf;
+            if (strongSelf) {
+                bool expected = false;
+                if (strongSelf->_startupReported.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                    auto totalElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - strongSelf->_appStartTime).count();
+                    LOG_INFO("Bridge", "Startup complete: " << totalElapsed << "s (scan/replay + content indexing)");
+                }
+            }
+        }
 
         dispatch_async(dispatch_get_main_queue(), ^{
             MacSearchBridge *strongSelf = weakSelf;
@@ -152,7 +164,7 @@
             if (didIndex && contentPersistence) {
                 ContentFileInfo info;
                 if (contentIndex->getFileInfo(fileIndex, info)) {
-                    contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams);
+                    contentPersistence->walAppendAdd(fileIndex, info.contentHash, info.trigrams, info.lastModTime);
                 }
             }
         }

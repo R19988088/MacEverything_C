@@ -20,8 +20,8 @@ public:
     /// Open WAL file for appending.
     bool open(const std::string& walPath);
 
-    /// Append an add entry: fileIndex + contentHash + trigrams.
-    bool appendAdd(uint32_t fileIndex, uint64_t contentHash, const std::vector<Trigram>& trigrams);
+    /// Append an add entry: fileIndex + contentHash + trigrams + lastModTime.
+    bool appendAdd(uint32_t fileIndex, uint64_t contentHash, const std::vector<Trigram>& trigrams, time_t lastModTime = 0);
 
     /// Append a remove entry: fileIndex.
     bool appendRemove(uint32_t fileIndex);
@@ -33,6 +33,7 @@ public:
         uint32_t fileIndex;
         uint64_t contentHash; // only for Add
         std::vector<Trigram> trigrams; // only for Add
+        time_t lastModTime = 0; // only for Add
     };
     static std::vector<Entry> readAll(const std::string& walPath);
 
@@ -104,7 +105,7 @@ public:
     void stopAutoCompactionAndWait();
 
     /// WAL accessors for the bridge layer to log mutations.
-    void walAppendAdd(uint32_t fileIndex, uint64_t contentHash, const std::vector<Trigram>& trigrams);
+    void walAppendAdd(uint32_t fileIndex, uint64_t contentHash, const std::vector<Trigram>& trigrams, time_t lastModTime = 0);
     void walAppendRemove(uint32_t fileIndex);
 
     const std::string& basePath() const { return basePath_; }

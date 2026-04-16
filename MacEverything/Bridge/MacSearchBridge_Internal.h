@@ -55,6 +55,10 @@
     dispatch_source_t _rescanDebounceTimer;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> _lastRescanTime;
     std::shared_ptr<HttpServer> _httpServer;
+    // Startup timing: record when startIncrementalFrom: begins
+    std::chrono::steady_clock::time_point _appStartTime;
+    // One-shot flag: ensures "Startup complete" log is emitted only once
+    std::atomic<bool> _startupReported;
 }
 
 /// Thread-safe engine accessor (C-4)

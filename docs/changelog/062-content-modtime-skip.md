@@ -28,10 +28,16 @@ ContentIndex::indexFile 已有完整的 modTime 早退逻辑（检查 `modTime >
    - 通过 `forEachRecordWithPath` 获取 FileRecord.modTime
    - 传递给 `indexFile(idx, path, modTime)` 和 `walAppendAdd(..., info.lastModTime)`
 
+### ContentIndex.cpp
+
+3. **hash-match 路径更新 lastModTime**：
+   - 当文件内容 hash 匹配但 `lastModTime` 不一致（如 v1 持久化数据 `lastModTime=0`），更新 `lastModTime` 并返回 `true` 以触发 WAL 持久化
+   - 确保旧数据在首次全量索引后升级到带 modTime 的状态，后续启动可走 modTime 早退路径
+
 ## 测试
 
-- `test_content_modtime.h`（Part 38）— 12 项测试全部通过
-- `--fast` 全量单元测试 — 10717 项全部通过
+- `test_content_modtime.h`（Part 38）— 17 项测试全部通过（含 Test 5: hash-match 升级 lastModTime）
+- `--fast` 全量单元测试 — 全部通过
 - xcodebuild Release 构建通过
 
 ## 预期效果

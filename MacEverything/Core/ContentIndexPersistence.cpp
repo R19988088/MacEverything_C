@@ -316,7 +316,9 @@ void ContentIndexPersistence::compact(bool force) {
     // 3. Write new base file (crash-safety: C-1 fix — write before removing old WAL)
     if (index_->saveToFile(basePath_)) {
         LOG_INFO("ContentIndexPersistence", "Compacted content index, files="
-                  << index_->indexedFileCount());
+                  << index_->indexedFileCount()
+                  << ", walEntries=" << (oldWal ? oldWal->entryCount() : 0)
+                  << ", walBytes=" << (oldWal ? oldWal->currentSize() : 0));
     } else {
         LOG_ERROR("ContentIndexPersistence", "Failed to write content base index"
                   << " — keeping old WAL for recovery");

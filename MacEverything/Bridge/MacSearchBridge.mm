@@ -512,6 +512,7 @@
         contentPersistence->compact();
     }
     LOG_INFO("Bridge", "prepareForTermination completed");
+    LOG_INFO("Logger", "=== Log session ended ===");
     me::Logger::instance().shutdown();
 }
 

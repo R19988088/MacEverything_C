@@ -108,6 +108,38 @@ static void runContentModTimeTests() {
         check(info.lastModTime == insertedModTime, "insertFileInfo preserves lastModTime");
     }
 
+    // --- Test 5: Hash-match updates lastModTime when stored value is 0 ---
+    {
+        ContentIndex idx;
+        idx.setExtensions({"txt"});
+
+        // Write known content
+        {
+            std::ofstream ofs(testFile);
+            ofs << "stable content for modtime upgrade test";
+        }
+
+        // First index with modTime=0 (simulates v1 persisted data)
+        bool first = idx.indexFile(0, testFile, 0);
+        check(first, "T5: first index with modTime=0 returns true");
+
+        ContentFileInfo info;
+        idx.getFileInfo(0, info);
+        check(info.lastModTime == 0, "T5: stored lastModTime is 0 after modTime=0 index");
+
+        // Second index with real modTime: hash matches but lastModTime differs
+        // Should return true (to signal WAL update) and update stored lastModTime
+        bool second = idx.indexFile(0, testFile, fileModTime);
+        check(second, "T5: hash-match with new modTime returns true (triggers WAL persist)");
+
+        idx.getFileInfo(0, info);
+        check(info.lastModTime == fileModTime, "T5: stored lastModTime updated to real modTime");
+
+        // Third index with same modTime: now should skip entirely (no I/O)
+        bool third = idx.indexFile(0, testFile, fileModTime);
+        check(!third, "T5: third call with same modTime skips (modTime early exit)");
+    }
+
     // Cleanup
     fs::remove_all(tmpDir);
 

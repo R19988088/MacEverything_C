@@ -288,6 +288,16 @@ bool ContentIndex::indexFile(uint32_t fileIndex, const std::string& fullPath, ti
         std::shared_lock lock(mutex_);
         auto it = fileInfos_.find(fileIndex);
         if (it != fileInfos_.end() && it->second.contentHash == hash) {
+            // Content unchanged — update lastModTime so future runs can skip I/O
+            if (modTime > 0 && it->second.lastModTime != modTime) {
+                lock.unlock();
+                std::unique_lock wlock(mutex_);
+                auto wit = fileInfos_.find(fileIndex);
+                if (wit != fileInfos_.end()) {
+                    wit->second.lastModTime = modTime;
+                }
+                return true; // signal caller to persist updated modTime
+            }
             return false; // already up-to-date, no change made
         }
     }

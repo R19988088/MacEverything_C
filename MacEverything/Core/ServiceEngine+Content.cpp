@@ -111,6 +111,50 @@ void ServiceEngine::startContentIndexing() {
 }
 
 // ═══════════════════════════════════════════════════════
+//  Rebuild content index (cancel in-flight, clear, re-index)
+// ═══════════════════════════════════════════════════════
+
+void ServiceEngine::rebuildContentIndex() {
+    auto engine = safeEngine();
+    auto contentIndex = safeContentIndex();
+    if (!engine || !contentIndex) return;
+
+    // Cancel in-flight content indexing and wait
+    contentIndexGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    if (isContentIndexing_.load(std::memory_order_relaxed)) {
+        cancelContentIndexing_.store(true, std::memory_order_relaxed);
+        dispatch_semaphore_wait(contentIndexingSemaphore_,
+                                dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    }
+
+    // Stop old content persistence
+    {
+        auto oldCP = safeContentPersistence();
+        if (oldCP) {
+            oldCP->stopAutoCompactionAndWait();
+        }
+        setContentPersistence(nullptr);
+    }
+
+    // Replace contentIndex under exclusive lock
+    {
+        auto exts = contentIndex->getExtensions();
+        auto maxSize = contentIndex->getMaxFileSize();
+
+        auto newIndex = std::make_shared<ContentIndex>();
+        newIndex->setExtensions(exts);
+        newIndex->setMaxFileSize(maxSize);
+
+        std::unique_lock lock(contentMutex_);
+        contentIndex_ = newIndex;
+    }
+
+    // Re-setup persistence and re-index
+    setupContentPersistence();
+    startContentIndexing();
+}
+
+// ═══════════════════════════════════════════════════════
 //  Per-file content update (called from FSEvents path)
 // ═══════════════════════════════════════════════════════
 

@@ -49,6 +49,11 @@ public:
     void startHttpServer(uint16_t port);
     void stopHttpServer();
 
+    // ── Public operations ──
+    void rescanSubtree(const std::string& dir);
+    void rebuildContentIndex();
+    void compactIndex();
+
     // ── Thread-safe accessors ──
     std::shared_ptr<SearchEngine> safeEngine();
     std::shared_ptr<ContentIndex> safeContentIndex();
@@ -77,7 +82,6 @@ private:
     void setEngine(std::shared_ptr<SearchEngine> engine);
     void setPersistence(std::shared_ptr<IndexPersistence> persistence);
     void setContentPersistence(std::shared_ptr<ContentIndexPersistence> persistence);
-    void compactIndex();
     void backgroundSyncEngine(std::shared_ptr<SearchEngine> engine,
                               std::shared_ptr<IndexPersistence> persistence,
                               uint64_t lastEventId,
@@ -91,7 +95,6 @@ private:
     void stopMonitoring();
     void scheduleRescanForPaths(const std::vector<std::string>& paths);
     void flushPendingRescans();
-    void rescanSubtree(const std::string& dir);
 
     // ── Content methods (ServiceEngine+Content.cpp) ──
     void startContentIndexing();

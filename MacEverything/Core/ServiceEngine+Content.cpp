@@ -83,7 +83,7 @@ void ServiceEngine::startContentIndexing() {
                 if (contentIndex->getFileInfo(entry.idx, info)) {
                     contentPersistence->walAppendAdd(entry.idx, info.contentHash, info.trigrams, info.lastModTime);
                 }
-            } else if (!didIndex && entry.modTime > 0) {
+            } else if (!didIndex && contentIndex->isFileIndexed(entry.idx)) {
                 skipped->fetch_add(1, std::memory_order_relaxed);
             }
 

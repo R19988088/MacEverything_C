@@ -159,11 +159,34 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
         pathIndex_[std::move(loweredPaths[i])] = static_cast<uint32_t>(i);
     }
 
+    // Tombstone orphaned duplicates: records whose index doesn't match pathIndex_
+    // After the loop above, pathIndex_ maps each path to the LAST record index.
+    // Earlier records at the same path are orphans — tombstone them.
+    std::unordered_set<uint32_t> winnerIndices;
+    winnerIndices.reserve(pathIndex_.size());
+    for (const auto& [_, idx] : pathIndex_) {
+        winnerIndices.insert(idx);
+    }
+    uint32_t actualLive = 0;
+    for (size_t i = 0; i < records_.size(); i++) {
+        if (records_[i].type == 0) continue;
+        if (winnerIndices.count(static_cast<uint32_t>(i))) {
+            actualLive++;
+        } else {
+            // Orphaned duplicate — tombstone it
+            records_[i].type = 0;
+            records_[i].name.clear();
+            records_[i].size = 0;
+            records_[i].modTime = 0;
+            lowerNames_[i].clear();
+        }
+    }
+
     // Build trigram index for fast filename search
     buildTrigramIndex();
     rebuildRecentCache();
 
-    liveCount_.store(static_cast<uint32_t>(records_.size()), std::memory_order_relaxed);
+    liveCount_.store(actualLive, std::memory_order_relaxed);
 
     // Initialize dirty page bitmap (no pages dirty after initial load)
     uint32_t pageCount = (static_cast<uint32_t>(records_.size()) + kRecordsPerPage - 1) / kRecordsPerPage;
@@ -545,9 +568,27 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
 
     uint32_t idx = static_cast<uint32_t>(records_.size());
     std::string fullPath = makeFullPath(record.path, record.name);
+    std::string lowerFull = me::toLower(fullPath);
     std::string lower = me::toLower(record.name);
 
     if (wal_) wal_->append(WALOp::Add, fullPath, record);
+
+    // Tombstone existing record at same path to prevent orphaned duplicates
+    auto existIt = pathIndex_.find(lowerFull);
+    if (existIt != pathIndex_.end()) {
+        uint32_t oldIdx = existIt->second;
+        time_t oldModTime = records_[oldIdx].modTime;
+        removeTrigramsForRecord(oldIdx);
+        records_[oldIdx].type = 0;
+        markPageDirty(oldIdx);
+        records_[oldIdx].name.clear();
+        records_[oldIdx].size = 0;
+        records_[oldIdx].modTime = 0;
+        lowerNames_[oldIdx].clear();
+        pathIndex_.erase(existIt);
+        liveCount_.fetch_sub(1, std::memory_order_relaxed);
+        removeFromRecentCache(oldIdx, oldModTime);
+    }
 
     // Intern path before moving record
     uint32_t pIdx = pathTable_.intern(record.path);
@@ -557,7 +598,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     records_.push_back(std::move(record));
     lowerNames_.push_back(lower);
     pathIndices_.push_back(pIdx);
-    pathIndex_[me::toLower(fullPath)] = idx;
+    pathIndex_[lowerFull] = idx;
 
     // Update trigram index
     addTrigramsForRecord(idx, lower);
@@ -793,12 +834,15 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
 
     for (size_t i = 0; i < snapSize; i++) {
         if (snapRecords[i].type == 0) continue;
+        // Skip orphaned duplicates: live records not referenced by pathIndex_
+        const std::string& origPath = snapPathTable.resolve(snapPathIndices[i]);
+        std::string fullPathLower = me::toLower(makeFullPath(origPath, snapRecords[i].name));
+        auto pathIt = snapPathIndex.find(fullPathLower);
+        if (pathIt == snapPathIndex.end() || pathIt->second != static_cast<uint32_t>(i)) continue;
         uint32_t newIdx = static_cast<uint32_t>(cdRecords.size());
         remap[static_cast<uint32_t>(i)] = newIdx;
-        const std::string& origPath = snapPathTable.resolve(snapPathIndices[i]);
         uint32_t newPIdx = cdPathTable.intern(origPath);
-        std::string fullPath = me::toLower(makeFullPath(origPath, snapRecords[i].name));
-        cdPathIndex[fullPath] = newIdx;
+        cdPathIndex[fullPathLower] = newIdx;
         cdLowerNames.push_back(std::move(snapLowerNames[i]));
         cdPathIndices.push_back(newPIdx);
         cdRecords.push_back(std::move(snapRecords[i]));

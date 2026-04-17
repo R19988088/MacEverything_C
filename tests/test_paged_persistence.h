@@ -131,8 +131,8 @@ static void testPagedIncrementalFlush() {
     check(reader.load(*engine2, &loadedMeta), "P32-2: reload succeeds");
     check(loadedMeta.lastEventId == 2, "P32-2: lastEventId updated to 2");
     // updateByPath tombstones old + appends new, so total records = 3073
-    // loadRecords counts all (including tombstones) as live
-    check(engine2->liveRecordCount() == 3073, "P32-2: 3073 total records (3072 original + 1 tombstone slot)");
+    // loadRecords correctly counts only live records (skipping tombstones)
+    check(engine2->liveRecordCount() == 3072, "P32-2: 3072 live records (tombstone excluded)");
 
     auto results = engine2->query("f1024.txt", 10);
     bool foundUpdated = false;

@@ -91,6 +91,7 @@ namespace fs = std::filesystem;
 #include "tests/test_event_driven_compaction.h"
 #include "tests/test_query_perf.h"
 #include "tests/test_record_dedup.h"
+#include "tests/test_query_perf_10m.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -100,6 +101,7 @@ static void printUsage(const char* prog) {
     std::cout << "Usage: " << prog << " [options] [root_path]\n";
     std::cout << "  --fast             Run fast unit tests only (3, 3b-3e, 5, 7-7f, 8-22)\n";
     std::cout << "  --slow             Run slow integration tests only (1, 4, 6)\n";
+    std::cout << "  --bench            Run performance benchmarks only (44, 46)\n";
     std::cout << "  --part <id>        Run specific part (can be repeated)\n";
     std::cout << "  --help             Show this help\n";
     std::cout << "  root_path          Root path for disk scan (default: /)\n";
@@ -129,7 +131,8 @@ static void printUsage(const char* prog) {
     std::cout << "  42 (WAL in-place replay),\n";
     std::cout << "  43 (event-driven compaction),\n";
     std::cout << "  44 (query performance),\n";
-    std::cout << "  45 (record deduplication)\n";
+    std::cout << "  45 (record deduplication),\n";
+    std::cout << "  46 (10M query performance)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -145,6 +148,9 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--fast") {
             explicitSelection = true;
             selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45"});
+        } else if (arg == "--bench") {
+            explicitSelection = true;
+            selectedParts.insert({"44", "46"});
         } else if (arg == "--slow") {
             explicitSelection = true;
             selectedParts.insert({"1", "4", "6"});
@@ -244,6 +250,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("43")) runEventDrivenCompactionTests();
     if (selectedParts.count("44")) runQueryPerfBenchmarks();
     if (selectedParts.count("45")) runRecordDedupTests();
+    if (selectedParts.count("46")) runLargeScalePerfBenchmarks();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

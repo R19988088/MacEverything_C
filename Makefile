@@ -1,10 +1,10 @@
 CXX = clang++
-CXXFLAGS = -std=c++20 -O2
+CXXFLAGS = -std=c++20 -O2 -Wall -Wextra
 FRAMEWORKS = -framework CoreServices
 CORE_SRCS = $(wildcard MacEverything/Core/*.cpp)
 
 # === Build targets ===
-.PHONY: test test-fast test-slow test-all build clean app dmg daemon help
+.PHONY: test test-fast test-slow test-all test-asan test-tsan build clean app dmg daemon help
 
 test_all: test_all.cpp $(CORE_SRCS)
 	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) $^ -o $@
@@ -23,6 +23,15 @@ lint-bridge:
 		-IMacEverything/Core -IMacEverything/Bridge \
 		MacEverything/Bridge/MacSearchBridge.mm \
 		MacEverything/Bridge/MacSearchBridge+Content.mm
+
+# === Sanitizer targets ===
+test-asan: test_all.cpp $(CORE_SRCS)
+	$(CXX) -std=c++20 -O1 -g -fsanitize=address -fno-omit-frame-pointer $(FRAMEWORKS) $^ -o test_all_asan
+	./test_all_asan --fast
+
+test-tsan: test_all.cpp $(CORE_SRCS)
+	$(CXX) -std=c++20 -O1 -g -fsanitize=thread $(FRAMEWORKS) $^ -o test_all_tsan
+	./test_all_tsan --fast
 
 # === Test targets ===
 test: test-fast
@@ -51,7 +60,7 @@ dmg: app
 
 # === Cleanup ===
 clean:
-	rm -f test_all benchmark maceverything-daemon
+	rm -f test_all test_all_asan test_all_tsan benchmark maceverything-daemon
 	rm -rf build/
 
 # === Help ===

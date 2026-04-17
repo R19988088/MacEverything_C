@@ -78,7 +78,7 @@ private:
     std::string basePath_;   // legacy v3 path (index.bin)
     std::string walPath_;
     CompactionTimer timer_;
-    std::mutex walMutex_;
+    mutable std::mutex walMutex_;
 
     /// Compute the next auto-compaction interval based on dirty ratio and WAL size.
     double computeAdaptiveInterval() const;

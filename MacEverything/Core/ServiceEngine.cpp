@@ -103,11 +103,6 @@ void ServiceEngine::startFullScan(StartupCallback completion) {
 
     LOG_INFO("ServiceEngine", "startFullScan from: " << config_.scanRoot);
 
-    // Prevent captures of `this` outliving the object
-    auto weakEngine = std::weak_ptr<SearchEngine>();  // not needed; use shared_from_this pattern
-    // We use GCD to run on background, capturing shared_ptrs to avoid dangling `this`.
-    // The ServiceEngine must outlive the scan (enforced by caller).
-
     dispatch_group_async(backgroundGroup_, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         auto scanStart = std::chrono::steady_clock::now();
         auto scanner = std::make_shared<DirectoryScanner>();
@@ -410,7 +405,7 @@ void ServiceEngine::compactIndex() {
 // ═══════════════════════════════════════════════════════
 
 void ServiceEngine::startHttpServer(uint16_t port) {
-    std::shared_lock lock(engineMutex_);
+    std::unique_lock lock(engineMutex_); // unique_lock: creates/mutates httpServer_
     if (!httpServer_) {
         httpServer_ = std::make_shared<HttpServer>();
     }
@@ -428,7 +423,7 @@ void ServiceEngine::startHttpServer(uint16_t port) {
 }
 
 void ServiceEngine::stopHttpServer() {
-    std::shared_lock lock(engineMutex_);
+    std::unique_lock lock(engineMutex_); // unique_lock: mutates httpServer_
     if (httpServer_) {
         httpServer_->stop();
     }
@@ -452,7 +447,8 @@ void ServiceEngine::shutdown() {
 
     // Wait for all background GCD blocks to complete (scan, content indexing, etc.)
     // This must happen BEFORE stopMonitoring() because the scan block may call startMonitoring().
-    dispatch_group_wait(backgroundGroup_, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+    // Use FOREVER: ServiceEngine is only destroyed at process exit, and GCD blocks capture `this`.
+    dispatch_group_wait(backgroundGroup_, DISPATCH_TIME_FOREVER);
 
     uint64_t lastEventId = watcher_ ? watcher_->getLastEventId() : 0;
 

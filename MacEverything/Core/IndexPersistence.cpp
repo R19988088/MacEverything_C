@@ -262,7 +262,7 @@ double IndexPersistence::computeAdaptiveInterval() const {
     // WAL size override
     size_t walSize = 0;
     {
-        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(walMutex_));
+        std::lock_guard<std::mutex> lock(walMutex_);
         if (wal_) walSize = wal_->currentSize();
     }
     if (walSize > kWALSizeFlushThreshold) {

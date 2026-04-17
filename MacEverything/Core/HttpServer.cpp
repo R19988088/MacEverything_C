@@ -10,6 +10,7 @@
 #include <sstream>
 #include <chrono>
 #include <algorithm>
+#include <cstdlib>
 
 // ---------------------------------------------------------------------------
 // JSON helpers
@@ -193,6 +194,10 @@ void HttpServer::acceptLoop() {
 }
 
 void HttpServer::handleConnection(int clientFd) {
+    // Set recv timeout to prevent a slow client from blocking the accept loop
+    struct timeval tv{5, 0}; // 5 seconds
+    ::setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     // Read request headers + partial body (up to 8KB initial read)
     char buf[8192];
     ssize_t n = ::recv(clientFd, buf, sizeof(buf) - 1, 0);
@@ -347,8 +352,9 @@ std::string HttpServer::handleSearch(
     uint32_t limit = 100;
     auto lIt = params.find("limit");
     if (lIt != params.end()) {
-        int v = std::atoi(lIt->second.c_str());
-        if (v > 0) limit = static_cast<uint32_t>(std::min(v, 10000));
+        char* endptr = nullptr;
+        long v = std::strtol(lIt->second.c_str(), &endptr, 10);
+        if (endptr != lIt->second.c_str() && v > 0) limit = static_cast<uint32_t>(std::min(v, 10000L));
     }
 
     auto engine = getEngine_();
@@ -394,8 +400,9 @@ std::string HttpServer::handleContentSearch(
     uint32_t limit = 100;
     auto lIt = params.find("limit");
     if (lIt != params.end()) {
-        int v = std::atoi(lIt->second.c_str());
-        if (v > 0) limit = static_cast<uint32_t>(std::min(v, 10000));
+        char* endptr = nullptr;
+        long v = std::strtol(lIt->second.c_str(), &endptr, 10);
+        if (endptr != lIt->second.c_str() && v > 0) limit = static_cast<uint32_t>(std::min(v, 10000L));
     }
 
     auto contentIndex = getContentIndex_();
@@ -435,8 +442,9 @@ std::string HttpServer::handleRecent(
     uint32_t limit = 100;
     auto lIt = params.find("limit");
     if (lIt != params.end()) {
-        int v = std::atoi(lIt->second.c_str());
-        if (v > 0) limit = static_cast<uint32_t>(std::min(v, 10000));
+        char* endptr = nullptr;
+        long v = std::strtol(lIt->second.c_str(), &endptr, 10);
+        if (endptr != lIt->second.c_str() && v > 0) limit = static_cast<uint32_t>(std::min(v, 10000L));
     }
 
     auto engine = getEngine_();
@@ -606,7 +614,6 @@ std::string HttpServer::jsonResponse(int status, const std::string& body) {
          << "Content-Type: application/json; charset=utf-8\r\n"
          << "Content-Length: " << body.size() << "\r\n"
          << "Connection: close\r\n"
-         << "Access-Control-Allow-Origin: *\r\n"
          << "\r\n"
          << body;
     return resp.str();

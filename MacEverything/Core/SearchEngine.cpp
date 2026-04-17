@@ -13,6 +13,39 @@
 #include <dispatch/dispatch.h>
 #include <CoreFoundation/CoreFoundation.h>
 
+// Thread-local reusable bitmap for dedup in query().
+// Avoids per-query allocation of vector<bool>(totalSize) which costs ~625KB memset for 5M records.
+// Uses dirty-tracking: only indices that were set are cleared, so reset is O(candidates) not O(totalSize).
+namespace {
+struct ReusableBitmap {
+    std::vector<bool> bits;
+    std::vector<uint32_t> dirty;
+
+    void prepare(size_t size) {
+        if (bits.size() < size) bits.resize(size, false);
+        // Clear only previously dirtied bits
+        for (uint32_t idx : dirty) bits[idx] = false;
+        dirty.clear();
+    }
+
+    void set(uint32_t idx) {
+        bits[idx] = true;
+        dirty.push_back(idx);
+    }
+
+    bool test(uint32_t idx) const { return bits[idx]; }
+
+    void populateFrom(const std::vector<uint32_t>& indices) {
+        for (uint32_t idx : indices) set(idx);
+    }
+};
+
+ReusableBitmap& threadLocalBitmap() {
+    thread_local ReusableBitmap bm;
+    return bm;
+}
+} // namespace
+
 std::string SearchEngine::makeFullPath(const std::string& path, const std::string& name) {
     if (path.empty() || path.back() == '/') return path + name;
     return path + "/" + name;
@@ -517,10 +550,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
                 // Step 3: Combine candidates and verify full path match
                 // Build dedup set from Phase 1
-                std::vector<bool> isCandidate(totalSize, false);
-                for (uint32_t idx : trigramCandidates) {
-                    isCandidate[idx] = true;
-                }
+                auto& isCandidate = threadLocalBitmap();
+                isCandidate.prepare(totalSize);
+                isCandidate.populateFrom(trigramCandidates);
 
                 if (pathPartUsable && pathFound && namePartUsable && nameFound) {
                     // Both indexes usable: expand pathIdxs to records, intersect with name candidates
@@ -532,7 +564,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         const auto& recIndices = pathIdxToRecords_[pi];
                         for (uint32_t idx : recIndices) {
                             if (records_[idx].type == 0) continue;
-                            if (isCandidate[idx]) continue;
+                            if (isCandidate.test(idx)) continue;
                             if (nameSet.find(idx) == nameSet.end()) continue;
                             // Verify full path substring match
                             const auto& rPath = pathTable_.resolve(pi);
@@ -553,7 +585,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     if (!candidatePathIdxs.empty()) {
                         // Mark joint results as candidates so path-only doesn't duplicate them
                         for (size_t mi = mergedBefore; mi < merged.size(); mi++) {
-                            isCandidate[merged[mi].idx] = true;
+                            isCandidate.set(merged[mi].idx);
                         }
                         for (uint32_t pi : candidatePathIdxs) {
                             if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
@@ -564,7 +596,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             const auto& recIndices = pathIdxToRecords_[pi];
                             for (uint32_t idx : recIndices) {
                                 if (records_[idx].type == 0) continue;
-                                if (isCandidate[idx]) continue;
+                                if (isCandidate.test(idx)) continue;
                                 std::string fullPath = me::toLower(makeFullPath(rPath, records_[idx].name));
                                 if (fullPath.find(lowerKey) == std::string::npos) continue;
                                 const auto& lowerName = lowerNames_[idx];
@@ -587,7 +619,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         const auto& recIndices = pathIdxToRecords_[pi];
                         for (uint32_t idx : recIndices) {
                             if (records_[idx].type == 0) continue;
-                            if (isCandidate[idx]) continue;
+                            if (isCandidate.test(idx)) continue;
                             std::string fullPath = me::toLower(makeFullPath(rPath, records_[idx].name));
                             if (fullPath.find(lowerKey) == std::string::npos) continue;
                             const auto& lowerName = lowerNames_[idx];
@@ -603,7 +635,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     for (uint32_t idx : nameRecCandidates) {
                         if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                         if (records_[idx].type == 0) continue;
-                        if (isCandidate[idx]) continue;
+                        if (isCandidate.test(idx)) continue;
                         const auto& rPath = pathTable_.resolve(pathIndices_[idx]);
                         std::string fullPath = me::toLower(makeFullPath(rPath, records_[idx].name));
                         if (fullPath.find(lowerKey) == std::string::npos) continue;
@@ -661,10 +693,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             // Expand pathIdx -> record indices, excluding Phase 1 trigramCandidates
             if (pathAllFound && !candidatePathIdxs.empty()) {
                 // Build O(1) bitset from trigramCandidates for dedup
-                std::vector<bool> isCandidate(totalSize, false);
-                for (uint32_t idx : trigramCandidates) {
-                    isCandidate[idx] = true;
-                }
+                auto& isCandidate = threadLocalBitmap();
+                isCandidate.prepare(totalSize);
+                isCandidate.populateFrom(trigramCandidates);
 
                 for (uint32_t pi : candidatePathIdxs) {
                     if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
@@ -678,7 +709,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     const auto& recIndices = pathIdxToRecords_[pi];
                     for (uint32_t idx : recIndices) {
                         if (records_[idx].type == 0) continue;
-                        if (isCandidate[idx]) continue; // already matched in Phase 1
+                        if (isCandidate.test(idx)) continue; // already matched in Phase 1
                         // Already confirmed path matches; check if name also matches for priority
                         const auto& lowerName = lowerNames_[idx];
                         uint8_t priority;
@@ -713,10 +744,12 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             const auto& pTable = pathTable_;
             const auto& pIndices = pathIndices_;
 
-            std::vector<bool> isCandidate(totalSize, false);
-            for (uint32_t idx : trigramCandidates) {
-                isCandidate[idx] = true;
-            }
+            auto& isCandidate = threadLocalBitmap();
+            isCandidate.prepare(totalSize);
+            isCandidate.populateFrom(trigramCandidates);
+            // Capture raw pointer for read-only access from dispatch_apply workers.
+            // Safe: dispatch_apply blocks until all workers complete.
+            const auto* isCandidateBits = &isCandidate.bits;
 
             dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
             const auto* genPtr = &queryGeneration_;
@@ -730,7 +763,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 for (size_t i = start; i < end; i++) {
                     if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
                     if (records[i].type == 0) continue;
-                    if (isCandidate[i]) continue;
+                    if ((*isCandidateBits)[i]) continue;
 
                     const auto& lowerName = lowerNames[i];
                     if (lowerName.find(lowerKey) != std::string::npos) {

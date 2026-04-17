@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C1000001 /* mcp_main.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C2000001; };
 		A1000001 /* MacEverythingApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001; };
 		A1000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002; };
 		A1000003 /* SearchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003; };
@@ -116,6 +117,8 @@
 		A2000038 /* ServiceEngine+Content.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = "ServiceEngine+Content.cpp"; sourceTree = "<group>"; };
 		B2000001 /* MacEverythingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEverythingUITests.swift; sourceTree = "<group>"; };
 		B2000002 /* MacEverythingUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacEverythingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C2000001 /* mcp_main.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = mcp_main.cpp; sourceTree = "<group>"; };
+		C2000099 /* MacEverythingMCP */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = MacEverythingMCP; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -180,12 +183,21 @@
 				A4000003 /* App */,
 				A4000004 /* Bridge */,
 				A4000005 /* Core */,
+				C4000001 /* CLI */,
 				A2000021 /* Assets.xcassets */,
 				A2000010 /* MacEverything-Bridging-Header.h */,
 				A2000011 /* Info.plist */,
 				A2000012 /* MacEverything.entitlements */,
 			);
 			path = MacEverything;
+			sourceTree = "<group>";
+		};
+		C4000001 /* CLI */ = {
+			isa = PBXGroup;
+			children = (
+				C2000001 /* mcp_main.cpp */,
+			);
+			path = CLI;
 			sourceTree = "<group>";
 		};
 		A4000003 /* App */ = {
@@ -273,6 +285,7 @@
 			children = (
 				A2000099 /* MacEverything.app */,
 				B2000002 /* MacEverythingUITests.xctest */,
+				C2000099 /* MacEverythingMCP */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -315,6 +328,21 @@
 			productReference = B2000002 /* MacEverythingUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		C5000001 /* MacEverythingMCP */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C7000001 /* Build configuration list for PBXNativeTarget "MacEverythingMCP" */;
+			buildPhases = (
+				C6000001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MacEverythingMCP;
+			productName = MacEverythingMCP;
+			productReference = C2000099 /* MacEverythingMCP */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -340,6 +368,7 @@
 			targets = (
 				A5000001 /* MacEverything */,
 				B5000001 /* MacEverythingUITests */,
+				C5000001 /* MacEverythingMCP */,
 			);
 		};
 /* End PBXProject section */
@@ -390,6 +419,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				B1000001 /* MacEverythingUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C6000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C1000001 /* mcp_main.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -528,6 +565,28 @@
 			};
 			name = Release;
 		};
+		C8000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		C8000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				GCC_OPTIMIZATION_LEVEL = 2;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -554,6 +613,15 @@
 			buildConfigurations = (
 				B8000001 /* Debug */,
 				B8000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C7000001 /* Build configuration list for PBXNativeTarget "MacEverythingMCP" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C8000001 /* Debug */,
+				C8000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

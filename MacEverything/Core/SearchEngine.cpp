@@ -295,15 +295,6 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         } else {
             useTrigramIndex = false;
         }
-        // Layer 1: Adaptive Trigram Bypass — when candidates are too many AND the dataset
-        // is large enough for cache misses to dominate, fall back to parallel sequential scan.
-        // At 4.8M records with 84K candidates, random access = 941ms vs sequential scan = ~80ms.
-        // At 500K records with 65K candidates, cache is still effective (~3ms).
-        // Threshold: candidates > 1% AND totalSize > 1M (cache pressure proxy)
-        if (trigramCandidates.size() > totalSize / 100 && totalSize > 1000000) {
-            useTrigramIndex = false;
-            trigramCandidates.clear();
-        }
         afterTrigram = std::chrono::steady_clock::now();
     }
 
@@ -314,7 +305,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (useTrigramIndex) {
         // Phase 1: Check trigram candidates for name matches
-        // Single-threaded with prefetch — fast for up to 50K candidates (Layer 1 bypasses above that)
+        // Single-threaded with prefetch
         for (size_t ci = 0; ci < trigramCandidates.size(); ci++) {
             if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
             uint32_t idx = trigramCandidates[ci];

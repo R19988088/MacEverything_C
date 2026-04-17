@@ -102,7 +102,18 @@ struct ResultRow: View {
             let fullPath = item.path + "/" + item.name
             return NSItemProvider(object: NSURL(fileURLWithPath: fullPath))
         }
-        .onTapGesture(count: 2) { openFile(item) }
+        .onTapGesture(count: 2) {
+            if NSEvent.modifierFlags.contains(.command) {
+                revealInFinder(item)
+            } else {
+                openFile(item)
+            }
+        }
+        .onTapGesture(count: 1) {
+            if NSEvent.modifierFlags.contains(.command) {
+                revealInFinder(item)
+            }
+        }
         .accessibilityIdentifier("resultRow")
     }
 

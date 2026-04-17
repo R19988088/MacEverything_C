@@ -53,7 +53,18 @@ struct ContentResultRow: View {
         .onDrag {
             return NSItemProvider(object: NSURL(fileURLWithPath: item.filePath))
         }
-        .onTapGesture(count: 2) { openFile() }
+        .onTapGesture(count: 2) {
+            if NSEvent.modifierFlags.contains(.command) {
+                revealInFinder()
+            } else {
+                openFile()
+            }
+        }
+        .onTapGesture(count: 1) {
+            if NSEvent.modifierFlags.contains(.command) {
+                revealInFinder()
+            }
+        }
         .accessibilityIdentifier("contentResultRow")
     }
 

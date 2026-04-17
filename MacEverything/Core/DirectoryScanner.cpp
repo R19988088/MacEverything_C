@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cerrno>
 #include <memory>
+#include <sys/stat.h>
 
 static constexpr size_t ATTR_BUF_SIZE = 1 * 1024 * 1024; // 1 MB per-thread buffer
 
@@ -31,11 +32,20 @@ void DirectoryScanner::scan(const std::string& rootPath) {
     stats_.otherCount.store(0, std::memory_order_relaxed);
     stats_.errorCount.store(0, std::memory_order_relaxed);
 
+    // Determine root device ID to skip cross-mount directories (autofs, devfs, etc.)
+    struct stat rootStat;
+    if (stat(rootPath.c_str(), &rootStat) == 0) {
+        rootDevId_ = rootStat.st_dev;
+    } else {
+        rootDevId_ = 0; // disable cross-mount filtering if stat fails
+    }
+
     unsigned numThreads = std::thread::hardware_concurrency();
     if (numThreads < 4) numThreads = 4;
     if (numThreads > 32) numThreads = 32;
 
-    LOG_INFO("Scanner", "Scanning from: " << rootPath << " (using " << numThreads << " threads)");
+    LOG_INFO("Scanner", "Scanning from: " << rootPath
+        << " (using " << numThreads << " threads, rootDev=" << rootDevId_ << ")");
 
     threadResults_.resize(numThreads);
     for (auto& v : threadResults_) {
@@ -248,6 +258,13 @@ void DirectoryScanner::scanDirectory(const std::string& dirPath, char* buffer, i
 
             // Process entry
             if (objtype == VDIR) {
+                // Skip cross-mount directories (autofs, devfs, NFS, etc.)
+                // These can block indefinitely on open() or produce irrelevant results.
+                if (rootDevId_ != 0 && devid != rootDevId_) {
+                    entry = nextEntry;
+                    continue;
+                }
+
                 if (tryVisitDirectory(devid, fileid)) {
                     std::string childPath = dirPath;
                     if (childPath.back() != '/') childPath += '/';

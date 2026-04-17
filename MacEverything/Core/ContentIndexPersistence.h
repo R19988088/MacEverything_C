@@ -123,6 +123,7 @@ private:
     std::mutex walMutex_;
     dispatch_queue_t compactionQueue_ = nullptr;
     std::atomic<bool> compactionScheduled_{false};
+    std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
 
     /// Schedule a compaction after kCompactionDelaySec. Called from walAppend*.
     void scheduleCompaction();

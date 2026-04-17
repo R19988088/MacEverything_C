@@ -47,6 +47,12 @@ static void runMcpProtocolTests() {
     std::cout << "  Part 49: MCP Protocol Tests\n";
     std::cout << "========================================\n\n";
 
+    // Skip if MCP binary not built
+    if (std::system("test -x ./build/Release/MacEverythingMCP") != 0) {
+        std::cout << "  [SKIP] MCP binary not found at ./build/Release/MacEverythingMCP\n";
+        return;
+    }
+
     // -- Test 1: Initialize --
     std::cout << "  --- Test 1: Initialize ---\n";
     {

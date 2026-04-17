@@ -245,6 +245,7 @@ ContentIndexPersistence::ContentIndexPersistence(std::shared_ptr<ContentIndex> i
 {}
 
 ContentIndexPersistence::~ContentIndexPersistence() {
+    alive_->store(false, std::memory_order_release);
     stopAutoCompactionAndWait();
     if (wal_) wal_->close();
 }
@@ -404,10 +405,12 @@ void ContentIndexPersistence::scheduleCompaction() {
     }
 
     auto delaySec = kCompactionDelaySec;
+    auto alive = alive_;  // prevent use-after-free: block outlives object
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(delaySec * NSEC_PER_SEC)),
         compactionQueue_,
         ^{
+            if (!alive->load(std::memory_order_acquire)) return;
             this->compactionScheduled_.store(false, std::memory_order_relaxed);
             this->compact();
         });

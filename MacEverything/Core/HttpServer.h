@@ -30,7 +30,7 @@ public:
     using EngineGetter = std::function<std::shared_ptr<SearchEngine>()>;
     using ContentIndexGetter = std::function<std::shared_ptr<ContentIndex>()>;
 
-    void start(uint16_t port,
+    bool start(uint16_t port,
                EngineGetter engineGetter,
                ContentIndexGetter contentIndexGetter);
     void stop();

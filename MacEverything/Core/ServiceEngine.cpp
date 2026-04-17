@@ -414,9 +414,13 @@ void ServiceEngine::startHttpServer(uint16_t port) {
     if (!httpServer_) {
         httpServer_ = std::make_shared<HttpServer>();
     }
-    httpServer_->start(port,
+    bool ok = httpServer_->start(port,
         [this]() -> std::shared_ptr<SearchEngine> { return this->safeEngine(); },
         [this]() -> std::shared_ptr<ContentIndex> { return this->safeContentIndex(); });
+    if (!ok) {
+        LOG_ERROR("ServiceEngine", "HTTP server failed to start on port " << port);
+        return;
+    }
 
     if (adminCallbacks.onRebuildIndex || adminCallbacks.onRebuildContentIndex) {
         httpServer_->setAdminCallbacks(adminCallbacks);

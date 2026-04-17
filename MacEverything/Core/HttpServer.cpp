@@ -78,10 +78,10 @@ HttpServer::~HttpServer() {
     stop();
 }
 
-void HttpServer::start(uint16_t port,
+bool HttpServer::start(uint16_t port,
                        EngineGetter engineGetter,
                        ContentIndexGetter contentIndexGetter) {
-    if (running_.load(std::memory_order_relaxed)) return;
+    if (running_.load(std::memory_order_relaxed)) return true;
 
     getEngine_ = std::move(engineGetter);
     getContentIndex_ = std::move(contentIndexGetter);
@@ -89,7 +89,7 @@ void HttpServer::start(uint16_t port,
     serverFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (serverFd_ < 0) {
         LOG_ERROR("HttpServer", "socket() failed: " << strerror(errno));
-        return;
+        return false;
     }
 
     int opt = 1;
@@ -100,18 +100,37 @@ void HttpServer::start(uint16_t port,
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    if (::bind(serverFd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        LOG_ERROR("HttpServer", "bind() failed on port " << port << ": " << strerror(errno));
+    // Retry bind on EADDRINUSE (previous instance may still be shutting down)
+    constexpr int kMaxBindRetries = 5;
+    bool bound = false;
+    for (int attempt = 0; attempt < kMaxBindRetries; attempt++) {
+        if (::bind(serverFd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
+            bound = true;
+            break;
+        }
+        if (errno != EADDRINUSE || attempt == kMaxBindRetries - 1) {
+            LOG_ERROR("HttpServer", "bind() failed on port " << port
+                << " after " << (attempt + 1) << " attempt(s): " << strerror(errno));
+            ::close(serverFd_);
+            serverFd_ = -1;
+            return false;
+        }
+        LOG_WARN("HttpServer", "bind() EADDRINUSE on port " << port
+            << ", retry " << (attempt + 1) << "/" << kMaxBindRetries);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    if (!bound) {
         ::close(serverFd_);
         serverFd_ = -1;
-        return;
+        return false;
     }
 
     if (::listen(serverFd_, 16) < 0) {
         LOG_ERROR("HttpServer", "listen() failed: " << strerror(errno));
         ::close(serverFd_);
         serverFd_ = -1;
-        return;
+        return false;
     }
 
     port_ = port;
@@ -119,6 +138,7 @@ void HttpServer::start(uint16_t port,
     acceptThread_ = std::thread(&HttpServer::acceptLoop, this);
 
     LOG_INFO("HttpServer", "Listening on 127.0.0.1:" << port_);
+    return true;
 }
 
 void HttpServer::stop() {

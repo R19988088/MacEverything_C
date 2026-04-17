@@ -320,6 +320,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     auto queryStart = std::chrono::steady_clock::now();
     std::string lowerKey = me::toLower(keyword);
     bool useGlob = isGlobPattern(lowerKey);
+    bool hasSlash = lowerKey.find('/') != std::string::npos;
 
     // C-1 fix: Hold shared_lock for the entire query to prevent use-after-free.
     // compactRecords() replaces records_/lowerNames_ via move-assign under unique_lock,
@@ -428,12 +429,162 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         } else {
         beforePhase2 = std::chrono::steady_clock::now();
 
-        // Try path trigram index for non-glob queries with keyword >= 3 chars and no '/'
+        // Determine which path strategy to use
+        // Slash-split: for queries like "tests/test_query" (relative, cross-boundary)
+        // but NOT for "/etc" or "/usr/local" (absolute path prefix queries starting with /)
+        bool isAbsPath = !lowerKey.empty() && lowerKey[0] == '/';
+        bool useSlashSplit = !pathTrigramIndex_.empty()
+                             && hasSlash
+                             && !isAbsPath;
         bool usePathTrigram = !pathTrigramIndex_.empty()
-                              && lowerKey.size() >= 3
-                              && lowerKey.find('/') == std::string::npos;
+                              && !useSlashSplit
+                              && !hasSlash
+                              && lowerKey.size() >= 3;
 
-        if (usePathTrigram) {
+        if (useSlashSplit) {
+            // Split keyword at last '/' into pathPart and namePart
+            size_t lastSlash = lowerKey.rfind('/');
+            std::string pathPart = lowerKey.substr(0, lastSlash);   // e.g. "tests"
+            std::string namePart = lowerKey.substr(lastSlash + 1);  // e.g. "test_query_perf"
+
+            bool pathPartUsable = pathPart.size() >= 3;
+            bool namePartUsable = namePart.size() >= 3;
+
+            // If both parts are too short, fall through to linear scan
+            if (!pathPartUsable && !namePartUsable) {
+                useSlashSplit = false;
+            } else {
+                // Step 1: Get candidate pathIdxs from pathTrigramIndex_ (if pathPart >= 3)
+                std::vector<uint32_t> candidatePathIdxs;
+                bool pathFound = true;
+                if (pathPartUsable) {
+                    auto pathTrigrams = ContentIndex::extractTrigrams(pathPart);
+                    std::unordered_set<Trigram> uniquePT(pathTrigrams.begin(), pathTrigrams.end());
+                    std::vector<const std::vector<uint32_t>*> pathPostingLists;
+                    for (Trigram t : uniquePT) {
+                        auto it = pathTrigramIndex_.find(t);
+                        if (it == pathTrigramIndex_.end()) { pathFound = false; break; }
+                        pathPostingLists.push_back(&it->second);
+                    }
+                    if (pathFound && !pathPostingLists.empty()) {
+                        std::sort(pathPostingLists.begin(), pathPostingLists.end(),
+                            [](const auto* a, const auto* b) { return a->size() < b->size(); });
+                        candidatePathIdxs.assign(pathPostingLists[0]->begin(), pathPostingLists[0]->end());
+                        for (size_t li = 1; li < pathPostingLists.size() && !candidatePathIdxs.empty(); li++) {
+                            const auto& other = *pathPostingLists[li];
+                            std::vector<uint32_t> isect;
+                            isect.reserve(std::min(candidatePathIdxs.size(), other.size()));
+                            std::set_intersection(candidatePathIdxs.begin(), candidatePathIdxs.end(),
+                                                  other.begin(), other.end(), std::back_inserter(isect));
+                            candidatePathIdxs = std::move(isect);
+                        }
+                    }
+                }
+
+                // Step 2: Get candidate record indices from nameTrigramIndex_ (if namePart >= 3)
+                std::vector<uint32_t> nameRecCandidates;
+                bool nameFound = true;
+                if (namePartUsable && !nameTrigramIndex_.empty()) {
+                    auto nameTrigrams = ContentIndex::extractTrigrams(namePart);
+                    std::unordered_set<Trigram> uniqueNT(nameTrigrams.begin(), nameTrigrams.end());
+                    std::vector<const std::vector<uint32_t>*> namePostingLists;
+                    for (Trigram t : uniqueNT) {
+                        auto it = nameTrigramIndex_.find(t);
+                        if (it == nameTrigramIndex_.end()) { nameFound = false; break; }
+                        namePostingLists.push_back(&it->second);
+                    }
+                    if (nameFound && !namePostingLists.empty()) {
+                        std::sort(namePostingLists.begin(), namePostingLists.end(),
+                            [](const auto* a, const auto* b) { return a->size() < b->size(); });
+                        nameRecCandidates.assign(namePostingLists[0]->begin(), namePostingLists[0]->end());
+                        for (size_t li = 1; li < namePostingLists.size() && !nameRecCandidates.empty(); li++) {
+                            const auto& other = *namePostingLists[li];
+                            std::vector<uint32_t> isect;
+                            isect.reserve(std::min(nameRecCandidates.size(), other.size()));
+                            std::set_intersection(nameRecCandidates.begin(), nameRecCandidates.end(),
+                                                  other.begin(), other.end(), std::back_inserter(isect));
+                            nameRecCandidates = std::move(isect);
+                        }
+                    }
+                }
+
+                // Step 3: Combine candidates and verify full path match
+                // Build dedup set from Phase 1
+                std::vector<bool> isCandidate(totalSize, false);
+                for (uint32_t idx : trigramCandidates) {
+                    isCandidate[idx] = true;
+                }
+
+                if (pathPartUsable && pathFound && namePartUsable && nameFound) {
+                    // Both indexes usable: expand pathIdxs to records, intersect with name candidates
+                    std::unordered_set<uint32_t> nameSet(nameRecCandidates.begin(), nameRecCandidates.end());
+                    for (uint32_t pi : candidatePathIdxs) {
+                        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                        if (pi >= pathIdxToRecords_.size()) continue;
+                        const auto& recIndices = pathIdxToRecords_[pi];
+                        for (uint32_t idx : recIndices) {
+                            if (records_[idx].type == 0) continue;
+                            if (isCandidate[idx]) continue;
+                            if (nameSet.find(idx) == nameSet.end()) continue;
+                            // Verify full path substring match
+                            const auto& rPath = pathTable_.resolve(pi);
+                            std::string fullPath = me::toLower(makeFullPath(rPath, records_[idx].name));
+                            if (fullPath.find(lowerKey) == std::string::npos) continue;
+                            const auto& lowerName = lowerNames_[idx];
+                            uint8_t priority = lowerName.find(lowerKey) != std::string::npos
+                                ? (lowerName == lowerKey ? 0 : (lowerName.compare(0, lowerKey.size(), lowerKey) == 0 ? 1 : 2))
+                                : 3;
+                            uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records_[idx].name.size());
+                            merged.push_back({idx, priority, pLen});
+                        }
+                    }
+                } else if (pathPartUsable && pathFound && !candidatePathIdxs.empty()) {
+                    // Only path index usable: expand paths, verify name + full path
+                    for (uint32_t pi : candidatePathIdxs) {
+                        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                        if (pi >= pathIdxToRecords_.size()) continue;
+                        const auto& rPath = pathTable_.resolve(pi);
+                        std::string lowerPath = me::toLower(rPath);
+                        if (lowerPath.find(pathPart) == std::string::npos) continue;
+                        const auto& recIndices = pathIdxToRecords_[pi];
+                        for (uint32_t idx : recIndices) {
+                            if (records_[idx].type == 0) continue;
+                            if (isCandidate[idx]) continue;
+                            std::string fullPath = me::toLower(makeFullPath(rPath, records_[idx].name));
+                            if (fullPath.find(lowerKey) == std::string::npos) continue;
+                            const auto& lowerName = lowerNames_[idx];
+                            uint8_t priority = lowerName.find(lowerKey) != std::string::npos
+                                ? (lowerName == lowerKey ? 0 : (lowerName.compare(0, lowerKey.size(), lowerKey) == 0 ? 1 : 2))
+                                : 3;
+                            uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records_[idx].name.size());
+                            merged.push_back({idx, priority, pLen});
+                        }
+                    }
+                } else if (namePartUsable && nameFound && !nameRecCandidates.empty()) {
+                    // Only name index usable: check name candidates, verify path + full path
+                    for (uint32_t idx : nameRecCandidates) {
+                        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                        if (records_[idx].type == 0) continue;
+                        if (isCandidate[idx]) continue;
+                        const auto& rPath = pathTable_.resolve(pathIndices_[idx]);
+                        std::string fullPath = me::toLower(makeFullPath(rPath, records_[idx].name));
+                        if (fullPath.find(lowerKey) == std::string::npos) continue;
+                        const auto& lowerName = lowerNames_[idx];
+                        uint8_t priority = lowerName.find(lowerKey) != std::string::npos
+                            ? (lowerName == lowerKey ? 0 : (lowerName.compare(0, lowerKey.size(), lowerKey) == 0 ? 1 : 2))
+                            : 3;
+                        uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records_[idx].name.size());
+                        merged.push_back({idx, priority, pLen});
+                    }
+                }
+                // else: both parts too short or trigrams missing → 0 results from split path
+                // (useSlashSplit was set to false above for both < 3, so won't reach here)
+            }
+        }
+
+        if (useSlashSplit) {
+            // Already handled above — skip to end of Phase 2
+        } else if (usePathTrigram) {
             // Extract trigrams from keyword and intersect pathTrigramIndex_ posting lists
             auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
             std::unordered_set<Trigram> uniquePathTrigrams(keyTrigrams.begin(), keyTrigrams.end());
@@ -688,7 +839,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 << "ms lock_wait=" << lockWaitMs << "ms trigram=" << trigramMs
                 << "ms phase1=" << phase1Ms << "ms phase2=" << phase2Ms
                 << "ms lock_held=" << lockHeldMs << "ms sort=" << sortMs
-                << "ms | path=trigram candidates=" << trigramCandidates.size()
+                << "ms | path=" << (hasSlash ? "trigram-split" : "trigram") << " candidates=" << trigramCandidates.size()
                 << " phase1=" << phase1Results
                 << " phase2=" << (merged.size() - phase1Results)
                 << " results=" << result.size() << " records=" << totalSize);

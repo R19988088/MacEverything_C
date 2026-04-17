@@ -546,9 +546,15 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             merged.push_back({idx, priority, pLen});
                         }
                     }
-                    // Fallback: if joint intersection found nothing (namePart is a directory
-                    // name, not a filename substring), retry with path-only matching
-                    if (merged.size() == mergedBefore && !candidatePathIdxs.empty()) {
+                    // Always supplement with path-only matching: the joint intersection
+                    // only finds records whose filename contains namePart, but for queries
+                    // like "/usr/local/bin" the user wants all files *under* that path,
+                    // not just files with "bin" in their name.
+                    if (!candidatePathIdxs.empty()) {
+                        // Mark joint results as candidates so path-only doesn't duplicate them
+                        for (size_t mi = mergedBefore; mi < merged.size(); mi++) {
+                            isCandidate[merged[mi].idx] = true;
+                        }
                         for (uint32_t pi : candidatePathIdxs) {
                             if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                             if (pi >= pathIdxToRecords_.size()) continue;

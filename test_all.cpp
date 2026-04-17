@@ -92,6 +92,7 @@ namespace fs = std::filesystem;
 #include "tests/test_query_perf.h"
 #include "tests/test_record_dedup.h"
 #include "tests/test_query_perf_10m.h"
+#include "tests/test_path_trigram.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -147,7 +148,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47"});
         } else if (arg == "--bench") {
             explicitSelection = true;
             selectedParts.insert({"44", "46"});
@@ -251,6 +252,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("44")) runQueryPerfBenchmarks();
     if (selectedParts.count("45")) runRecordDedupTests();
     if (selectedParts.count("46")) runLargeScalePerfBenchmarks();
+    if (selectedParts.count("47")) runPathTrigramTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

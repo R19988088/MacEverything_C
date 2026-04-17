@@ -77,6 +77,92 @@ void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
     }
 }
 
+// --- Path trigram index methods ---
+
+std::unordered_map<Trigram, std::vector<uint32_t>>
+SearchEngine::buildPathTrigramIndexFromData(const PathTable& pathTable) {
+    std::unordered_map<Trigram, std::vector<uint32_t>> index;
+    for (uint32_t pi = 0; pi < pathTable.size(); pi++) {
+        const auto& path = pathTable.resolve(pi);
+        std::string lowerPath = me::toLower(path);
+        auto trigrams = ContentIndex::extractTrigrams(lowerPath);
+        std::sort(trigrams.begin(), trigrams.end());
+        trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
+        for (Trigram t : trigrams) {
+            index[t].push_back(pi);
+        }
+    }
+    for (auto& [_, list] : index) {
+        std::sort(list.begin(), list.end());
+    }
+    return index;
+}
+
+std::vector<std::vector<uint32_t>>
+SearchEngine::buildPathIdxToRecordsFromData(const std::vector<FileRecord>& records,
+                                            const std::vector<uint32_t>& pathIndices,
+                                            uint32_t pathTableSize) {
+    std::vector<std::vector<uint32_t>> mapping(pathTableSize);
+    for (size_t i = 0; i < records.size(); i++) {
+        if (records[i].type == 0) continue;
+        uint32_t pi = pathIndices[i];
+        if (pi < mapping.size()) {
+            mapping[pi].push_back(static_cast<uint32_t>(i));
+        }
+    }
+    for (auto& list : mapping) {
+        std::sort(list.begin(), list.end());
+    }
+    return mapping;
+}
+
+void SearchEngine::buildPathTrigramIndex() {
+    pathTrigramIndex_ = buildPathTrigramIndexFromData(pathTable_);
+}
+
+void SearchEngine::rebuildPathIdxToRecords() {
+    pathIdxToRecords_ = buildPathIdxToRecordsFromData(records_, pathIndices_, pathTable_.size());
+}
+
+void SearchEngine::addPathTrigramsForRecord(uint32_t idx) {
+    if (idx >= pathIndices_.size()) return;
+    uint32_t pi = pathIndices_[idx];
+    // Ensure pathIdxToRecords_ is large enough
+    if (pi >= pathIdxToRecords_.size()) {
+        pathIdxToRecords_.resize(pi + 1);
+    }
+    auto& list = pathIdxToRecords_[pi];
+    auto pos = std::lower_bound(list.begin(), list.end(), idx);
+    list.insert(pos, idx);
+}
+
+void SearchEngine::removePathTrigramsForRecord(uint32_t idx) {
+    if (idx >= pathIndices_.size()) return;
+    uint32_t pi = pathIndices_[idx];
+    if (pi >= pathIdxToRecords_.size()) return;
+    auto& list = pathIdxToRecords_[pi];
+    auto pos = std::lower_bound(list.begin(), list.end(), idx);
+    if (pos != list.end() && *pos == idx) {
+        list.erase(pos);
+    }
+}
+
+void SearchEngine::ensurePathTrigramsForPathIdx(uint32_t pathIdx) {
+    // Check if this pathIdx already has entries in pathTrigramIndex_
+    const auto& path = pathTable_.resolve(pathIdx);
+    std::string lowerPath = me::toLower(path);
+    auto trigrams = ContentIndex::extractTrigrams(lowerPath);
+    std::sort(trigrams.begin(), trigrams.end());
+    trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
+    for (Trigram t : trigrams) {
+        auto& list = pathTrigramIndex_[t];
+        auto pos = std::lower_bound(list.begin(), list.end(), pathIdx);
+        if (pos == list.end() || *pos != pathIdx) {
+            list.insert(pos, pathIdx);
+        }
+    }
+}
+
 void SearchEngine::markPageDirty(uint32_t recordIndex) {
     uint32_t page = recordIndex / kRecordsPerPage;
     if (page < dirtyPages_.size()) {
@@ -184,6 +270,9 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
 
     // Build trigram index for fast filename search
     buildTrigramIndex();
+    // Build path trigram index for fast path-only search
+    buildPathTrigramIndex();
+    rebuildPathIdxToRecords();
     rebuildRecentCache();
 
     liveCount_.store(actualLive, std::memory_order_relaxed);
@@ -333,78 +422,155 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         afterPhase1 = std::chrono::steady_clock::now();
         phase1Results = merged.size();
 
-        // Phase 2: Linear scan for path-only matches (skip if maxResults already satisfied)
+        // Phase 2: Path-only matches (skip if maxResults already satisfied)
         if (maxResults > 0 && merged.size() >= maxResults) {
             beforePhase2 = afterPhase2 = afterPhase1;
         } else {
         beforePhase2 = std::chrono::steady_clock::now();
-        // Use parallel scan for path matches
-        unsigned numThreads = std::thread::hardware_concurrency();
-        if (numThreads < 1) numThreads = 1;
-        if (numThreads > 32) numThreads = 32;
 
-        size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+        // Try path trigram index for non-glob queries with keyword >= 3 chars and no '/'
+        bool usePathTrigram = !pathTrigramIndex_.empty()
+                              && lowerKey.size() >= 3
+                              && lowerKey.find('/') == std::string::npos;
 
-        std::vector<std::vector<Match>> threadResults(numThreads);
-        auto* threadResultsPtr = &threadResults;
+        if (usePathTrigram) {
+            // Extract trigrams from keyword and intersect pathTrigramIndex_ posting lists
+            auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
+            std::unordered_set<Trigram> uniquePathTrigrams(keyTrigrams.begin(), keyTrigrams.end());
 
-        // C-1 fix: Access records_/lowerNames_ directly — shared_lock held at function scope
-        // prevents compactRecords() from replacing these vectors.
-        const auto& records = records_;
-        const auto& lowerNames = lowerNames_;
-        const auto& pTable = pathTable_;
-        const auto& pIndices = pathIndices_;
+            std::vector<uint32_t> candidatePathIdxs;
+            bool pathAllFound = true;
 
-        // P1-1: Build O(1) bitset from sorted trigramCandidates to replace binary_search
-        std::vector<bool> isCandidate(totalSize, false);
-        for (uint32_t idx : trigramCandidates) {
-            isCandidate[idx] = true;
-        }
+            if (!uniquePathTrigrams.empty()) {
+                std::vector<const std::vector<uint32_t>*> pathPostingLists;
+                for (Trigram t : uniquePathTrigrams) {
+                    auto it = pathTrigramIndex_.find(t);
+                    if (it == pathTrigramIndex_.end()) {
+                        pathAllFound = false;
+                        break;
+                    }
+                    pathPostingLists.push_back(&it->second);
+                }
 
-        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
-        const auto* genPtr = &queryGeneration_;
-        uint64_t capturedGen = myGen;
-        dispatch_apply(numThreads, queue, ^(size_t t) {
-            size_t start = t * chunkSize;
-            size_t end = std::min(start + chunkSize, totalSize);
-            if (start >= end) return;
+                if (pathAllFound && !pathPostingLists.empty()) {
+                    std::sort(pathPostingLists.begin(), pathPostingLists.end(),
+                        [](const auto* a, const auto* b) { return a->size() < b->size(); });
 
-            auto& local = (*threadResultsPtr)[t];
-            for (size_t i = start; i < end; i++) {
-                if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
-                if (records[i].type == 0) continue;
-                // P1-1: O(1) bitset check instead of O(log N) binary_search
-                if (isCandidate[i]) continue;
-
-                // P2-3: Check name match first to avoid expensive lowerPath construction
-                const auto& lowerName = lowerNames[i];
-                if (lowerName.find(lowerKey) != std::string::npos) {
-                    uint8_t priority;
-                    if (lowerName == lowerKey) priority = 0;
-                    else if (lowerName.size() >= lowerKey.size() &&
-                             lowerName.compare(0, lowerKey.size(), lowerKey) == 0) priority = 1;
-                    else priority = 2;
-                    const auto& rPath = pTable.resolve(pIndices[i]);
-                    uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
-                    local.push_back({static_cast<uint32_t>(i), priority, pLen});
-                } else {
-                    // Only construct lowerPath when name doesn't match
-                    const auto& rPath = pTable.resolve(pIndices[i]);
-                    std::string lowerPath = me::toLower(makeFullPath(rPath, records[i].name));
-                    if (lowerPath.find(lowerKey) != std::string::npos) {
-                        uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
-                        local.push_back({static_cast<uint32_t>(i), uint8_t(3), pLen});
+                    candidatePathIdxs.assign(pathPostingLists[0]->begin(), pathPostingLists[0]->end());
+                    for (size_t li = 1; li < pathPostingLists.size() && !candidatePathIdxs.empty(); li++) {
+                        const auto& other = *pathPostingLists[li];
+                        std::vector<uint32_t> intersection;
+                        intersection.reserve(std::min(candidatePathIdxs.size(), other.size()));
+                        std::set_intersection(candidatePathIdxs.begin(), candidatePathIdxs.end(),
+                                              other.begin(), other.end(),
+                                              std::back_inserter(intersection));
+                        candidatePathIdxs = std::move(intersection);
                     }
                 }
             }
-        });
 
-        // Check if superseded after dispatch_apply
-        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+            // Expand pathIdx -> record indices, excluding Phase 1 trigramCandidates
+            if (pathAllFound && !candidatePathIdxs.empty()) {
+                // Build O(1) bitset from trigramCandidates for dedup
+                std::vector<bool> isCandidate(totalSize, false);
+                for (uint32_t idx : trigramCandidates) {
+                    isCandidate[idx] = true;
+                }
 
-        for (auto& v : threadResults) {
-            merged.insert(merged.end(), v.begin(), v.end());
+                for (uint32_t pi : candidatePathIdxs) {
+                    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                    if (pi >= pathIdxToRecords_.size()) continue;
+
+                    // Verify this path actually contains the keyword (false positive filter)
+                    const auto& rPath = pathTable_.resolve(pi);
+                    std::string lowerPath = me::toLower(rPath);
+                    if (lowerPath.find(lowerKey) == std::string::npos) continue;
+
+                    const auto& recIndices = pathIdxToRecords_[pi];
+                    for (uint32_t idx : recIndices) {
+                        if (records_[idx].type == 0) continue;
+                        if (isCandidate[idx]) continue; // already matched in Phase 1
+                        // Already confirmed path matches; check if name also matches for priority
+                        const auto& lowerName = lowerNames_[idx];
+                        uint8_t priority;
+                        if (lowerName.find(lowerKey) != std::string::npos) {
+                            if (lowerName == lowerKey) priority = 0;
+                            else if (lowerName.size() >= lowerKey.size() &&
+                                     lowerName.compare(0, lowerKey.size(), lowerKey) == 0) priority = 1;
+                            else priority = 2;
+                        } else {
+                            priority = 3; // path-only match
+                        }
+                        uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records_[idx].name.size());
+                        merged.push_back({idx, priority, pLen});
+                    }
+                }
+            }
+            // If !pathAllFound (some trigram missing), zero path matches — skip Phase 2 entirely
+
+        } else {
+            // Fallback: parallel linear scan for path matches (glob, short keywords, or keywords with '/')
+            unsigned numThreads = std::thread::hardware_concurrency();
+            if (numThreads < 1) numThreads = 1;
+            if (numThreads > 32) numThreads = 32;
+
+            size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+
+            std::vector<std::vector<Match>> threadResults(numThreads);
+            auto* threadResultsPtr = &threadResults;
+
+            const auto& records = records_;
+            const auto& lowerNames = lowerNames_;
+            const auto& pTable = pathTable_;
+            const auto& pIndices = pathIndices_;
+
+            std::vector<bool> isCandidate(totalSize, false);
+            for (uint32_t idx : trigramCandidates) {
+                isCandidate[idx] = true;
+            }
+
+            dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+            const auto* genPtr = &queryGeneration_;
+            uint64_t capturedGen = myGen;
+            dispatch_apply(numThreads, queue, ^(size_t t) {
+                size_t start = t * chunkSize;
+                size_t end = std::min(start + chunkSize, totalSize);
+                if (start >= end) return;
+
+                auto& local = (*threadResultsPtr)[t];
+                for (size_t i = start; i < end; i++) {
+                    if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
+                    if (records[i].type == 0) continue;
+                    if (isCandidate[i]) continue;
+
+                    const auto& lowerName = lowerNames[i];
+                    if (lowerName.find(lowerKey) != std::string::npos) {
+                        uint8_t priority;
+                        if (lowerName == lowerKey) priority = 0;
+                        else if (lowerName.size() >= lowerKey.size() &&
+                                 lowerName.compare(0, lowerKey.size(), lowerKey) == 0) priority = 1;
+                        else priority = 2;
+                        const auto& rPath = pTable.resolve(pIndices[i]);
+                        uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
+                        local.push_back({static_cast<uint32_t>(i), priority, pLen});
+                    } else {
+                        const auto& rPath = pTable.resolve(pIndices[i]);
+                        std::string lowerPath = me::toLower(makeFullPath(rPath, records[i].name));
+                        if (lowerPath.find(lowerKey) != std::string::npos) {
+                            uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records[i].name.size());
+                            local.push_back({static_cast<uint32_t>(i), uint8_t(3), pLen});
+                        }
+                    }
+                }
+            });
+
+            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+
+            for (auto& v : threadResults) {
+                merged.insert(merged.end(), v.begin(), v.end());
+            }
         }
+
         afterPhase2 = std::chrono::steady_clock::now();
         } // end Phase 2 maxResults check
     } else {
@@ -570,6 +736,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
         uint32_t oldIdx = existIt->second;
         time_t oldModTime = records_[oldIdx].modTime;
         removeTrigramsForRecord(oldIdx);
+        removePathTrigramsForRecord(oldIdx);
         records_[oldIdx].type = 0;
         markPageDirty(oldIdx);
         records_[oldIdx].name.clear();
@@ -583,6 +750,10 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
 
     // Intern path before moving record
     uint32_t pIdx = pathTable_.intern(record.path);
+    // If this is a new path, update pathTrigramIndex_
+    if (pIdx >= pathIdxToRecords_.size()) {
+        ensurePathTrigramsForPathIdx(pIdx);
+    }
     record.path.clear();
     record.path.shrink_to_fit();
 
@@ -593,6 +764,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
 
     // Update trigram index
     addTrigramsForRecord(idx, lower);
+    addPathTrigramsForRecord(idx);
 
     // Dirty page tracking
     if (idx / kRecordsPerPage >= dirtyPages_.size()) {
@@ -618,6 +790,7 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
     time_t oldModTime = records_[idx].modTime;
     // Clean up trigram index (must happen before clearing lowerNames_)
     removeTrigramsForRecord(idx);
+    removePathTrigramsForRecord(idx);
     records_[idx].type = 0;
     markPageDirty(idx);
     records_[idx].name.clear();
@@ -653,6 +826,7 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
             time_t oldModTime = records_[idx].modTime;
             // Clean up trigram index (must happen before clearing lowerNames_)
             removeTrigramsForRecord(idx);
+            removePathTrigramsForRecord(idx);
             records_[idx].type = 0;
             markPageDirty(idx);
             records_[idx].name.clear();
@@ -693,6 +867,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
             }
 
             removeTrigramsForRecord(idx);
+            removePathTrigramsForRecord(idx);
             records_[idx].type = 0;
             markPageDirty(idx);
             records_[idx].name.clear();
@@ -716,6 +891,9 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
         if (wal_) wal_->append(WALOp::Update, fullPath, record);
 
         uint32_t pIdx = pathTable_.intern(record.path);
+        if (pIdx >= pathIdxToRecords_.size()) {
+            ensurePathTrigramsForPathIdx(pIdx);
+        }
         record.path.clear();
         record.path.shrink_to_fit();
 
@@ -724,6 +902,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
         pathIndices_.push_back(pIdx);
         pathIndex_[me::toLower(fullPath)] = newIdx;
         addTrigramsForRecord(newIdx, lower);
+        addPathTrigramsForRecord(newIdx);
         if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
             dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
         }
@@ -749,6 +928,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
         time_t oldModTime = records_[idx].modTime;
         // Clean up trigram index (must happen before clearing lowerNames_)
         removeTrigramsForRecord(idx);
+        removePathTrigramsForRecord(idx);
         records_[idx].type = 0;
         markPageDirty(idx);
         records_[idx].name.clear();
@@ -767,6 +947,9 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
 
     // Intern path before moving record
     uint32_t pIdx = pathTable_.intern(updated.path);
+    if (pIdx >= pathIdxToRecords_.size()) {
+        ensurePathTrigramsForPathIdx(pIdx);
+    }
     updated.path.clear();
     updated.path.shrink_to_fit();
 
@@ -775,6 +958,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     pathIndices_.push_back(pIdx);
     pathIndex_[me::toLower(newFullPath)] = newIdx;
     addTrigramsForRecord(newIdx, lower);
+    addPathTrigramsForRecord(newIdx);
     if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
         dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
     }
@@ -840,8 +1024,10 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     }
     uint32_t cdLiveCount = static_cast<uint32_t>(cdRecords.size());
 
-    // Build trigram index and recent cache outside any lock
+    // Build trigram index, path trigram index, and recent cache outside any lock
     auto cdTrigramIndex = buildTrigramIndexFromData(cdRecords, cdLowerNames);
+    auto cdPathTrigramIndex = buildPathTrigramIndexFromData(cdPathTable);
+    auto cdPathIdxToRecords = buildPathIdxToRecordsFromData(cdRecords, cdPathIndices, cdPathTable.size());
     auto cdRecentCache = buildRecentCacheFromData(cdRecords, kRecentCacheSize);
 
     LOG_INFO("SearchEngine", "COW compaction Phase 3: swapping data, compacted "
@@ -867,6 +1053,8 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         pathTable_ = std::move(cdPathTable);
         pathIndex_ = std::move(cdPathIndex);
         nameTrigramIndex_ = std::move(cdTrigramIndex);
+        pathTrigramIndex_ = std::move(cdPathTrigramIndex);
+        pathIdxToRecords_ = std::move(cdPathIdxToRecords);
         recentCache_ = std::move(cdRecentCache);
 
         // Replay new records appended during Phase 2
@@ -876,6 +1064,9 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
             uint32_t newIdx = static_cast<uint32_t>(records_.size());
             const std::string& origPath = oldPathTable.resolve(oldPathIndices[i]);
             uint32_t pIdx = pathTable_.intern(origPath);
+            if (pIdx >= pathIdxToRecords_.size()) {
+                ensurePathTrigramsForPathIdx(pIdx);
+            }
             std::string fullPath = me::toLower(makeFullPath(origPath, oldRecords[i].name));
             std::string lower = std::move(oldLowerNames[i]);
             pathIndex_[fullPath] = newIdx;
@@ -884,6 +1075,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
             addTrigramsForRecord(newIdx, lower);
             addToRecentCache(newIdx, oldRecords[i].modTime);
             records_.push_back(std::move(oldRecords[i]));
+            addPathTrigramsForRecord(newIdx);
             cdLiveCount++;
             replayedAdds++;
         }
@@ -898,6 +1090,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
             uint32_t newIdx = it->second;
             if (newIdx < records_.size() && records_[newIdx].type != 0) {
                 removeTrigramsForRecord(newIdx);
+                removePathTrigramsForRecord(newIdx);
                 time_t oldMod = records_[newIdx].modTime;
                 records_[newIdx].type = 0;
                 records_[newIdx].name.clear();
@@ -1016,6 +1209,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             if (existIt != pathIndex_.end()) {
                 uint32_t oldIdx = existIt->second;
                 removeTrigramsForRecord(oldIdx);
+                removePathTrigramsForRecord(oldIdx);
                 records_[oldIdx].type = 0;
                 markPageDirty(oldIdx);
                 records_[oldIdx].name.clear();
@@ -1029,6 +1223,9 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             uint32_t idx = static_cast<uint32_t>(records_.size());
             std::string lower = me::toLower(e.record.name);
             uint32_t pIdx = pathTable_.intern(e.record.path);
+            if (pIdx >= pathIdxToRecords_.size()) {
+                ensurePathTrigramsForPathIdx(pIdx);
+            }
             e.record.path.clear();
             e.record.path.shrink_to_fit();
 
@@ -1037,6 +1234,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             pathIndices_.push_back(pIdx);
             pathIndex_[lowerFull] = idx;
             addTrigramsForRecord(idx, lower);
+            addPathTrigramsForRecord(idx);
             if (idx / kRecordsPerPage >= dirtyPages_.size()) {
                 dirtyPages_.resize(idx / kRecordsPerPage + 1, false);
             }
@@ -1049,6 +1247,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             if (it == pathIndex_.end()) break; // silently ignore
             uint32_t idx = it->second;
             removeTrigramsForRecord(idx);
+            removePathTrigramsForRecord(idx);
             records_[idx].type = 0;
             markPageDirty(idx);
             records_[idx].name.clear();
@@ -1065,6 +1264,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             if (it != pathIndex_.end()) {
                 uint32_t oldIdx = it->second;
                 removeTrigramsForRecord(oldIdx);
+                removePathTrigramsForRecord(oldIdx);
                 records_[oldIdx].type = 0;
                 markPageDirty(oldIdx);
                 records_[oldIdx].name.clear();
@@ -1078,6 +1278,9 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             uint32_t newIdx = static_cast<uint32_t>(records_.size());
             std::string lower = me::toLower(e.record.name);
             uint32_t pIdx = pathTable_.intern(e.record.path);
+            if (pIdx >= pathIdxToRecords_.size()) {
+                ensurePathTrigramsForPathIdx(pIdx);
+            }
             e.record.path.clear();
             e.record.path.shrink_to_fit();
 
@@ -1086,6 +1289,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             pathIndices_.push_back(pIdx);
             pathIndex_[lowerFull] = newIdx;
             addTrigramsForRecord(newIdx, lower);
+            addPathTrigramsForRecord(newIdx);
             if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
                 dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
             }

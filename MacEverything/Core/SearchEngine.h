@@ -215,12 +215,27 @@ private:
     // Trigram inverted index for fast filename search
     std::unordered_map<Trigram, std::vector<uint32_t>> nameTrigramIndex_; // trigram -> record indices
 
+    // Path trigram index: two-level lookup for fast path-only matching
+    std::unordered_map<Trigram, std::vector<uint32_t>> pathTrigramIndex_; // trigram -> sorted pathIdx
+    std::vector<std::vector<uint32_t>> pathIdxToRecords_; // pathIdx -> sorted record indices
+
     /// Build trigram index from lowerNames_ (called inside loadRecords/compactRecords under lock)
     void buildTrigramIndex();
     /// Add trigrams for a single record to the index
     void addTrigramsForRecord(uint32_t idx, const std::string& lowerName);
     /// Remove trigrams for a single record from the index
     void removeTrigramsForRecord(uint32_t idx);
+
+    /// Build path trigram index from pathTable_
+    void buildPathTrigramIndex();
+    /// Rebuild pathIdx -> record indices mapping
+    void rebuildPathIdxToRecords();
+    /// Add a record to pathIdxToRecords_ (sorted insert)
+    void addPathTrigramsForRecord(uint32_t idx);
+    /// Remove a record from pathIdxToRecords_ (sorted remove)
+    void removePathTrigramsForRecord(uint32_t idx);
+    /// Ensure pathTrigramIndex_ has entries for a given pathIdx (called when PathTable grows)
+    void ensurePathTrigramsForPathIdx(uint32_t pathIdx);
 
     static bool isGlobPattern(const std::string& s);
     static bool globMatch(const std::string& pattern, const std::string& text);
@@ -255,6 +270,16 @@ private:
     static std::unordered_map<Trigram, std::vector<uint32_t>>
         buildTrigramIndexFromData(const std::vector<FileRecord>& records,
                                   const std::vector<std::string>& lowerNames);
+
+    /// Build path trigram index from standalone PathTable (used by COW compaction)
+    static std::unordered_map<Trigram, std::vector<uint32_t>>
+        buildPathTrigramIndexFromData(const PathTable& pathTable);
+
+    /// Build pathIdx -> record indices mapping from standalone data (used by COW compaction)
+    static std::vector<std::vector<uint32_t>>
+        buildPathIdxToRecordsFromData(const std::vector<FileRecord>& records,
+                                      const std::vector<uint32_t>& pathIndices,
+                                      uint32_t pathTableSize);
 
     /// Build recent cache from standalone data (no member access, used by COW compaction)
     static std::set<RecentEntry>

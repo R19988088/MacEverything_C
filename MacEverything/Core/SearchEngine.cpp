@@ -524,6 +524,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
                 if (pathPartUsable && pathFound && namePartUsable && nameFound) {
                     // Both indexes usable: expand pathIdxs to records, intersect with name candidates
+                    size_t mergedBefore = merged.size();
                     std::unordered_set<uint32_t> nameSet(nameRecCandidates.begin(), nameRecCandidates.end());
                     for (uint32_t pi : candidatePathIdxs) {
                         if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
@@ -543,6 +544,30 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                                 : 3;
                             uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records_[idx].name.size());
                             merged.push_back({idx, priority, pLen});
+                        }
+                    }
+                    // Fallback: if joint intersection found nothing (namePart is a directory
+                    // name, not a filename substring), retry with path-only matching
+                    if (merged.size() == mergedBefore && !candidatePathIdxs.empty()) {
+                        for (uint32_t pi : candidatePathIdxs) {
+                            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                            if (pi >= pathIdxToRecords_.size()) continue;
+                            const auto& rPath = pathTable_.resolve(pi);
+                            std::string lowerPath = me::toLower(rPath);
+                            if (lowerPath.find(pathPart) == std::string::npos) continue;
+                            const auto& recIndices = pathIdxToRecords_[pi];
+                            for (uint32_t idx : recIndices) {
+                                if (records_[idx].type == 0) continue;
+                                if (isCandidate[idx]) continue;
+                                std::string fullPath = me::toLower(makeFullPath(rPath, records_[idx].name));
+                                if (fullPath.find(lowerKey) == std::string::npos) continue;
+                                const auto& lowerName = lowerNames_[idx];
+                                uint8_t priority = lowerName.find(lowerKey) != std::string::npos
+                                    ? (lowerName == lowerKey ? 0 : (lowerName.compare(0, lowerKey.size(), lowerKey) == 0 ? 1 : 2))
+                                    : 3;
+                                uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + records_[idx].name.size());
+                                merged.push_back({idx, priority, pLen});
+                            }
                         }
                     }
                 } else if (pathPartUsable && pathFound && !candidatePathIdxs.empty()) {

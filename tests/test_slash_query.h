@@ -113,4 +113,65 @@ static void runSlashQueryTests() {
         auto res2 = engine.query("tests_helper");
         check(res2.size() == 2, "Non-slash query: 'tests_helper' finds both files");
     }
+
+    // -- Test 7: Absolute path slash query --
+    std::cout << "\n  --- Test 7: Absolute path slash query ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"brew", "/usr/local/bin", 1, 100, 1000});
+        records.push_back({"lib.a", "/usr/local/lib", 1, 200, 2000});
+        records.push_back({"readme.txt", "/usr/share/doc", 1, 300, 3000});
+        engine.loadRecords(std::move(records));
+
+        // "/usr/local" should match both files under /usr/local/
+        auto res = engine.query("/usr/local");
+        check(res.size() == 2, "AbsPath slash query: '/usr/local' matches 2 files");
+    }
+
+    // -- Test 8: Absolute path root-level slash query --
+    std::cout << "\n  --- Test 8: Absolute path root-level query ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"hosts", "/etc", 1, 100, 1000});
+        records.push_back({"passwd", "/etc", 1, 200, 2000});
+        records.push_back({"config.txt", "/home/user", 1, 300, 3000});
+        engine.loadRecords(std::move(records));
+
+        // "/etc" — pathPart="", namePart="etc" (3 chars, usable via nameTrigramIndex_)
+        auto res = engine.query("/etc");
+        check(res.size() == 2, "AbsPath slash query: '/etc' matches 2 files");
+    }
+
+    // -- Test 9: Absolute path very short fallback --
+    std::cout << "\n  --- Test 9: Absolute path very short fallback ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"x", "/a", 1, 100, 1000});
+        records.push_back({"y", "/b", 1, 200, 2000});
+        engine.loadRecords(std::move(records));
+
+        // "/a" — pathPart="" (0), namePart="a" (1) — both < 3, fallback linear scan
+        auto res = engine.query("/a");
+        check(res.size() == 1, "AbsPath slash query: '/a' fallback finds 1 result");
+    }
+
+    // -- Test 10: Absolute path deep query --
+    std::cout << "\n  --- Test 10: Absolute path deep query ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"brew", "/usr/local/bin", 1, 100, 1000});
+        records.push_back({"python3", "/usr/local/bin", 1, 200, 2000});
+        records.push_back({"gcc", "/usr/bin", 1, 300, 3000});
+        records.push_back({"lib.a", "/usr/local/lib", 1, 400, 4000});
+        engine.loadRecords(std::move(records));
+
+        // "/usr/local/bin" — pathPart="/usr/local", namePart="bin"
+        // Should match brew and python3 in /usr/local/bin, NOT gcc in /usr/bin
+        auto res = engine.query("/usr/local/bin");
+        check(res.size() == 2, "AbsPath slash query: '/usr/local/bin' matches 2 files");
+    }
 }

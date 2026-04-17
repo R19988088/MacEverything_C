@@ -341,6 +341,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     std::vector<uint32_t> trigramCandidates;
     bool useTrigramIndex = false;
+    bool useSlashSplit = false;
 
     // --- Trigram-accelerated path for non-glob queries with keyword >= 3 chars ---
     useTrigramIndex = !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
@@ -430,12 +431,10 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         beforePhase2 = std::chrono::steady_clock::now();
 
         // Determine which path strategy to use
-        // Slash-split: for queries like "tests/test_query" (relative, cross-boundary)
-        // but NOT for "/etc" or "/usr/local" (absolute path prefix queries starting with /)
-        bool isAbsPath = !lowerKey.empty() && lowerKey[0] == '/';
-        bool useSlashSplit = !pathTrigramIndex_.empty()
-                             && hasSlash
-                             && !isAbsPath;
+        // Slash-split: for queries like "tests/test_query" or "/usr/local/bin"
+        // pathTrigramIndex_ indexes full directory paths (including '/'), so absolute
+        // paths can also use slash-split — their trigrams exist in the index.
+        useSlashSplit = !pathTrigramIndex_.empty() && hasSlash;
         bool usePathTrigram = !pathTrigramIndex_.empty()
                               && !useSlashSplit
                               && !hasSlash
@@ -446,6 +445,14 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             size_t lastSlash = lowerKey.rfind('/');
             std::string pathPart = lowerKey.substr(0, lastSlash);   // e.g. "tests"
             std::string namePart = lowerKey.substr(lastSlash + 1);  // e.g. "test_query_perf"
+
+            // When pathPart is empty (e.g., "/etc" → pathPart="", namePart="etc"),
+            // use the full lowerKey as pathPart for pathTrigramIndex_ lookup, since
+            // the query is really a path pattern like "/etc" and pathTrigramIndex_
+            // indexes full directory paths including '/'.
+            if (pathPart.empty() && lowerKey.size() >= 3) {
+                pathPart = lowerKey;
+            }
 
             bool pathPartUsable = pathPart.size() >= 3;
             bool namePartUsable = namePart.size() >= 3;
@@ -839,7 +846,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 << "ms lock_wait=" << lockWaitMs << "ms trigram=" << trigramMs
                 << "ms phase1=" << phase1Ms << "ms phase2=" << phase2Ms
                 << "ms lock_held=" << lockHeldMs << "ms sort=" << sortMs
-                << "ms | path=" << (hasSlash ? "trigram-split" : "trigram") << " candidates=" << trigramCandidates.size()
+                << "ms | path=" << (useSlashSplit ? "trigram-split" : "trigram") << " candidates=" << trigramCandidates.size()
                 << " phase1=" << phase1Results
                 << " phase2=" << (merged.size() - phase1Results)
                 << " results=" << result.size() << " records=" << totalSize);

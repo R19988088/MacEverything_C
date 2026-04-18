@@ -60,6 +60,15 @@ uint32_t SearchEngine::internPath(const std::string& path) {
     return pIdx;
 }
 
+uint8_t SearchEngine::namePriority(const char* nameData, uint16_t nameLen,
+                                   const char* keyData, size_t keyLen) {
+    if (nameLen == keyLen && memcmp(nameData, keyData, nameLen) == 0)
+        return 0; // exact match
+    if (nameLen >= keyLen && memcmp(nameData, keyData, keyLen) == 0)
+        return 1; // starts with
+    return 2; // contains
+}
+
 std::unordered_map<Trigram, std::vector<uint32_t>>
 SearchEngine::buildTrigramIndexFromData(const std::vector<FileRecord>& records,
                                         const StringPool& namePool) {
@@ -464,15 +473,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             const char* nameData = namePool_.data(idx);
             uint16_t nameLen = namePool_.length(idx);
             if (me::simdContains(nameData, nameLen, lowerKey.data(), lowerKey.size())) {
-                uint8_t priority;
-                if (nameLen == lowerKey.size() && memcmp(nameData, lowerKey.data(), nameLen) == 0) {
-                    priority = 0;
-                } else if (nameLen >= lowerKey.size() &&
-                           memcmp(nameData, lowerKey.data(), lowerKey.size()) == 0) {
-                    priority = 1;
-                } else {
-                    priority = 2;
-                }
+                uint8_t priority = namePriority(nameData, nameLen, lowerKey.data(), lowerKey.size());
                 uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[idx]) + 1 + nameLen);
                 merged.push_back({idx, priority, pLen});
             }
@@ -604,8 +605,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             memcpy(pathBuf.data() + pl + 1, nd, nl);
                             if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                             uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
-                                ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
-                                : 3;
+                                ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
                             uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
                             merged.push_back({idx, priority, pLen});
                         }
@@ -639,8 +639,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                                 memcpy(pathBuf.data() + pl2 + 1, nd, nl);
                                 if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                                 uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
-                                    ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
-                                    : 3;
+                                    ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
                                 uint32_t pLen = static_cast<uint32_t>(pl2 + 1 + nl);
                                 merged.push_back({idx, priority, pLen});
                             }
@@ -668,8 +667,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             memcpy(pathBuf.data() + pl + 1, nd, nl);
                             if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                             uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
-                                ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
-                                : 3;
+                                ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
                             uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
                             merged.push_back({idx, priority, pLen});
                         }
@@ -692,8 +690,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         memcpy(pathBuf.data() + pl + 1, nd, nl);
                         if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                         uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
-                            ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
-                            : 3;
+                            ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
                         uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
                         merged.push_back({idx, priority, pLen});
                     }
@@ -762,15 +759,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         if (isCandidate.test(idx)) continue;
                         const char* nd = namePool_.data(idx);
                         uint16_t nl = namePool_.length(idx);
-                        uint8_t priority;
-                        if (me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())) {
-                            if (nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) priority = 0;
-                            else if (nl >= lowerKey.size() &&
-                                     memcmp(nd, lowerKey.data(), lowerKey.size()) == 0) priority = 1;
-                            else priority = 2;
-                        } else {
-                            priority = 3;
-                        }
+                        uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
+                            ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
                         uint32_t pLen = static_cast<uint32_t>(lowerPath.size() + 1 + nl);
                         merged.push_back({idx, priority, pLen});
                     }
@@ -830,11 +820,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     const char* nd = namePool.data(static_cast<uint32_t>(i));
                     uint16_t nl = namePool.length(static_cast<uint32_t>(i));
                     if (me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())) {
-                        uint8_t priority;
-                        if (nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) priority = 0;
-                        else if (nl >= lowerKey.size() &&
-                                 memcmp(nd, lowerKey.data(), lowerKey.size()) == 0) priority = 1;
-                        else priority = 2;
+                        uint8_t priority = namePriority(nd, nl, lowerKey.data(), lowerKey.size());
                         uint32_t pLen = static_cast<uint32_t>(lowerPathPool.length(pIndices[i]) + 1 + nl);
                         local.push_back({static_cast<uint32_t>(i), priority, pLen});
                     } else {
@@ -941,15 +927,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 }
 
                 if (nameMatch || pathMatch) {
-                    uint8_t priority;
-                    if (nameMatch) {
-                        if (nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) priority = 0;
-                        else if (nl >= lowerKey.size() &&
-                                 memcmp(nd, lowerKey.data(), lowerKey.size()) == 0) priority = 1;
-                        else priority = 2;
-                    } else {
-                        priority = 3;
-                    }
+                    uint8_t priority = nameMatch ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
                     uint32_t pLen = static_cast<uint32_t>(lowerPathPool.length(pIndices[i]) + 1 + nl);
                     local.push_back({static_cast<uint32_t>(i), priority, pLen});
                 }

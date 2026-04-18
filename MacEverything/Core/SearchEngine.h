@@ -304,6 +304,10 @@ private:
     void addToRecentCache(uint32_t idx, time_t modTime);
     void removeFromRecentCache(uint32_t idx, time_t modTime);
 
+    /// Compute match priority: 0=exact, 1=starts-with, 2=contains.
+    static uint8_t namePriority(const char* nameData, uint16_t nameLen,
+                                const char* keyData, size_t keyLen);
+
     /// Build trigram index from standalone data (no member access, used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>
         buildTrigramIndexFromData(const std::vector<FileRecord>& records,

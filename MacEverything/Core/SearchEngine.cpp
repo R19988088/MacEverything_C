@@ -104,6 +104,45 @@ std::vector<uint32_t> SearchEngine::intersectPostingLists(
     return result;
 }
 
+std::vector<uint32_t> SearchEngine::intersectPostingListsMulti(
+    const std::unordered_map<Trigram, std::vector<uint32_t>>& index,
+    const std::vector<std::string>& segments,
+    bool& allFound) {
+    allFound = true;
+    // Collect trigrams from all segments and deduplicate
+    std::unordered_set<Trigram> unique;
+    for (const auto& seg : segments) {
+        auto segTrigrams = ContentIndex::extractTrigrams(seg);
+        unique.insert(segTrigrams.begin(), segTrigrams.end());
+    }
+    if (unique.empty()) { allFound = false; return {}; }
+
+    std::vector<const std::vector<uint32_t>*> postings;
+    for (Trigram t : unique) {
+        auto it = index.find(t);
+        if (it == index.end()) { allFound = false; return {}; }
+        postings.push_back(&it->second);
+    }
+
+    std::sort(postings.begin(), postings.end(),
+        [](const auto* a, const auto* b) { return a->size() < b->size(); });
+
+    std::vector<uint32_t> result;
+    result.reserve(postings[0]->size());
+    result.assign(postings[0]->begin(), postings[0]->end());
+
+    for (size_t i = 1; i < postings.size() && !result.empty(); i++) {
+        const auto& other = *postings[i];
+        std::vector<uint32_t> isect;
+        isect.reserve(std::min(result.size(), other.size()));
+        std::set_intersection(result.begin(), result.end(),
+                              other.begin(), other.end(),
+                              std::back_inserter(isect));
+        result = std::move(isect);
+    }
+    return result;
+}
+
 std::unordered_map<Trigram, std::vector<uint32_t>>
 SearchEngine::buildTrigramIndexFromData(const std::vector<FileRecord>& records,
                                         const StringPool& namePool) {
@@ -493,11 +532,33 @@ bool globMatchImpl(const std::string& pattern, const std::string& text) {
     return px == pattern.size();
 }
 
+// Extract all literal (non-wildcard) segments from a glob pattern.
+// Splits at '*' and '?' boundaries, returns segments in order.
+std::vector<std::string> extractLiteralSegments(const std::string& pattern) {
+    std::vector<std::string> segments;
+    std::string current;
+    for (char c : pattern) {
+        if (c == '*' || c == '?') {
+            if (!current.empty()) {
+                segments.push_back(std::move(current));
+                current.clear();
+            }
+        } else {
+            current += c;
+        }
+    }
+    if (!current.empty()) {
+        segments.push_back(std::move(current));
+    }
+    return segments;
+}
+
 struct CompiledGlob {
     enum Type { SUFFIX, PREFIX, CONTAINS, EXACT, GENERIC };
     Type type;
-    std::string fixed;      // literal part for fast match
-    std::string original;   // original pattern for GENERIC fallback
+    std::string fixed;                    // literal part for fast match (or best segment for GENERIC)
+    std::string original;                 // original pattern for GENERIC fallback
+    std::vector<std::string> segments;    // all literal segments >= 3 chars (for multi-segment trigram)
 };
 
 CompiledGlob compileGlob(const std::string& pattern) {
@@ -526,7 +587,19 @@ CompiledGlob compileGlob(const std::string& pattern) {
         pattern.find('?') == std::string::npos) {
         return {CompiledGlob::EXACT, pattern, pattern};
     }
-    return {CompiledGlob::GENERIC, "", pattern};
+    // GENERIC: extract literal segments for trigram pre-filtering
+    auto allSegs = extractLiteralSegments(pattern);
+    std::string bestSeg;
+    std::vector<std::string> qualifiedSegs;
+    for (const auto& seg : allSegs) {
+        if (seg.size() >= 3) {
+            qualifiedSegs.push_back(seg);
+            if (seg.size() > bestSeg.size()) {
+                bestSeg = seg;
+            }
+        }
+    }
+    return {CompiledGlob::GENERIC, bestSeg, pattern, std::move(qualifiedSegs)};
 }
 
 bool compiledGlobMatch(const CompiledGlob& cg, const char* text, size_t len) {
@@ -1034,7 +1107,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             if (useTrigram && cg.fixed.size() >= 3 && !nameTrigramIndex_.empty()) {
                 beforeTrigram = std::chrono::steady_clock::now();
                 bool allFound = false;
-                auto candidates = intersectPostingLists(nameTrigramIndex_, cg.fixed, allFound);
+                auto candidates = (cg.segments.size() > 1)
+                    ? intersectPostingListsMulti(nameTrigramIndex_, cg.segments, allFound)
+                    : intersectPostingLists(nameTrigramIndex_, cg.fixed, allFound);
                 afterTrigram = std::chrono::steady_clock::now();
                 if (allFound && candidates.size() <= totalSize / 67) {
                     globUsedTrigram = true;

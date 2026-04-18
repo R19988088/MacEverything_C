@@ -377,6 +377,12 @@ private:
         const std::string& keyword,
         bool& allFound);
 
+    /// Intersect trigrams from multiple literal segments for complex glob pre-filtering.
+    static std::vector<uint32_t> intersectPostingListsMulti(
+        const std::unordered_map<Trigram, std::vector<uint32_t>>& index,
+        const std::vector<std::string>& segments,
+        bool& allFound);
+
     /// Build full path in a reusable buffer: path + '/' + name.
     /// Lowercases the path portion via SIMD. Returns the full path length.
     /// Buffer is resized if needed (with 2x growth).

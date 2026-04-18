@@ -452,5 +452,156 @@ static void runTrigramIndexTests() {
         check(true, "Compiled glob + trigram benchmark completed");
     }
 
+    // -- Test 13: Multi-segment glob + trigram pre-filtering --
+    std::cout << "\n  --- Multi-segment glob + trigram pre-filtering ---\n";
+    {
+        const uint32_t totalRecords = 10000;
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.reserve(totalRecords);
+
+        // 50 .cpp source files
+        for (uint32_t i = 0; i < 50; i++) {
+            records.push_back({"source_" + std::to_string(i) + ".cpp",
+                              "/project/src", 1, (uint64_t)i, (time_t)i});
+        }
+        // 20 test .cpp files
+        for (uint32_t i = 0; i < 20; i++) {
+            records.push_back({"test_source_" + std::to_string(i) + ".cpp",
+                              "/project/tests", 1, (uint64_t)(50 + i), (time_t)(50 + i)});
+        }
+        // 10 .cpp.bak files
+        for (uint32_t i = 0; i < 10; i++) {
+            records.push_back({"source_" + std::to_string(i) + ".cpp.bak",
+                              "/project/backup", 1, (uint64_t)(70 + i), (time_t)(70 + i)});
+        }
+        // 30 .hpp files
+        for (uint32_t i = 0; i < 30; i++) {
+            records.push_back({"header_" + std::to_string(i) + ".hpp",
+                              "/project/include", 1, (uint64_t)(80 + i), (time_t)(80 + i)});
+        }
+        // 15 files with .ext. pattern
+        for (uint32_t i = 0; i < 15; i++) {
+            records.push_back({"file_" + std::to_string(i) + ".ext.tmp",
+                              "/project/temp", 1, (uint64_t)(110 + i), (time_t)(110 + i)});
+        }
+        // Fill rest with .txt
+        for (uint32_t i = 125; i < totalRecords; i++) {
+            records.push_back({"data_" + std::to_string(i) + ".txt",
+                              "/data/dir" + std::to_string(i % 100), 1, (uint64_t)i, (time_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        // *source*.cpp — GENERIC, segments=["source",".cpp"], multi-segment trigram
+        {
+            QueryTimingInfo timing;
+            auto res = engine.query("*source*.cpp", 0, true, timing);
+            check(res.size() == 70, "Multi-seg glob: '*source*.cpp' finds 70 files (50 src + 20 test)");
+            check(timing.searchPath == "glob-trigram",
+                  "Multi-seg glob: '*source*.cpp' uses glob-trigram path");
+            std::cout << "    '*source*.cpp': " << res.size() << " results, path=" << timing.searchPath
+                      << ", candidates=" << timing.candidates << "\n";
+        }
+
+        // *.cpp.* — GENERIC, segments=[".cpp."], trigram on ".cpp."
+        {
+            QueryTimingInfo timing;
+            auto res = engine.query("*.cpp.*", 0, true, timing);
+            check(res.size() == 10, "Multi-seg glob: '*.cpp.*' finds 10 .cpp.bak files");
+            check(timing.searchPath == "glob-trigram",
+                  "Multi-seg glob: '*.cpp.*' uses glob-trigram path");
+            std::cout << "    '*.cpp.*': " << res.size() << " results, path=" << timing.searchPath
+                      << ", candidates=" << timing.candidates << "\n";
+        }
+
+        // test_*.cpp — GENERIC, segments=["test_",".cpp"], multi-segment trigram
+        {
+            QueryTimingInfo timing;
+            auto res = engine.query("test_*.cpp", 0, true, timing);
+            check(res.size() == 20, "Multi-seg glob: 'test_*.cpp' finds 20 test files");
+            check(timing.searchPath == "glob-trigram",
+                  "Multi-seg glob: 'test_*.cpp' uses glob-trigram path");
+            std::cout << "    'test_*.cpp': " << res.size() << " results, path=" << timing.searchPath
+                      << ", candidates=" << timing.candidates << "\n";
+        }
+
+        // *.ext.* — GENERIC, segments=[".ext."], trigram pre-filter
+        {
+            QueryTimingInfo timing;
+            auto res = engine.query("*.ext.*", 0, true, timing);
+            check(res.size() == 15, "Multi-seg glob: '*.ext.*' finds 15 .ext.tmp files");
+            check(timing.searchPath == "glob-trigram",
+                  "Multi-seg glob: '*.ext.*' uses glob-trigram path");
+            std::cout << "    '*.ext.*': " << res.size() << " results, path=" << timing.searchPath
+                      << ", candidates=" << timing.candidates << "\n";
+        }
+
+        // ?ource*.cpp — GENERIC, segments=["ource",".cpp"]
+        {
+            QueryTimingInfo timing;
+            auto res = engine.query("?ource*.cpp", 0, true, timing);
+            // ?ource matches "source" (? = 's'), so finds source_*.cpp = 50 files
+            check(res.size() == 50, "Multi-seg glob: '?ource*.cpp' finds 50 source files");
+            check(timing.searchPath == "glob-trigram",
+                  "Multi-seg glob: '?ource*.cpp' uses glob-trigram path");
+            std::cout << "    '?ource*.cpp': " << res.size() << " results, path=" << timing.searchPath
+                      << ", candidates=" << timing.candidates << "\n";
+        }
+
+        // *a*b* — all segments < 3 chars → linear fallback
+        {
+            QueryTimingInfo timing;
+            auto res = engine.query("*a*b*", 0, true, timing);
+            check(timing.searchPath == "linear",
+                  "Multi-seg glob: '*a*b*' falls back to linear (all segments < 3)");
+            std::cout << "    '*a*b*': " << res.size() << " results, path=" << timing.searchPath << "\n";
+        }
+
+        // Correctness: trigram vs linear must produce identical results
+        {
+            QueryTimingInfo t1, t2;
+            auto res1 = engine.query("*source*.cpp", 0, true, t1);
+            auto res2 = engine.query("*source*.cpp", 0, false, t2);
+            // Sort by idx for comparison
+            auto sortByIdx = [](std::vector<uint32_t>& v) { std::sort(v.begin(), v.end()); };
+            sortByIdx(res1);
+            sortByIdx(res2);
+            check(res1 == res2,
+                  "Multi-seg glob: trigram vs linear produce identical results for '*source*.cpp'");
+            std::cout << "    Correctness: trigram(" << res1.size() << ") == linear("
+                      << res2.size() << ")\n";
+        }
+
+        // Performance: multi-segment trigram should be faster than linear for selective patterns
+        {
+            auto t0 = std::chrono::steady_clock::now();
+            for (int run = 0; run < 100; run++) {
+                auto res = engine.query("*source*.cpp", 100, true);
+                (void)res;
+            }
+            auto t1 = std::chrono::steady_clock::now();
+            double trigramTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+            t0 = std::chrono::steady_clock::now();
+            for (int run = 0; run < 100; run++) {
+                auto res = engine.query("*source*.cpp", 100, false);
+                (void)res;
+            }
+            t1 = std::chrono::steady_clock::now();
+            double linearTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+            std::cout << "    100x '*source*.cpp' (trigram): " << std::fixed << std::setprecision(2)
+                      << trigramTime << "ms (" << trigramTime / 100 << "ms/query)\n";
+            std::cout << "    100x '*source*.cpp' (linear):  " << std::fixed << std::setprecision(2)
+                      << linearTime << "ms (" << linearTime / 100 << "ms/query)\n";
+            if (trigramTime < linearTime) {
+                std::cout << "    Multi-seg trigram speedup: " << std::fixed << std::setprecision(1)
+                          << linearTime / trigramTime << "x\n";
+            }
+        }
+
+        check(true, "Multi-segment glob + trigram benchmark completed");
+    }
+
     std::cout << "\n";
 }

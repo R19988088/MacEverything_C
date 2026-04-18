@@ -913,13 +913,13 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 << "ms | path=" << (useSlashSplit ? "trigram-split" : "trigram") << " candidates=" << trigramCandidates.size()
                 << " phase1=" << phase1Results
                 << " phase2=" << (merged.size() - phase1Results)
-                << " results=" << result.size() << " records=" << totalSize);
+                << " results=" << result.size() << " totalRecords=" << totalSize);
         } else {
             auto scanMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterPhase2 - beforePhase2).count();
             LOG_INFO("SearchEngine", "Query \"" << keyword << "\" total=" << ms
                 << "ms lock_wait=" << lockWaitMs << "ms scan=" << scanMs
                 << "ms lock_held=" << lockHeldMs << "ms sort=" << sortMs
-                << "ms | path=linear results=" << result.size() << " records=" << totalSize);
+                << "ms | path=linear results=" << result.size() << " totalRecords=" << totalSize);
         }
     }
 

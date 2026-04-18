@@ -62,7 +62,9 @@
         {"q": "usr/bin", "label": "path-2seg-common"},
         {"q": "Library/Application", "label": "path-long-seg"},
         {"q": "src/main", "label": "path-dev"},
-        {"q": ".git/config", "label": "path-dotdir"}
+        {"q": ".git/config", "label": "path-dotdir"},
+        {"q": "/usr", "label": "path-abs-short"},
+        {"q": "/usr/local", "label": "path-abs-2seg"}
       ]
     },
     {

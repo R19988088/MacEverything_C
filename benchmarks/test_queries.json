@@ -50,7 +50,8 @@
         {"q": "*.cpp", "label": "glob-ext-cpp"},
         {"q": "test_*", "label": "glob-prefix"},
         {"q": "*.json", "label": "glob-ext-json"},
-        {"q": "*config*", "label": "glob-contains"}
+        {"q": "*config*", "label": "glob-contains"},
+        {"q": "*test*.cpp", "label": "glob-multi-wildcard"}
       ]
     },
     {

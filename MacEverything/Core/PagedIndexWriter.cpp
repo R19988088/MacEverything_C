@@ -26,6 +26,8 @@ static bool readString(const uint8_t*& p, const uint8_t* end, std::string& s) {
     return true;
 }
 
+// ─── v4 record deserialization from buffer ───
+
 static bool readRecordFromBuf(const uint8_t*& p, const uint8_t* end, FileRecord& r) {
     if (!readString(p, end, r.name)) return false;
     if (!readString(p, end, r.path)) return false;
@@ -51,14 +53,20 @@ static void appendU32(std::vector<uint8_t>& buf, uint32_t v) {
                reinterpret_cast<uint8_t*>(&v) + 4);
 }
 
+static void appendU16(std::vector<uint8_t>& buf, uint16_t v) {
+    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&v),
+               reinterpret_cast<uint8_t*>(&v) + 2);
+}
+
 static void appendString(std::vector<uint8_t>& buf, const std::string& s) {
     uint32_t len = static_cast<uint32_t>(s.size());
     appendU32(buf, len);
     buf.insert(buf.end(), s.begin(), s.end());
 }
 
-static void appendRecord(std::vector<uint8_t>& buf, const FileRecord& r,
-                          const std::string& resolvedPath) {
+// v4 record serializer
+static void appendRecordV4(std::vector<uint8_t>& buf, const FileRecord& r,
+                            const std::string& resolvedPath) {
     appendString(buf, r.name);
     appendString(buf, resolvedPath);
     buf.push_back(r.type);
@@ -73,6 +81,99 @@ static void appendRecord(std::vector<uint8_t>& buf, const FileRecord& r,
                reinterpret_cast<const uint8_t*>(&r.devId) + 4);
 }
 
+// v5 record serializer: pathIndex + origName + lowerName + fixed fields
+static void appendRecordV5(std::vector<uint8_t>& buf,
+                            const FileRecord& r, uint32_t pathIdx,
+                            const char* lowerName, uint16_t lowerNameLen) {
+    appendU32(buf, pathIdx);
+    // Original name
+    uint16_t origLen = static_cast<uint16_t>(std::min<size_t>(r.name.size(), UINT16_MAX));
+    appendU16(buf, origLen);
+    buf.insert(buf.end(), r.name.begin(), r.name.begin() + origLen);
+    // Lowercase name
+    appendU16(buf, lowerNameLen);
+    buf.insert(buf.end(), lowerName, lowerName + lowerNameLen);
+    // Fixed fields
+    buf.push_back(r.type);
+    buf.insert(buf.end(), reinterpret_cast<const uint8_t*>(&r.size),
+               reinterpret_cast<const uint8_t*>(&r.size) + 8);
+    int64_t mod = static_cast<int64_t>(r.modTime);
+    buf.insert(buf.end(), reinterpret_cast<const uint8_t*>(&mod),
+               reinterpret_cast<const uint8_t*>(&mod) + 8);
+    buf.insert(buf.end(), reinterpret_cast<const uint8_t*>(&r.inode),
+               reinterpret_cast<const uint8_t*>(&r.inode) + 8);
+    buf.insert(buf.end(), reinterpret_cast<const uint8_t*>(&r.devId),
+               reinterpret_cast<const uint8_t*>(&r.devId) + 4);
+}
+
+// ─── StringPool I/O helpers ───
+
+bool PagedIndexWriter::writeStringPool(FILE* f, const StringPool& pool) {
+    // Buffer
+    uint32_t bufSize = static_cast<uint32_t>(pool.rawSize());
+    if (fwrite(&bufSize, 4, 1, f) != 1) return false;
+    if (bufSize > 0 && fwrite(pool.rawBuffer(), 1, bufSize, f) != bufSize) return false;
+
+    // Entries (each: offset(4) + length(2) = 6 bytes)
+    uint32_t entryCount = pool.entryCount();
+    if (fwrite(&entryCount, 4, 1, f) != 1) return false;
+    if (entryCount > 0 && fwrite(pool.entries(), sizeof(StringPool::Entry), entryCount, f) != entryCount)
+        return false;
+
+    // CRC32 over buffer + entries
+    std::vector<uint8_t> crcData;
+    crcData.reserve(bufSize + entryCount * sizeof(StringPool::Entry));
+    if (bufSize > 0)
+        crcData.insert(crcData.end(), pool.rawBuffer(), pool.rawBuffer() + bufSize);
+    if (entryCount > 0) {
+        auto ep = reinterpret_cast<const uint8_t*>(pool.entries());
+        crcData.insert(crcData.end(), ep, ep + entryCount * sizeof(StringPool::Entry));
+    }
+    uint32_t crc = IndexWAL::crc32(crcData.data(), crcData.size());
+    if (fwrite(&crc, 4, 1, f) != 1) return false;
+
+    return true;
+}
+
+bool PagedIndexWriter::readStringPool(FILE* f, StringPool& pool) {
+    uint32_t bufSize;
+    if (fread(&bufSize, 4, 1, f) != 1) return false;
+    if (bufSize > 500'000'000) return false; // sanity: 500MB
+
+    std::vector<char> buffer(bufSize);
+    if (bufSize > 0 && fread(buffer.data(), 1, bufSize, f) != bufSize) return false;
+
+    uint32_t entryCount;
+    if (fread(&entryCount, 4, 1, f) != 1) return false;
+    if (entryCount > 50'000'000) return false; // sanity: 50M entries
+
+    std::vector<StringPool::Entry> entries(entryCount);
+    if (entryCount > 0 && fread(entries.data(), sizeof(StringPool::Entry), entryCount, f) != entryCount)
+        return false;
+
+    // Verify CRC32
+    uint32_t storedCrc;
+    if (fread(&storedCrc, 4, 1, f) != 1) return false;
+
+    std::vector<uint8_t> crcData;
+    crcData.reserve(bufSize + entryCount * sizeof(StringPool::Entry));
+    if (bufSize > 0)
+        crcData.insert(crcData.end(), buffer.data(), buffer.data() + bufSize);
+    if (entryCount > 0) {
+        auto ep = reinterpret_cast<const uint8_t*>(entries.data());
+        crcData.insert(crcData.end(), ep, ep + entryCount * sizeof(StringPool::Entry));
+    }
+    uint32_t computedCrc = IndexWAL::crc32(crcData.data(), crcData.size());
+    if (computedCrc != storedCrc) {
+        std::cerr << "[PagedIndexWriter] StringPool CRC mismatch (expected "
+                  << storedCrc << ", got " << computedCrc << ")\n";
+        return false;
+    }
+
+    pool.loadRaw(buffer.data(), bufSize, entries.data(), entryCount);
+    return true;
+}
+
 // ─── PagedIndexWriter ───
 
 PagedIndexWriter::PagedIndexWriter(const std::string& pagesPath, const std::string& ptablePath)
@@ -83,7 +184,7 @@ bool PagedIndexWriter::exists() const {
            access(pagesPath_.c_str(), R_OK) == 0;
 }
 
-// ─── deserializePage ───
+// ─── deserializePage (v4) ───
 
 bool PagedIndexWriter::deserializePage(
     const uint8_t* data, size_t len,
@@ -97,6 +198,60 @@ bool PagedIndexWriter::deserializePage(
         FileRecord r;
         if (!readRecordFromBuf(p, end, r)) return false;
         out.push_back(std::move(r));
+    }
+    return true;
+}
+
+// ─── deserializePageV5 ───
+
+bool PagedIndexWriter::deserializePageV5(
+    const uint8_t* data, size_t len,
+    uint16_t expectedCount,
+    V5PageResult& out)
+{
+    const uint8_t* p = data;
+    const uint8_t* end = data + len;
+    out.records.reserve(expectedCount);
+    out.lowerNames.reserve(expectedCount);
+    out.pathIndices.reserve(expectedCount);
+
+    for (uint16_t i = 0; i < expectedCount; i++) {
+        // pathIndex(4)
+        if (p + 4 > end) return false;
+        uint32_t pathIdx;
+        memcpy(&pathIdx, p, 4); p += 4;
+        out.pathIndices.push_back(pathIdx);
+
+        // origNameLen(2) + origName
+        if (p + 2 > end) return false;
+        uint16_t origLen;
+        memcpy(&origLen, p, 2); p += 2;
+        if (p + origLen > end) return false;
+        std::string origName(reinterpret_cast<const char*>(p), origLen);
+        p += origLen;
+
+        // lowerNameLen(2) + lowerName
+        if (p + 2 > end) return false;
+        uint16_t lowerLen;
+        memcpy(&lowerLen, p, 2); p += 2;
+        if (p + lowerLen > end) return false;
+        std::string lowerName(reinterpret_cast<const char*>(p), lowerLen);
+        p += lowerLen;
+
+        // Fixed fields: type(1) + size(8) + modTime(8) + inode(8) + devId(4) = 29 bytes
+        if (p + 29 > end) return false;
+        FileRecord r;
+        r.name = std::move(origName);
+        r.type = *p++;
+        memcpy(&r.size, p, 8); p += 8;
+        int64_t mod;
+        memcpy(&mod, p, 8); p += 8;
+        r.modTime = static_cast<time_t>(mod);
+        memcpy(&r.inode, p, 8); p += 8;
+        memcpy(&r.devId, p, 4); p += 4;
+
+        out.records.push_back(std::move(r));
+        out.lowerNames.push_back(std::move(lowerName));
     }
     return true;
 }
@@ -116,7 +271,7 @@ bool PagedIndexWriter::writePtable(const IndexMetadata& meta, uint32_t totalReco
     // Header
     uint32_t magic = kPtableMagic;
     safeWrite(&magic, 4, 1);
-    uint32_t ver = kVersion;
+    uint32_t ver = kVersion; // always write current version (v5)
     safeWrite(&ver, 4, 1);
     int64_t ts = meta.timestamp > 0 ? meta.timestamp : static_cast<int64_t>(time(nullptr));
     safeWrite(&ts, 8, 1);
@@ -145,6 +300,14 @@ bool PagedIndexWriter::writePtable(const IndexMetadata& meta, uint32_t totalReco
         safeWrite(&pe.crc32, 4, 1);
     }
 
+    // v5: Path dictionaries (after page entries)
+    if (ok) {
+        if (!writeStringPool(f, pathDict_)) ok = false;
+    }
+    if (ok) {
+        if (!writeStringPool(f, lowerPathDict_)) ok = false;
+    }
+
     if (!ok) {
         fclose(f);
         remove(tmpPath.c_str());
@@ -171,7 +334,9 @@ bool PagedIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
     uint32_t magic;
     if (fread(&magic, 4, 1, ptf) != 1 || magic != kPtableMagic) { fclose(ptf); return false; }
     uint32_t ver;
-    if (fread(&ver, 4, 1, ptf) != 1 || ver != kVersion) { fclose(ptf); return false; }
+    if (fread(&ver, 4, 1, ptf) != 1 || (ver != kVersionV4 && ver != kVersionV5)) { fclose(ptf); return false; }
+
+    loadedVersion_ = ver;
 
     IndexMetadata meta;
     meta.formatVersion = ver;
@@ -183,7 +348,6 @@ bool PagedIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
     if (metaCount > 1000) { fclose(ptf); return false; }
     for (uint32_t i = 0; i < metaCount; i++) {
         std::string key, value;
-        // Use file-based readString
         uint32_t klen;
         if (fread(&klen, 4, 1, ptf) != 1 || klen > 65536) { fclose(ptf); return false; }
         key.resize(klen);
@@ -210,6 +374,13 @@ bool PagedIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
         if (fread(&pe.recordCount, 2, 1, ptf) != 1) { fclose(ptf); return false; }
         if (fread(&pe.crc32, 4, 1, ptf) != 1) { fclose(ptf); return false; }
     }
+
+    // v5: Read path dictionaries from ptable
+    StringPool pathDict, lowerPathDict;
+    if (ver == kVersionV5) {
+        if (!readStringPool(ptf, pathDict)) { fclose(ptf); return false; }
+        if (!readStringPool(ptf, lowerPathDict)) { fclose(ptf); return false; }
+    }
     fclose(ptf);
 
     // Read pages file
@@ -223,29 +394,74 @@ bool PagedIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
         return false;
     }
 
-    // Get file size
     fseek(pf, 0, SEEK_END);
     uint64_t fileSize = static_cast<uint64_t>(ftell(pf));
 
-    // Read all page blobs and deserialize
+    if (ver == kVersionV5) {
+        // v5 path: deserialize pages into separated data, call loadRecordsV5
+        std::vector<FileRecord> allRecords;
+        std::vector<std::string> allLowerNames;
+        std::vector<uint32_t> allPathIndices;
+        allRecords.reserve(totalRecords);
+        allLowerNames.reserve(totalRecords);
+        allPathIndices.reserve(totalRecords);
+
+        for (uint32_t i = 0; i < pageCount; i++) {
+            const auto& pe = entries[i];
+            if (pe.offset + pe.byteLength > fileSize) { fclose(pf); return false; }
+
+            std::vector<uint8_t> buf(pe.byteLength);
+            fseek(pf, static_cast<long>(pe.offset), SEEK_SET);
+            if (fread(buf.data(), 1, pe.byteLength, pf) != pe.byteLength) { fclose(pf); return false; }
+
+            uint32_t crc = IndexWAL::crc32(buf.data(), buf.size());
+            if (crc != pe.crc32) {
+                std::cerr << "[PagedIndexWriter] CRC mismatch on page " << i
+                          << " (expected " << pe.crc32 << ", got " << crc << ")\n";
+                fclose(pf);
+                return false;
+            }
+
+            V5PageResult pageResult;
+            if (!deserializePageV5(buf.data(), buf.size(), pe.recordCount, pageResult)) {
+                fclose(pf);
+                return false;
+            }
+            allRecords.insert(allRecords.end(),
+                              std::make_move_iterator(pageResult.records.begin()),
+                              std::make_move_iterator(pageResult.records.end()));
+            allLowerNames.insert(allLowerNames.end(),
+                                 std::make_move_iterator(pageResult.lowerNames.begin()),
+                                 std::make_move_iterator(pageResult.lowerNames.end()));
+            allPathIndices.insert(allPathIndices.end(),
+                                  pageResult.pathIndices.begin(),
+                                  pageResult.pathIndices.end());
+        }
+        fclose(pf);
+
+        pageEntries_ = std::move(entries);
+        pagesFileSize_ = fileSize;
+        pathDict_ = pathDict; // keep a copy for next flush
+        lowerPathDict_ = lowerPathDict;
+
+        if (outMeta) *outMeta = std::move(meta);
+        engine.loadRecordsV5(std::move(allRecords), std::move(allLowerNames),
+                             std::move(allPathIndices), std::move(pathDict), std::move(lowerPathDict));
+        return true;
+    }
+
+    // v4 path: existing deserializePage → loadRecords
     std::vector<FileRecord> allRecords;
     allRecords.reserve(totalRecords);
 
     for (uint32_t i = 0; i < pageCount; i++) {
         const auto& pe = entries[i];
-        if (pe.offset + pe.byteLength > fileSize) {
-            fclose(pf);
-            return false;
-        }
+        if (pe.offset + pe.byteLength > fileSize) { fclose(pf); return false; }
 
         std::vector<uint8_t> buf(pe.byteLength);
         fseek(pf, static_cast<long>(pe.offset), SEEK_SET);
-        if (fread(buf.data(), 1, pe.byteLength, pf) != pe.byteLength) {
-            fclose(pf);
-            return false;
-        }
+        if (fread(buf.data(), 1, pe.byteLength, pf) != pe.byteLength) { fclose(pf); return false; }
 
-        // CRC32 verification
         uint32_t crc = IndexWAL::crc32(buf.data(), buf.size());
         if (crc != pe.crc32) {
             std::cerr << "[PagedIndexWriter] CRC mismatch on page " << i
@@ -293,6 +509,10 @@ bool PagedIndexWriter::flushDirtyPages(SearchEngine& engine, const IndexMetadata
         pageEntries_.resize(pageCount, PageEntry{0, 0, 0, 0});
     }
 
+    // Snapshot path dictionaries for v5 ptable
+    pathDict_ = engine.pathPoolSnapshot();
+    lowerPathDict_ = engine.lowerPathPoolSnapshot();
+
     // Open pages file for appending (create if not exists)
     FILE* pf = fopen(pagesPath_.c_str(), "r+b");
     bool newFile = false;
@@ -305,15 +525,12 @@ bool PagedIndexWriter::flushDirtyPages(SearchEngine& engine, const IndexMetadata
     fcntl(fileno(pf), F_NOCACHE, 1);
 
     if (newFile) {
-        // Write pages magic
         uint32_t magic = kPagesMagic;
         if (fwrite(&magic, 4, 1, pf) != 1) { fclose(pf); return false; }
         pagesFileSize_ = 4;
     } else {
-        // Seek to end for appending
         fseek(pf, 0, SEEK_END);
         pagesFileSize_ = static_cast<uint64_t>(ftell(pf));
-        // If file is empty or just created, write magic
         if (pagesFileSize_ == 0) {
             uint32_t magic = kPagesMagic;
             if (fwrite(&magic, 4, 1, pf) != 1) { fclose(pf); return false; }
@@ -321,7 +538,7 @@ bool PagedIndexWriter::flushDirtyPages(SearchEngine& engine, const IndexMetadata
         }
     }
 
-    // Serialize and append each dirty page
+    // Serialize and append each dirty page using v5 format
     for (uint32_t pageNum : dirtyPages) {
         if (pageNum >= pageCount) continue;
 
@@ -329,18 +546,17 @@ bool PagedIndexWriter::flushDirtyPages(SearchEngine& engine, const IndexMetadata
         uint32_t count = std::min(SearchEngine::kRecordsPerPage,
                                   totalRecords - startIdx);
 
-        // Serialize page records (including tombstones to preserve index alignment)
         std::vector<uint8_t> buf;
-        buf.reserve(count * 128);
+        buf.reserve(count * 80); // v5 records are smaller
 
-        engine.forEachRecordInRange(startIdx, count,
-            [&](uint32_t idx, const FileRecord& r, const std::string& path) {
-                appendRecord(buf, r, path);
+        engine.forEachRecordInRangeV5(startIdx, count,
+            [&](uint32_t idx, const FileRecord& r, uint32_t pathIdx,
+                const char* lowerName, uint16_t lowerNameLen) {
+                appendRecordV5(buf, r, pathIdx, lowerName, lowerNameLen);
             });
 
         uint32_t crc = IndexWAL::crc32(buf.data(), buf.size());
 
-        // Append to pages file
         uint64_t offset = pagesFileSize_;
         if (fwrite(buf.data(), 1, buf.size(), pf) != buf.size()) {
             fclose(pf);
@@ -348,7 +564,6 @@ bool PagedIndexWriter::flushDirtyPages(SearchEngine& engine, const IndexMetadata
         }
         pagesFileSize_ += buf.size();
 
-        // Update page entry
         auto& pe = pageEntries_[pageNum];
         pe.offset = offset;
         pe.byteLength = static_cast<uint32_t>(buf.size());
@@ -359,7 +574,6 @@ bool PagedIndexWriter::flushDirtyPages(SearchEngine& engine, const IndexMetadata
     fsync(fileno(pf));
     fclose(pf);
 
-    // Atomic ptable write
     if (!writePtable(meta, totalRecords)) {
         return false;
     }
@@ -374,6 +588,10 @@ bool PagedIndexWriter::fullRewrite(SearchEngine& engine, const IndexMetadata& me
     uint32_t totalRecords = engine.recordCount();
     uint32_t pageCount = (totalRecords + SearchEngine::kRecordsPerPage - 1) / SearchEngine::kRecordsPerPage;
     if (totalRecords == 0) pageCount = 0;
+
+    // Snapshot path dictionaries for v5 ptable
+    pathDict_ = engine.pathPoolSnapshot();
+    lowerPathDict_ = engine.lowerPathPoolSnapshot();
 
     std::string tmpPages = pagesPath_ + ".tmp";
     FILE* pf = fopen(tmpPages.c_str(), "wb");
@@ -395,11 +613,12 @@ bool PagedIndexWriter::fullRewrite(SearchEngine& engine, const IndexMetadata& me
                                   totalRecords - startIdx);
 
         std::vector<uint8_t> buf;
-        buf.reserve(count * 128);
+        buf.reserve(count * 80);
 
-        engine.forEachRecordInRange(startIdx, count,
-            [&](uint32_t idx, const FileRecord& r, const std::string& path) {
-                appendRecord(buf, r, path);
+        engine.forEachRecordInRangeV5(startIdx, count,
+            [&](uint32_t idx, const FileRecord& r, uint32_t pathIdx,
+                const char* lowerName, uint16_t lowerNameLen) {
+                appendRecordV5(buf, r, pathIdx, lowerName, lowerNameLen);
             });
 
         uint32_t crc = IndexWAL::crc32(buf.data(), buf.size());
@@ -423,17 +642,14 @@ bool PagedIndexWriter::fullRewrite(SearchEngine& engine, const IndexMetadata& me
     fsync(fileno(pf));
     fclose(pf);
 
-    // Update in-memory state before writing ptable
     pageEntries_ = std::move(newEntries);
     pagesFileSize_ = writePos;
 
-    // Write ptable atomically
     if (!writePtable(meta, totalRecords)) {
         remove(tmpPages.c_str());
         return false;
     }
 
-    // Rename pages file
     if (rename(tmpPages.c_str(), pagesPath_.c_str()) != 0) {
         remove(tmpPages.c_str());
         return false;
@@ -447,12 +663,12 @@ bool PagedIndexWriter::fullRewrite(SearchEngine& engine, const IndexMetadata& me
 // ─── deadSpaceRatio ───
 
 double PagedIndexWriter::deadSpaceRatio() const {
-    if (pagesFileSize_ <= 4) return 0.0; // just the magic header
+    if (pagesFileSize_ <= 4) return 0.0;
     uint64_t liveBytes = 0;
     for (const auto& pe : pageEntries_) {
         liveBytes += pe.byteLength;
     }
-    uint64_t dataSize = pagesFileSize_ - 4; // exclude magic header
+    uint64_t dataSize = pagesFileSize_ - 4;
     if (dataSize == 0) return 0.0;
     return 1.0 - static_cast<double>(liveBytes) / static_cast<double>(dataSize);
 }

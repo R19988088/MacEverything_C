@@ -278,6 +278,34 @@ private:
     static bool isGlobPattern(const std::string& s);
     static bool globMatch(const std::string& pattern, const std::string& text);
 
+    /// Match result from search: (record index, priority, full path length).
+    /// Priority: 0=exact, 1=starts-with, 2=contains, 3=path-only match.
+    struct Match { uint32_t idx; uint8_t priority; uint32_t pathLen; };
+
+    /// Slash-split strategy: path/name trigram lookup for queries containing '/'.
+    /// Returns true if the strategy handled the query, false if both parts too short.
+    bool querySlashSplit(const std::string& lowerKey,
+                         size_t totalSize, uint64_t myGen,
+                         const std::vector<uint32_t>& trigramCandidates,
+                         std::vector<Match>& merged) const;
+
+    /// Path trigram strategy: lookup via pathTrigramIndex_ for non-slash queries.
+    void queryPathTrigram(const std::string& lowerKey,
+                          size_t totalSize, uint64_t myGen,
+                          const std::vector<uint32_t>& trigramCandidates,
+                          std::vector<Match>& merged) const;
+
+    /// Linear scan fallback for trigram Phase 2 path matches.
+    void queryLinearScanPath(const std::string& lowerKey,
+                             size_t totalSize, uint64_t myGen,
+                             const std::vector<uint32_t>& trigramCandidates,
+                             std::vector<Match>& merged) const;
+
+    /// Full linear scan for glob patterns and short keywords.
+    void queryLinearScan(const std::string& lowerKey,
+                         bool useGlob, size_t totalSize, uint64_t myGen,
+                         std::vector<Match>& merged) const;
+
     std::vector<bool> dirtyPages_;                // dirty page bitmap
     std::atomic<bool> fullRewriteNeeded_{false};   // set by compactRecords()
 
@@ -303,6 +331,25 @@ private:
     void rebuildRecentCache();
     void addToRecentCache(uint32_t idx, time_t modTime);
     void removeFromRecentCache(uint32_t idx, time_t modTime);
+
+    /// Compute match priority: 0=exact, 1=starts-with, 2=contains.
+    static uint8_t namePriority(const char* nameData, uint16_t nameLen,
+                                const char* keyData, size_t keyLen);
+
+    /// Intersect posting lists from a trigram index for a given keyword.
+    /// Returns sorted candidate indices, or empty if any trigram is missing.
+    /// Sets allFound to false if any trigram is not in the index.
+    static std::vector<uint32_t> intersectPostingLists(
+        const std::unordered_map<Trigram, std::vector<uint32_t>>& index,
+        const std::string& keyword,
+        bool& allFound);
+
+    /// Build full path in a reusable buffer: path + '/' + name.
+    /// Lowercases the path portion via SIMD. Returns the full path length.
+    /// Buffer is resized if needed (with 2x growth).
+    static size_t buildFullPathBuf(std::vector<char>& buf,
+                                   const char* pathData, uint16_t pathLen,
+                                   const char* nameData, uint16_t nameLen);
 
     /// Build trigram index from standalone data (no member access, used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>

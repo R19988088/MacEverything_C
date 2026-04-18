@@ -60,6 +60,50 @@ uint32_t SearchEngine::internPath(const std::string& path) {
     return pIdx;
 }
 
+uint8_t SearchEngine::namePriority(const char* nameData, uint16_t nameLen,
+                                   const char* keyData, size_t keyLen) {
+    if (nameLen == keyLen && memcmp(nameData, keyData, nameLen) == 0)
+        return 0; // exact match
+    if (nameLen >= keyLen && memcmp(nameData, keyData, keyLen) == 0)
+        return 1; // starts with
+    return 2; // contains
+}
+
+std::vector<uint32_t> SearchEngine::intersectPostingLists(
+    const std::unordered_map<Trigram, std::vector<uint32_t>>& index,
+    const std::string& keyword,
+    bool& allFound) {
+    allFound = true;
+    auto keyTrigrams = ContentIndex::extractTrigrams(keyword);
+    std::unordered_set<Trigram> unique(keyTrigrams.begin(), keyTrigrams.end());
+    if (unique.empty()) { allFound = false; return {}; }
+
+    std::vector<const std::vector<uint32_t>*> postings;
+    for (Trigram t : unique) {
+        auto it = index.find(t);
+        if (it == index.end()) { allFound = false; return {}; }
+        postings.push_back(&it->second);
+    }
+
+    std::sort(postings.begin(), postings.end(),
+        [](const auto* a, const auto* b) { return a->size() < b->size(); });
+
+    std::vector<uint32_t> result;
+    result.reserve(postings[0]->size());
+    result.assign(postings[0]->begin(), postings[0]->end());
+
+    for (size_t i = 1; i < postings.size() && !result.empty(); i++) {
+        const auto& other = *postings[i];
+        std::vector<uint32_t> isect;
+        isect.reserve(std::min(result.size(), other.size()));
+        std::set_intersection(result.begin(), result.end(),
+                              other.begin(), other.end(),
+                              std::back_inserter(isect));
+        result = std::move(isect);
+    }
+    return result;
+}
+
 std::unordered_map<Trigram, std::vector<uint32_t>>
 SearchEngine::buildTrigramIndexFromData(const std::vector<FileRecord>& records,
                                         const StringPool& namePool) {
@@ -357,6 +401,377 @@ bool SearchEngine::globMatch(const std::string& pattern, const std::string& text
     return px == pattern.size();
 }
 
+size_t SearchEngine::buildFullPathBuf(std::vector<char>& buf,
+                                      const char* pathData, uint16_t pathLen,
+                                      const char* nameData, uint16_t nameLen) {
+    size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
+    if (buf.size() < fullLen) buf.resize(fullLen * 2);
+    memcpy(buf.data(), pathData, pathLen);
+    buf[pathLen] = '/';
+    memcpy(buf.data() + pathLen + 1, nameData, nameLen);
+    return fullLen;
+}
+
+// ---------------------------------------------------------------------------
+// Strategy methods extracted from query() — called under shared_lock
+// ---------------------------------------------------------------------------
+
+bool SearchEngine::querySlashSplit(const std::string& lowerKey,
+                                   size_t totalSize, uint64_t myGen,
+                                   const std::vector<uint32_t>& trigramCandidates,
+                                   std::vector<Match>& merged) const {
+    // Reusable buffer for full-path construction — avoids per-record heap allocations
+    std::vector<char> pathBuf;
+
+    // Split keyword at last '/' into pathPart and namePart
+    size_t lastSlash = lowerKey.rfind('/');
+    std::string pathPart = lowerKey.substr(0, lastSlash);   // e.g. "tests"
+    std::string namePart = lowerKey.substr(lastSlash + 1);  // e.g. "test_query_perf"
+
+    // When pathPart is empty (e.g., "/etc" → pathPart="", namePart="etc"),
+    // use the full lowerKey as pathPart for pathTrigramIndex_ lookup, since
+    // the query is really a path pattern like "/etc" and pathTrigramIndex_
+    // indexes full directory paths including '/'.
+    if (pathPart.empty() && lowerKey.size() >= 3) {
+        pathPart = lowerKey;
+    }
+
+    bool pathPartUsable = pathPart.size() >= 3;
+    bool namePartUsable = namePart.size() >= 3;
+
+    // If both parts are too short, signal caller to try another strategy
+    if (!pathPartUsable && !namePartUsable) {
+        return false;
+    }
+
+    // Step 1: Get candidate pathIdxs from pathTrigramIndex_ (if pathPart >= 3)
+    std::vector<uint32_t> candidatePathIdxs;
+    bool pathFound = true;
+    if (pathPartUsable) {
+        candidatePathIdxs = intersectPostingLists(pathTrigramIndex_, pathPart, pathFound);
+    }
+
+    // Step 2: Get candidate record indices from nameTrigramIndex_ (if namePart >= 3)
+    std::vector<uint32_t> nameRecCandidates;
+    bool nameFound = true;
+    if (namePartUsable && !nameTrigramIndex_.empty()) {
+        nameRecCandidates = intersectPostingLists(nameTrigramIndex_, namePart, nameFound);
+    }
+
+    // Step 3: Combine candidates and verify full path match
+    // Build dedup set from Phase 1
+    auto& isCandidate = threadLocalBitmap();
+    isCandidate.prepare(totalSize);
+    isCandidate.populateFrom(trigramCandidates);
+
+    if (pathPartUsable && pathFound && namePartUsable && nameFound) {
+        // Both indexes usable: expand pathIdxs to records, intersect with name candidates
+        size_t mergedBefore = merged.size();
+        std::unordered_set<uint32_t> nameSet(nameRecCandidates.begin(), nameRecCandidates.end());
+        for (uint32_t pi : candidatePathIdxs) {
+            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return true;
+            if (pi >= pathIdxToRecords_.size()) continue;
+            const auto& recIndices = pathIdxToRecords_[pi];
+            for (uint32_t idx : recIndices) {
+                if (records_[idx].type == 0) continue;
+                if (isCandidate.test(idx)) continue;
+                if (nameSet.find(idx) == nameSet.end()) continue;
+                const char* pd = lowerPathPool_.data(pi);
+                uint16_t pl = lowerPathPool_.length(pi);
+                const char* nd = namePool_.data(idx);
+                uint16_t nl = namePool_.length(idx);
+                size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
+                if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
+                uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
+                    ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
+                uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
+                merged.push_back({idx, priority, pLen});
+            }
+        }
+        // Always supplement with path-only matching: the joint intersection
+        // only finds records whose filename contains namePart, but for queries
+        // like "/usr/local/bin" the user wants all files *under* that path,
+        // not just files with "bin" in their name.
+        if (!candidatePathIdxs.empty()) {
+            // Mark joint results as candidates so path-only doesn't duplicate them
+            for (size_t mi = mergedBefore; mi < merged.size(); mi++) {
+                isCandidate.set(merged[mi].idx);
+            }
+            for (uint32_t pi : candidatePathIdxs) {
+                if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return true;
+                if (pi >= pathIdxToRecords_.size()) continue;
+                const char* pd2 = lowerPathPool_.data(pi);
+                uint16_t pl2 = lowerPathPool_.length(pi);
+                // Pre-filter: check if pre-lowered path contains pathPart
+                if (!me::simdContains(pd2, pl2, pathPart.data(), pathPart.size())) continue;
+                const auto& recIndices = pathIdxToRecords_[pi];
+                for (uint32_t idx : recIndices) {
+                    if (records_[idx].type == 0) continue;
+                    if (isCandidate.test(idx)) continue;
+                    const char* nd = namePool_.data(idx);
+                    uint16_t nl = namePool_.length(idx);
+                    size_t fullLen = buildFullPathBuf(pathBuf, pd2, pl2, nd, nl);
+                    if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
+                    uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
+                        ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
+                    uint32_t pLen = static_cast<uint32_t>(pl2 + 1 + nl);
+                    merged.push_back({idx, priority, pLen});
+                }
+            }
+        }
+    } else if (pathPartUsable && pathFound && !candidatePathIdxs.empty()) {
+        // Only path index usable: expand paths, verify name + full path
+        for (uint32_t pi : candidatePathIdxs) {
+            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return true;
+            if (pi >= pathIdxToRecords_.size()) continue;
+            const char* pd = lowerPathPool_.data(pi);
+            uint16_t pl = lowerPathPool_.length(pi);
+            // Pre-filter: check if pre-lowered path contains pathPart
+            if (!me::simdContains(pd, pl, pathPart.data(), pathPart.size())) continue;
+            const auto& recIndices = pathIdxToRecords_[pi];
+            for (uint32_t idx : recIndices) {
+                if (records_[idx].type == 0) continue;
+                if (isCandidate.test(idx)) continue;
+                const char* nd = namePool_.data(idx);
+                uint16_t nl = namePool_.length(idx);
+                size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
+                if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
+                uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
+                    ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
+                uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
+                merged.push_back({idx, priority, pLen});
+            }
+        }
+    } else if (namePartUsable && nameFound && !nameRecCandidates.empty()) {
+        // Only name index usable: check name candidates, verify path + full path
+        for (uint32_t idx : nameRecCandidates) {
+            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return true;
+            if (records_[idx].type == 0) continue;
+            if (isCandidate.test(idx)) continue;
+            uint32_t pi = pathIndices_[idx];
+            const char* pd = lowerPathPool_.data(pi);
+            uint16_t pl = lowerPathPool_.length(pi);
+            const char* nd = namePool_.data(idx);
+            uint16_t nl = namePool_.length(idx);
+            size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
+            if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
+            uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
+                ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
+            uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
+            merged.push_back({idx, priority, pLen});
+        }
+    }
+    // else: both parts too short or trigrams missing → 0 results from split path
+
+    return true;
+}
+
+void SearchEngine::queryPathTrigram(const std::string& lowerKey,
+                                    size_t totalSize, uint64_t myGen,
+                                    const std::vector<uint32_t>& trigramCandidates,
+                                    std::vector<Match>& merged) const {
+    bool pathAllFound = false;
+    std::vector<uint32_t> candidatePathIdxs = intersectPostingLists(pathTrigramIndex_, lowerKey, pathAllFound);
+
+    // Expand pathIdx -> record indices, excluding Phase 1 trigramCandidates
+    if (pathAllFound && !candidatePathIdxs.empty()) {
+        // Build O(1) bitset from trigramCandidates for dedup
+        auto& isCandidate = threadLocalBitmap();
+        isCandidate.prepare(totalSize);
+        isCandidate.populateFrom(trigramCandidates);
+
+        for (uint32_t pi : candidatePathIdxs) {
+            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+            if (pi >= pathIdxToRecords_.size()) continue;
+
+            // Verify this path actually contains the keyword (false positive filter)
+            std::string_view lowerPath(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
+            if (lowerPath.find(lowerKey) == std::string_view::npos) continue;
+
+            const auto& recIndices = pathIdxToRecords_[pi];
+            for (uint32_t idx : recIndices) {
+                if (records_[idx].type == 0) continue;
+                if (isCandidate.test(idx)) continue;
+                const char* nd = namePool_.data(idx);
+                uint16_t nl = namePool_.length(idx);
+                uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
+                    ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
+                uint32_t pLen = static_cast<uint32_t>(lowerPath.size() + 1 + nl);
+                merged.push_back({idx, priority, pLen});
+            }
+        }
+    }
+    // If !pathAllFound (some trigram missing), zero path matches — skip Phase 2 entirely
+}
+
+void SearchEngine::queryLinearScanPath(const std::string& lowerKey,
+                                       size_t totalSize, uint64_t myGen,
+                                       const std::vector<uint32_t>& trigramCandidates,
+                                       std::vector<Match>& merged) const {
+    // Fallback: parallel linear scan for path matches (glob, short keywords, or keywords with '/')
+    unsigned numThreads = std::thread::hardware_concurrency();
+    if (numThreads < 1) numThreads = 1;
+    if (numThreads > 32) numThreads = 32;
+
+    size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+
+    std::vector<std::vector<Match>> threadResults(numThreads);
+    auto* threadResultsPtr = &threadResults;
+
+    const auto& records = records_;
+    const auto& namePool = namePool_;
+    const auto& lowerPathPool = lowerPathPool_;
+    const auto& pIndices = pathIndices_;
+
+    auto& isCandidate = threadLocalBitmap();
+    isCandidate.prepare(totalSize);
+    isCandidate.populateFrom(trigramCandidates);
+    const auto* isCandidateBits = &isCandidate.bits;
+
+    // Dedup path matching for fallback linear scan
+    bool hasSlashFb = lowerKey.find('/') != std::string::npos;
+    uint32_t pathCountFb = lowerPathPool.entryCount();
+    std::vector<bool> pathMatchCacheFb(pathCountFb, false);
+    for (uint32_t pi = 0; pi < pathCountFb; pi++) {
+        if (!lowerPathPool.isLive(pi)) continue;
+        if (me::simdContains(lowerPathPool.data(pi), lowerPathPool.length(pi),
+                             lowerKey.data(), lowerKey.size()))
+            pathMatchCacheFb[pi] = true;
+    }
+    const auto* pathMatchCacheFbPtr = &pathMatchCacheFb;
+
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    const auto* genPtr = &queryGeneration_;
+    uint64_t capturedGen = myGen;
+    dispatch_apply(numThreads, queue, ^(size_t t) {
+        size_t start = t * chunkSize;
+        size_t end = std::min(start + chunkSize, totalSize);
+        if (start >= end) return;
+
+        auto& local = (*threadResultsPtr)[t];
+        // Thread-local reusable buffer for full paths.
+        std::vector<char> pathBuf;
+        for (size_t i = start; i < end; i++) {
+            if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
+            if (records[i].type == 0) continue;
+            if ((*isCandidateBits)[i]) continue;
+
+            const char* nd = namePool.data(static_cast<uint32_t>(i));
+            uint16_t nl = namePool.length(static_cast<uint32_t>(i));
+            if (me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())) {
+                uint8_t priority = namePriority(nd, nl, lowerKey.data(), lowerKey.size());
+                uint32_t pLen = static_cast<uint32_t>(lowerPathPool.length(pIndices[i]) + 1 + nl);
+                local.push_back({static_cast<uint32_t>(i), priority, pLen});
+            } else {
+                // O(1) dedup path check: skip if path doesn't match and no slash boundary
+                if (!(*pathMatchCacheFbPtr)[pIndices[i]] && !hasSlashFb) continue;
+                // Build full path from pre-lowered path pool (no runtime lowering needed)
+                const char* pd = lowerPathPool.data(pIndices[i]);
+                uint16_t pl = lowerPathPool.length(pIndices[i]);
+                size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
+                if (me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) {
+                    local.push_back({static_cast<uint32_t>(i), uint8_t(3), static_cast<uint32_t>(fullLen)});
+                }
+            }
+        }
+    });
+
+    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+
+    for (auto& v : threadResults) {
+        merged.insert(merged.end(), v.begin(), v.end());
+    }
+}
+
+void SearchEngine::queryLinearScan(const std::string& lowerKey,
+                                   bool useGlob, size_t totalSize, uint64_t myGen,
+                                   std::vector<Match>& merged) const {
+    // Original linear scan path (for glob patterns or short keywords)
+    unsigned numThreads = std::thread::hardware_concurrency();
+    if (numThreads < 1) numThreads = 1;
+    if (numThreads > 32) numThreads = 32;
+
+    size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+
+    std::vector<std::vector<Match>> threadResults(numThreads);
+
+    auto* threadResultsPtr = &threadResults;
+    const auto& records = records_;
+    const auto& namePool = namePool_;
+    const auto& lowerPathPool = lowerPathPool_;
+    const auto& pIndices = pathIndices_;
+
+    // Dedup path matching: pre-scan ~100K unique paths once, then O(1) lookup per record
+    bool hasSlash = !useGlob && lowerKey.find('/') != std::string::npos;
+    uint32_t pathCount = lowerPathPool.entryCount();
+    std::vector<bool> pathMatchCache(pathCount, false);
+    if (!useGlob) {
+        for (uint32_t pi = 0; pi < pathCount; pi++) {
+            if (!lowerPathPool.isLive(pi)) continue;
+            if (me::simdContains(lowerPathPool.data(pi), lowerPathPool.length(pi),
+                                 lowerKey.data(), lowerKey.size()))
+                pathMatchCache[pi] = true;
+        }
+    }
+    const auto* pathMatchCachePtr = &pathMatchCache;
+
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    const auto* genPtr = &queryGeneration_;
+    uint64_t capturedGen = myGen;
+    dispatch_apply(numThreads, queue, ^(size_t t) {
+        size_t start = t * chunkSize;
+        size_t end = std::min(start + chunkSize, totalSize);
+        if (start >= end) return;
+
+        auto& local = (*threadResultsPtr)[t];
+        // Thread-local reusable buffers to avoid per-iteration heap allocations
+        std::vector<char> pathBuf;
+        std::string lowerName; // reused for glob path only
+        for (size_t i = start; i < end; i++) {
+            if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
+            if (records[i].type == 0) continue;
+
+            const char* nd = namePool.data(static_cast<uint32_t>(i));
+            uint16_t nl = namePool.length(static_cast<uint32_t>(i));
+
+            bool nameMatch;
+            if (useGlob) {
+                lowerName.assign(nd, nl);
+                nameMatch = globMatch(lowerKey, lowerName);
+            } else {
+                nameMatch = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size());
+            }
+            bool pathMatch = false;
+            if (!nameMatch) {
+                // O(1) dedup path check: skip if path doesn't match and no slash boundary possible
+                if (!useGlob && !(*pathMatchCachePtr)[pIndices[i]] && !hasSlash) continue;
+                const char* pd = lowerPathPool.data(pIndices[i]);
+                uint16_t pl = lowerPathPool.length(pIndices[i]);
+                size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
+                if (useGlob) {
+                    std::string fullPath(pathBuf.data(), fullLen);
+                    pathMatch = globMatch(lowerKey, fullPath);
+                } else {
+                    pathMatch = me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size());
+                }
+            }
+
+            if (nameMatch || pathMatch) {
+                uint8_t priority = nameMatch ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
+                uint32_t pLen = static_cast<uint32_t>(lowerPathPool.length(pIndices[i]) + 1 + nl);
+                local.push_back({static_cast<uint32_t>(i), priority, pLen});
+            }
+        }
+    });
+
+    // Check if superseded after dispatch_apply
+    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+
+    for (auto& v : threadResults) {
+        merged.insert(merged.end(), v.begin(), v.end());
+    }
+}
+
 std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t maxResults,
                                           bool useTrigram) const {
     QueryTimingInfo unused;
@@ -394,69 +809,26 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     size_t phase1Results = 0;
 
     std::vector<uint32_t> trigramCandidates;
-    bool useTrigramIndex = false;
+    bool useTrigramIndex = useTrigram && !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
     bool useSlashSplit = false;
-
-    // --- Trigram-accelerated path for non-glob queries with keyword >= 3 chars ---
-    useTrigramIndex = useTrigram && !useGlob && lowerKey.size() >= 3 && !nameTrigramIndex_.empty();
 
     if (useTrigramIndex) {
         beforeTrigram = std::chrono::steady_clock::now();
-        auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
-        std::unordered_set<Trigram> uniqueKeyTrigrams(keyTrigrams.begin(), keyTrigrams.end());
-
-        if (!uniqueKeyTrigrams.empty()) {
-            // Collect posting lists sorted by size (smallest first)
-            std::vector<const std::vector<uint32_t>*> postingLists;
-            bool allFound = true;
-            for (Trigram t : uniqueKeyTrigrams) {
-                auto it = nameTrigramIndex_.find(t);
-                if (it == nameTrigramIndex_.end()) {
-                    allFound = false;
-                    break;
-                }
-                postingLists.push_back(&it->second);
-            }
-
-            if (allFound && !postingLists.empty()) {
-                std::sort(postingLists.begin(), postingLists.end(),
-                    [](const auto* a, const auto* b) { return a->size() < b->size(); });
-
-                // H-1 fix: reserve + assign avoids reallocation during copy
-                trigramCandidates.reserve(postingLists[0]->size());
-                trigramCandidates.assign(postingLists[0]->begin(), postingLists[0]->end());
-
-                // Intersect with remaining lists using sorted merge
-                for (size_t li = 1; li < postingLists.size() && !trigramCandidates.empty(); li++) {
-                    const auto& other = *postingLists[li];
-                    std::vector<uint32_t> intersection;
-                    intersection.reserve(std::min(trigramCandidates.size(), other.size()));
-                    std::set_intersection(trigramCandidates.begin(), trigramCandidates.end(),
-                                          other.begin(), other.end(),
-                                          std::back_inserter(intersection));
-                    trigramCandidates = std::move(intersection);
-                }
-            }
-            // Trigram candidates exceed threshold — linear scan is faster due to
-            // cache-friendly sequential access vs random posting-list traversal
-            if (trigramCandidates.size() > totalSize / 67) { // ~1.5%
-                trigramCandidates.clear();
-                useTrigramIndex = false;
-            }
-        } else {
+        bool nameAllFound = false;
+        trigramCandidates = intersectPostingLists(nameTrigramIndex_, lowerKey, nameAllFound);
+        if (!nameAllFound) {
+            useTrigramIndex = false;
+        } else if (trigramCandidates.size() > totalSize / 67) { // ~1.5%
+            trigramCandidates.clear();
             useTrigramIndex = false;
         }
         afterTrigram = std::chrono::steady_clock::now();
     }
 
-    // Collect results: (index, priority, pathLen) so sorting doesn't need records_ access.
-    // Priority: 0=name exact match, 1=name starts with, 2=name contains, 3=path-only match
-    struct Match { uint32_t idx; uint8_t priority; uint32_t pathLen; };
     std::vector<Match> merged;
 
     if (useTrigramIndex) {
         // Phase 1: Check trigram candidates for name matches
-        // Single-threaded with prefetch
         for (size_t ci = 0; ci < trigramCandidates.size(); ci++) {
             if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
             uint32_t idx = trigramCandidates[ci];
@@ -464,15 +836,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             const char* nameData = namePool_.data(idx);
             uint16_t nameLen = namePool_.length(idx);
             if (me::simdContains(nameData, nameLen, lowerKey.data(), lowerKey.size())) {
-                uint8_t priority;
-                if (nameLen == lowerKey.size() && memcmp(nameData, lowerKey.data(), nameLen) == 0) {
-                    priority = 0;
-                } else if (nameLen >= lowerKey.size() &&
-                           memcmp(nameData, lowerKey.data(), lowerKey.size()) == 0) {
-                    priority = 1;
-                } else {
-                    priority = 2;
-                }
+                uint8_t priority = namePriority(nameData, nameLen, lowerKey.data(), lowerKey.size());
                 uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[idx]) + 1 + nameLen);
                 merged.push_back({idx, priority, pLen});
             }
@@ -481,487 +845,33 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         afterPhase1 = std::chrono::steady_clock::now();
         phase1Results = merged.size();
 
-        // Phase 2: Path-only matches (skip if maxResults already satisfied)
+        // Phase 2: Path-based supplemental matches (skip if maxResults already satisfied)
         if (maxResults > 0 && merged.size() >= maxResults) {
             beforePhase2 = afterPhase2 = afterPhase1;
         } else {
-        beforePhase2 = std::chrono::steady_clock::now();
+            beforePhase2 = std::chrono::steady_clock::now();
 
-        // Determine which path strategy to use
-        // Slash-split: for queries like "tests/test_query" or "/usr/local/bin"
-        // pathTrigramIndex_ indexes full directory paths (including '/'), so absolute
-        // paths can also use slash-split — their trigrams exist in the index.
-        useSlashSplit = !pathTrigramIndex_.empty() && hasSlash;
-        bool usePathTrigram = !pathTrigramIndex_.empty()
-                              && !useSlashSplit
-                              && !hasSlash
-                              && lowerKey.size() >= 3;
+            useSlashSplit = !pathTrigramIndex_.empty() && hasSlash;
+            bool usePathTri = !pathTrigramIndex_.empty() && !useSlashSplit && !hasSlash && lowerKey.size() >= 3;
 
-        if (useSlashSplit) {
-            // Reusable buffer for full-path construction — avoids per-record heap allocations
-            std::vector<char> pathBuf;
-
-            // Split keyword at last '/' into pathPart and namePart
-            size_t lastSlash = lowerKey.rfind('/');
-            std::string pathPart = lowerKey.substr(0, lastSlash);   // e.g. "tests"
-            std::string namePart = lowerKey.substr(lastSlash + 1);  // e.g. "test_query_perf"
-
-            // When pathPart is empty (e.g., "/etc" → pathPart="", namePart="etc"),
-            // use the full lowerKey as pathPart for pathTrigramIndex_ lookup, since
-            // the query is really a path pattern like "/etc" and pathTrigramIndex_
-            // indexes full directory paths including '/'.
-            if (pathPart.empty() && lowerKey.size() >= 3) {
-                pathPart = lowerKey;
+            if (useSlashSplit) {
+                useSlashSplit = querySlashSplit(lowerKey, totalSize, myGen, trigramCandidates, merged);
             }
 
-            bool pathPartUsable = pathPart.size() >= 3;
-            bool namePartUsable = namePart.size() >= 3;
-
-            // If both parts are too short, fall through to linear scan
-            if (!pathPartUsable && !namePartUsable) {
-                useSlashSplit = false;
+            if (useSlashSplit) {
+                // Already handled by querySlashSplit
+            } else if (usePathTri) {
+                queryPathTrigram(lowerKey, totalSize, myGen, trigramCandidates, merged);
             } else {
-                // Step 1: Get candidate pathIdxs from pathTrigramIndex_ (if pathPart >= 3)
-                std::vector<uint32_t> candidatePathIdxs;
-                bool pathFound = true;
-                if (pathPartUsable) {
-                    auto pathTrigrams = ContentIndex::extractTrigrams(pathPart);
-                    std::unordered_set<Trigram> uniquePT(pathTrigrams.begin(), pathTrigrams.end());
-                    std::vector<const std::vector<uint32_t>*> pathPostingLists;
-                    for (Trigram t : uniquePT) {
-                        auto it = pathTrigramIndex_.find(t);
-                        if (it == pathTrigramIndex_.end()) { pathFound = false; break; }
-                        pathPostingLists.push_back(&it->second);
-                    }
-                    if (pathFound && !pathPostingLists.empty()) {
-                        std::sort(pathPostingLists.begin(), pathPostingLists.end(),
-                            [](const auto* a, const auto* b) { return a->size() < b->size(); });
-                        candidatePathIdxs.assign(pathPostingLists[0]->begin(), pathPostingLists[0]->end());
-                        for (size_t li = 1; li < pathPostingLists.size() && !candidatePathIdxs.empty(); li++) {
-                            const auto& other = *pathPostingLists[li];
-                            std::vector<uint32_t> isect;
-                            isect.reserve(std::min(candidatePathIdxs.size(), other.size()));
-                            std::set_intersection(candidatePathIdxs.begin(), candidatePathIdxs.end(),
-                                                  other.begin(), other.end(), std::back_inserter(isect));
-                            candidatePathIdxs = std::move(isect);
-                        }
-                    }
-                }
-
-                // Step 2: Get candidate record indices from nameTrigramIndex_ (if namePart >= 3)
-                std::vector<uint32_t> nameRecCandidates;
-                bool nameFound = true;
-                if (namePartUsable && !nameTrigramIndex_.empty()) {
-                    auto nameTrigrams = ContentIndex::extractTrigrams(namePart);
-                    std::unordered_set<Trigram> uniqueNT(nameTrigrams.begin(), nameTrigrams.end());
-                    std::vector<const std::vector<uint32_t>*> namePostingLists;
-                    for (Trigram t : uniqueNT) {
-                        auto it = nameTrigramIndex_.find(t);
-                        if (it == nameTrigramIndex_.end()) { nameFound = false; break; }
-                        namePostingLists.push_back(&it->second);
-                    }
-                    if (nameFound && !namePostingLists.empty()) {
-                        std::sort(namePostingLists.begin(), namePostingLists.end(),
-                            [](const auto* a, const auto* b) { return a->size() < b->size(); });
-                        nameRecCandidates.assign(namePostingLists[0]->begin(), namePostingLists[0]->end());
-                        for (size_t li = 1; li < namePostingLists.size() && !nameRecCandidates.empty(); li++) {
-                            const auto& other = *namePostingLists[li];
-                            std::vector<uint32_t> isect;
-                            isect.reserve(std::min(nameRecCandidates.size(), other.size()));
-                            std::set_intersection(nameRecCandidates.begin(), nameRecCandidates.end(),
-                                                  other.begin(), other.end(), std::back_inserter(isect));
-                            nameRecCandidates = std::move(isect);
-                        }
-                    }
-                }
-
-                // Step 3: Combine candidates and verify full path match
-                // Build dedup set from Phase 1
-                auto& isCandidate = threadLocalBitmap();
-                isCandidate.prepare(totalSize);
-                isCandidate.populateFrom(trigramCandidates);
-
-                if (pathPartUsable && pathFound && namePartUsable && nameFound) {
-                    // Both indexes usable: expand pathIdxs to records, intersect with name candidates
-                    size_t mergedBefore = merged.size();
-                    std::unordered_set<uint32_t> nameSet(nameRecCandidates.begin(), nameRecCandidates.end());
-                    for (uint32_t pi : candidatePathIdxs) {
-                        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-                        if (pi >= pathIdxToRecords_.size()) continue;
-                        const auto& recIndices = pathIdxToRecords_[pi];
-                        for (uint32_t idx : recIndices) {
-                            if (records_[idx].type == 0) continue;
-                            if (isCandidate.test(idx)) continue;
-                            if (nameSet.find(idx) == nameSet.end()) continue;
-                            const char* pd = lowerPathPool_.data(pi);
-                            uint16_t pl = lowerPathPool_.length(pi);
-                            const char* nd = namePool_.data(idx);
-                            uint16_t nl = namePool_.length(idx);
-                            size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                            if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                            memcpy(pathBuf.data(), pd, pl);
-                            pathBuf[pl] = '/';
-                            memcpy(pathBuf.data() + pl + 1, nd, nl);
-                            if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
-                            uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
-                                ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
-                                : 3;
-                            uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
-                            merged.push_back({idx, priority, pLen});
-                        }
-                    }
-                    // Always supplement with path-only matching: the joint intersection
-                    // only finds records whose filename contains namePart, but for queries
-                    // like "/usr/local/bin" the user wants all files *under* that path,
-                    // not just files with "bin" in their name.
-                    if (!candidatePathIdxs.empty()) {
-                        // Mark joint results as candidates so path-only doesn't duplicate them
-                        for (size_t mi = mergedBefore; mi < merged.size(); mi++) {
-                            isCandidate.set(merged[mi].idx);
-                        }
-                        for (uint32_t pi : candidatePathIdxs) {
-                            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-                            if (pi >= pathIdxToRecords_.size()) continue;
-                            const char* pd2 = lowerPathPool_.data(pi);
-                            uint16_t pl2 = lowerPathPool_.length(pi);
-                            // Pre-filter: check if lowered path contains pathPart
-                            if (!me::simdContains(pd2, pl2, pathPart.data(), pathPart.size())) continue;
-                            const auto& recIndices = pathIdxToRecords_[pi];
-                            for (uint32_t idx : recIndices) {
-                                if (records_[idx].type == 0) continue;
-                                if (isCandidate.test(idx)) continue;
-                                const char* nd = namePool_.data(idx);
-                                uint16_t nl = namePool_.length(idx);
-                                size_t fullLen = static_cast<size_t>(pl2) + 1 + nl;
-                                if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                                memcpy(pathBuf.data(), pd2, pl2);
-                                pathBuf[pl2] = '/';
-                                memcpy(pathBuf.data() + pl2 + 1, nd, nl);
-                                if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
-                                uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
-                                    ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
-                                    : 3;
-                                uint32_t pLen = static_cast<uint32_t>(pl2 + 1 + nl);
-                                merged.push_back({idx, priority, pLen});
-                            }
-                        }
-                    }
-                } else if (pathPartUsable && pathFound && !candidatePathIdxs.empty()) {
-                    // Only path index usable: expand paths, verify name + full path
-                    for (uint32_t pi : candidatePathIdxs) {
-                        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-                        if (pi >= pathIdxToRecords_.size()) continue;
-                        const char* pd = lowerPathPool_.data(pi);
-                        uint16_t pl = lowerPathPool_.length(pi);
-                        // Pre-filter: check if lowered path contains pathPart
-                        if (!me::simdContains(pd, pl, pathPart.data(), pathPart.size())) continue;
-                        const auto& recIndices = pathIdxToRecords_[pi];
-                        for (uint32_t idx : recIndices) {
-                            if (records_[idx].type == 0) continue;
-                            if (isCandidate.test(idx)) continue;
-                            const char* nd = namePool_.data(idx);
-                            uint16_t nl = namePool_.length(idx);
-                            size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                            if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                            memcpy(pathBuf.data(), pd, pl);
-                            pathBuf[pl] = '/';
-                            memcpy(pathBuf.data() + pl + 1, nd, nl);
-                            if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
-                            uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
-                                ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
-                                : 3;
-                            uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
-                            merged.push_back({idx, priority, pLen});
-                        }
-                    }
-                } else if (namePartUsable && nameFound && !nameRecCandidates.empty()) {
-                    // Only name index usable: check name candidates, verify path + full path
-                    for (uint32_t idx : nameRecCandidates) {
-                        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-                        if (records_[idx].type == 0) continue;
-                        if (isCandidate.test(idx)) continue;
-                        uint32_t pi = pathIndices_[idx];
-                        const char* pd = lowerPathPool_.data(pi);
-                        uint16_t pl = lowerPathPool_.length(pi);
-                        const char* nd = namePool_.data(idx);
-                        uint16_t nl = namePool_.length(idx);
-                        size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                        memcpy(pathBuf.data(), pd, pl);
-                        pathBuf[pl] = '/';
-                        memcpy(pathBuf.data() + pl + 1, nd, nl);
-                        if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
-                        uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
-                            ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
-                            : 3;
-                        uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
-                        merged.push_back({idx, priority, pLen});
-                    }
-                }
-                // else: both parts too short or trigrams missing → 0 results from split path
-                // (useSlashSplit was set to false above for both < 3, so won't reach here)
+                queryLinearScanPath(lowerKey, totalSize, myGen, trigramCandidates, merged);
             }
+
+            afterPhase2 = std::chrono::steady_clock::now();
         }
-
-        if (useSlashSplit) {
-            // Already handled above — skip to end of Phase 2
-        } else if (usePathTrigram) {
-            // Extract trigrams from keyword and intersect pathTrigramIndex_ posting lists
-            auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
-            std::unordered_set<Trigram> uniquePathTrigrams(keyTrigrams.begin(), keyTrigrams.end());
-
-            std::vector<uint32_t> candidatePathIdxs;
-            bool pathAllFound = true;
-
-            if (!uniquePathTrigrams.empty()) {
-                std::vector<const std::vector<uint32_t>*> pathPostingLists;
-                for (Trigram t : uniquePathTrigrams) {
-                    auto it = pathTrigramIndex_.find(t);
-                    if (it == pathTrigramIndex_.end()) {
-                        pathAllFound = false;
-                        break;
-                    }
-                    pathPostingLists.push_back(&it->second);
-                }
-
-                if (pathAllFound && !pathPostingLists.empty()) {
-                    std::sort(pathPostingLists.begin(), pathPostingLists.end(),
-                        [](const auto* a, const auto* b) { return a->size() < b->size(); });
-
-                    candidatePathIdxs.assign(pathPostingLists[0]->begin(), pathPostingLists[0]->end());
-                    for (size_t li = 1; li < pathPostingLists.size() && !candidatePathIdxs.empty(); li++) {
-                        const auto& other = *pathPostingLists[li];
-                        std::vector<uint32_t> intersection;
-                        intersection.reserve(std::min(candidatePathIdxs.size(), other.size()));
-                        std::set_intersection(candidatePathIdxs.begin(), candidatePathIdxs.end(),
-                                              other.begin(), other.end(),
-                                              std::back_inserter(intersection));
-                        candidatePathIdxs = std::move(intersection);
-                    }
-                }
-            }
-
-            // Expand pathIdx -> record indices, excluding Phase 1 trigramCandidates
-            if (pathAllFound && !candidatePathIdxs.empty()) {
-                // Build O(1) bitset from trigramCandidates for dedup
-                auto& isCandidate = threadLocalBitmap();
-                isCandidate.prepare(totalSize);
-                isCandidate.populateFrom(trigramCandidates);
-
-                for (uint32_t pi : candidatePathIdxs) {
-                    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-                    if (pi >= pathIdxToRecords_.size()) continue;
-
-                    // Verify this path actually contains the keyword (false positive filter)
-                    std::string_view lowerPath(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
-                    if (lowerPath.find(lowerKey) == std::string_view::npos) continue;
-
-                    const auto& recIndices = pathIdxToRecords_[pi];
-                    for (uint32_t idx : recIndices) {
-                        if (records_[idx].type == 0) continue;
-                        if (isCandidate.test(idx)) continue;
-                        const char* nd = namePool_.data(idx);
-                        uint16_t nl = namePool_.length(idx);
-                        uint8_t priority;
-                        if (me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())) {
-                            if (nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) priority = 0;
-                            else if (nl >= lowerKey.size() &&
-                                     memcmp(nd, lowerKey.data(), lowerKey.size()) == 0) priority = 1;
-                            else priority = 2;
-                        } else {
-                            priority = 3;
-                        }
-                        uint32_t pLen = static_cast<uint32_t>(lowerPath.size() + 1 + nl);
-                        merged.push_back({idx, priority, pLen});
-                    }
-                }
-            }
-            // If !pathAllFound (some trigram missing), zero path matches — skip Phase 2 entirely
-
-        } else {
-            // Fallback: parallel linear scan for path matches (glob, short keywords, or keywords with '/')
-            unsigned numThreads = std::thread::hardware_concurrency();
-            if (numThreads < 1) numThreads = 1;
-            if (numThreads > 32) numThreads = 32;
-
-            size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
-
-            std::vector<std::vector<Match>> threadResults(numThreads);
-            auto* threadResultsPtr = &threadResults;
-
-            const auto& records = records_;
-            const auto& namePool = namePool_;
-            const auto& lowerPathPool = lowerPathPool_;
-            const auto& pIndices = pathIndices_;
-
-            auto& isCandidate = threadLocalBitmap();
-            isCandidate.prepare(totalSize);
-            isCandidate.populateFrom(trigramCandidates);
-            const auto* isCandidateBits = &isCandidate.bits;
-
-            // Dedup path matching for fallback linear scan
-            bool hasSlashFb = lowerKey.find('/') != std::string::npos;
-            uint32_t pathCountFb = lowerPathPool.entryCount();
-            std::vector<bool> pathMatchCacheFb(pathCountFb, false);
-            for (uint32_t pi = 0; pi < pathCountFb; pi++) {
-                if (!lowerPathPool.isLive(pi)) continue;
-                if (me::simdContains(lowerPathPool.data(pi), lowerPathPool.length(pi),
-                                     lowerKey.data(), lowerKey.size()))
-                    pathMatchCacheFb[pi] = true;
-            }
-            const auto* pathMatchCacheFbPtr = &pathMatchCacheFb;
-
-            dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
-            const auto* genPtr = &queryGeneration_;
-            uint64_t capturedGen = myGen;
-            dispatch_apply(numThreads, queue, ^(size_t t) {
-                size_t start = t * chunkSize;
-                size_t end = std::min(start + chunkSize, totalSize);
-                if (start >= end) return;
-
-                auto& local = (*threadResultsPtr)[t];
-                // Thread-local reusable buffer for full paths.
-                std::vector<char> pathBuf;
-                for (size_t i = start; i < end; i++) {
-                    if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
-                    if (records[i].type == 0) continue;
-                    if ((*isCandidateBits)[i]) continue;
-
-                    const char* nd = namePool.data(static_cast<uint32_t>(i));
-                    uint16_t nl = namePool.length(static_cast<uint32_t>(i));
-                    if (me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())) {
-                        uint8_t priority;
-                        if (nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) priority = 0;
-                        else if (nl >= lowerKey.size() &&
-                                 memcmp(nd, lowerKey.data(), lowerKey.size()) == 0) priority = 1;
-                        else priority = 2;
-                        uint32_t pLen = static_cast<uint32_t>(lowerPathPool.length(pIndices[i]) + 1 + nl);
-                        local.push_back({static_cast<uint32_t>(i), priority, pLen});
-                    } else {
-                        // O(1) dedup path check: skip if path doesn't match and no slash boundary
-                        if (!(*pathMatchCacheFbPtr)[pIndices[i]] && !hasSlashFb) continue;
-                        // Build full path from pre-lowered path pool (no runtime lowering needed)
-                        const char* pd = lowerPathPool.data(pIndices[i]);
-                        uint16_t pl = lowerPathPool.length(pIndices[i]);
-                        size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                        memcpy(pathBuf.data(), pd, pl);
-                        pathBuf[pl] = '/';
-                        memcpy(pathBuf.data() + pl + 1, nd, nl);
-                        if (me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) {
-                            local.push_back({static_cast<uint32_t>(i), uint8_t(3), static_cast<uint32_t>(fullLen)});
-                        }
-                    }
-                }
-            });
-
-            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-
-            for (auto& v : threadResults) {
-                merged.insert(merged.end(), v.begin(), v.end());
-            }
-        }
-
-        afterPhase2 = std::chrono::steady_clock::now();
-        } // end Phase 2 maxResults check
     } else {
-        // Original linear scan path (for glob patterns or short keywords)
+        // Non-trigram: full linear scan (glob patterns or short keywords)
         beforePhase2 = std::chrono::steady_clock::now();
-        unsigned numThreads = std::thread::hardware_concurrency();
-        if (numThreads < 1) numThreads = 1;
-        if (numThreads > 32) numThreads = 32;
-
-        size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
-
-        std::vector<std::vector<Match>> threadResults(numThreads);
-
-        auto* threadResultsPtr = &threadResults;
-        const auto& records = records_;
-        const auto& namePool = namePool_;
-        const auto& lowerPathPool = lowerPathPool_;
-        const auto& pIndices = pathIndices_;
-
-        // Dedup path matching: pre-scan ~100K unique paths once, then O(1) lookup per record
-        bool hasSlash = !useGlob && lowerKey.find('/') != std::string::npos;
-        uint32_t pathCount = lowerPathPool.entryCount();
-        std::vector<bool> pathMatchCache(pathCount, false);
-        if (!useGlob) {
-            for (uint32_t pi = 0; pi < pathCount; pi++) {
-                if (!lowerPathPool.isLive(pi)) continue;
-                if (me::simdContains(lowerPathPool.data(pi), lowerPathPool.length(pi),
-                                     lowerKey.data(), lowerKey.size()))
-                    pathMatchCache[pi] = true;
-            }
-        }
-        const auto* pathMatchCachePtr = &pathMatchCache;
-
-        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
-        const auto* genPtr = &queryGeneration_;
-        uint64_t capturedGen = myGen;
-        dispatch_apply(numThreads, queue, ^(size_t t) {
-            size_t start = t * chunkSize;
-            size_t end = std::min(start + chunkSize, totalSize);
-            if (start >= end) return;
-
-            auto& local = (*threadResultsPtr)[t];
-            // Thread-local reusable buffers to avoid per-iteration heap allocations
-            std::vector<char> pathBuf;
-            std::string lowerName; // reused for glob path only
-            for (size_t i = start; i < end; i++) {
-                if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
-                if (records[i].type == 0) continue;
-
-                const char* nd = namePool.data(static_cast<uint32_t>(i));
-                uint16_t nl = namePool.length(static_cast<uint32_t>(i));
-
-                bool nameMatch;
-                if (useGlob) {
-                    lowerName.assign(nd, nl);
-                    nameMatch = globMatch(lowerKey, lowerName);
-                } else {
-                    nameMatch = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size());
-                }
-                bool pathMatch = false;
-                if (!nameMatch) {
-                    // O(1) dedup path check: skip if path doesn't match and no slash boundary possible
-                    if (!useGlob && !(*pathMatchCachePtr)[pIndices[i]] && !hasSlash) continue;
-                    const char* pd = lowerPathPool.data(pIndices[i]);
-                    uint16_t pl = lowerPathPool.length(pIndices[i]);
-                    size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                    if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                    memcpy(pathBuf.data(), pd, pl);
-                    pathBuf[pl] = '/';
-                    memcpy(pathBuf.data() + pl + 1, nd, nl);
-                    if (useGlob) {
-                        std::string fullPath(pathBuf.data(), fullLen);
-                        pathMatch = globMatch(lowerKey, fullPath);
-                    } else {
-                        pathMatch = me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size());
-                    }
-                }
-
-                if (nameMatch || pathMatch) {
-                    uint8_t priority;
-                    if (nameMatch) {
-                        if (nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) priority = 0;
-                        else if (nl >= lowerKey.size() &&
-                                 memcmp(nd, lowerKey.data(), lowerKey.size()) == 0) priority = 1;
-                        else priority = 2;
-                    } else {
-                        priority = 3;
-                    }
-                    uint32_t pLen = static_cast<uint32_t>(lowerPathPool.length(pIndices[i]) + 1 + nl);
-                    local.push_back({static_cast<uint32_t>(i), priority, pLen});
-                }
-            }
-        });
-
-        // Check if superseded after dispatch_apply
-        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-
-        for (auto& v : threadResults) {
-            merged.insert(merged.end(), v.begin(), v.end());
-        }
+        queryLinearScan(lowerKey, useGlob, totalSize, myGen, merged);
         afterPhase2 = std::chrono::steady_clock::now();
     }
 

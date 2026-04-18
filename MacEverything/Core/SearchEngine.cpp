@@ -434,6 +434,12 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     trigramCandidates = std::move(intersection);
                 }
             }
+            // Trigram candidates exceed threshold — linear scan is faster due to
+            // cache-friendly sequential access vs random posting-list traversal
+            if (trigramCandidates.size() > totalSize / 67) { // ~1.5%
+                trigramCandidates.clear();
+                useTrigramIndex = false;
+            }
         } else {
             useTrigramIndex = false;
         }

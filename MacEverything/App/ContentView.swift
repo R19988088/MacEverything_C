@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = SearchViewModel()
     @State private var scrollViewID = 0
+    @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,6 +26,7 @@ struct ContentView: View {
                     }
                     // Actual text field (in front)
                     TextField("Search files... (infile: for content search)", text: $viewModel.searchText)
+                        .focused($isSearchFieldFocused)
                         .accessibilityIdentifier("searchField")
                         .textFieldStyle(.plain)
                         .font(.system(size: 26))
@@ -274,6 +276,7 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.onWindowFocusChanged(true)
+            isSearchFieldFocused = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             viewModel.onWindowFocusChanged(false)

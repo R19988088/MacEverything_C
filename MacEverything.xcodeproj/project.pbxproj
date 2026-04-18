@@ -136,6 +136,7 @@
 		A200003D /* QueryAST.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryAST.h; sourceTree = "<group>"; };
 		A200003E /* QueryTokenizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryTokenizer.h; sourceTree = "<group>"; };
 		A200003F /* QueryParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryParser.h; sourceTree = "<group>"; };
+		A2000040 /* QueryFilterParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryFilterParser.h; sourceTree = "<group>"; };
 		B2000001 /* MacEverythingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEverythingUITests.swift; sourceTree = "<group>"; };
 		B2000002 /* MacEverythingUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacEverythingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000001 /* mcp_main.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = mcp_main.cpp; sourceTree = "<group>"; };
@@ -310,6 +311,7 @@
 				A200003D /* QueryAST.h */,
 				A200003E /* QueryTokenizer.h */,
 				A200003F /* QueryParser.h */,
+				A2000040 /* QueryFilterParser.h */,
 			);
 			path = Core;
 			sourceTree = "<group>";

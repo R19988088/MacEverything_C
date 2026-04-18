@@ -1,4 +1,5 @@
 #include "QueryParser.h"
+#include "QueryFilterParser.h"
 #include <algorithm>
 
 // ---------------------------------------------------------------------------
@@ -121,7 +122,9 @@ std::unique_ptr<QueryNode> QueryParser::parseAtom() {
     // Filter: ext:cpp, size:>1mb, etc.
     if (tok.type == TokenType::FILTER) {
         advance();
-        return QueryNode::makeFilter(tok.filterName, tok.filterArg);
+        auto node = QueryNode::makeFilter(tok.filterName, tok.filterArg);
+        QueryFilterParser::parse(*node);
+        return node;
     }
 
     // Plain word

@@ -25,6 +25,17 @@ struct MacEverythingApp: App {
                 Button("Content Settings...") {
                     ContentSettingsWindowController.shared.showWindow()
                 }
+
+                Divider()
+
+                Menu("MCP Integration") {
+                    ForEach(MCPClient.allCases, id: \.self) { client in
+                        Toggle(client.displayName, isOn: Binding(
+                            get: { MCPConfigManager.isEnabled(for: client) },
+                            set: { MCPConfigManager.setEnabled($0, for: client) }
+                        ))
+                    }
+                }
             }
         }
     }

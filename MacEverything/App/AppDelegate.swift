@@ -5,6 +5,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotkeyManager: HotkeyManager?
     private var statusItem: NSStatusItem?
     private var launchAtLoginItem: NSMenuItem?
+    private var mcpMenuItems: [MCPClient: NSMenuItem] = [:]
     private(set) var mainSearchWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -48,6 +49,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Rebuild Index", action: #selector(rebuildIndex), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Shortcut Settings...", action: #selector(openShortcutSettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Content Settings...", action: #selector(openContentSettings), keyEquivalent: ""))
+
+        let mcpSubmenu = NSMenu(title: "MCP Integration")
+        for client in MCPClient.allCases {
+            let item = NSMenuItem(title: client.displayName, action: #selector(toggleMCPClient(_:)), keyEquivalent: "")
+            item.representedObject = client
+            mcpMenuItems[client] = item
+            mcpSubmenu.addItem(item)
+        }
+        let mcpItem = NSMenuItem(title: "MCP Integration", action: nil, keyEquivalent: "")
+        mcpItem.submenu = mcpSubmenu
+        menu.addItem(mcpItem)
+
         menu.addItem(.separator())
         let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchAtLoginItem = loginItem
@@ -65,6 +78,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.title = isVisible ? "Hide MacEverything" : "Show MacEverything"
         }
         launchAtLoginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        for (client, item) in mcpMenuItems {
+            item.state = MCPConfigManager.isEnabled(for: client) ? .on : .off
+        }
     }
 
     // MARK: - Menu Actions
@@ -92,6 +108,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openContentSettings() {
         NSApp.activate(ignoringOtherApps: true)
         ContentSettingsWindowController.shared.showWindow()
+    }
+
+    @objc private func toggleMCPClient(_ sender: NSMenuItem) {
+        guard let client = sender.representedObject as? MCPClient else { return }
+        let currentlyEnabled = MCPConfigManager.isEnabled(for: client)
+        MCPConfigManager.setEnabled(!currentlyEnabled, for: client)
+        sender.state = !currentlyEnabled ? .on : .off
     }
 
     @objc private func toggleLaunchAtLogin() {

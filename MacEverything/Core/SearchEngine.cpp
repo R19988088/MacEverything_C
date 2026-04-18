@@ -489,6 +489,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                               && lowerKey.size() >= 3;
 
         if (useSlashSplit) {
+            // Reusable buffer for full-path construction — avoids per-record heap allocations
+            std::vector<char> pathBuf;
+
             // Split keyword at last '/' into pathPart and namePart
             size_t lastSlash = lowerKey.rfind('/');
             std::string pathPart = lowerKey.substr(0, lastSlash);   // e.g. "tests"
@@ -581,21 +584,21 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             if (records_[idx].type == 0) continue;
                             if (isCandidate.test(idx)) continue;
                             if (nameSet.find(idx) == nameSet.end()) continue;
-                            std::string rPath = pathPool_.str(pi);
+                            const char* pd = pathPool_.data(pi);
+                            uint16_t pl = pathPool_.length(pi);
                             const char* nd = namePool_.data(idx);
                             uint16_t nl = namePool_.length(idx);
-                            // Build lowered full path without extra allocations
-                            std::string fullPath;
-                            fullPath.reserve(rPath.size() + 1 + nl);
-                            fullPath.append(rPath);
-                            if (!fullPath.empty() && fullPath.back() != '/') fullPath.push_back('/');
-                            fullPath.append(nd, nl);
-                            me::simdToLowerAscii(fullPath.data(), rPath.size());
-                            if (fullPath.find(lowerKey) == std::string::npos) continue;
+                            size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
+                            if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+                            memcpy(pathBuf.data(), pd, pl);
+                            pathBuf[pl] = '/';
+                            memcpy(pathBuf.data() + pl + 1, nd, nl);
+                            me::simdToLowerAscii(pathBuf.data(), pl);
+                            if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                             uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                 ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
                                 : 3;
-                            uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + nl);
+                            uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
                             merged.push_back({idx, priority, pLen});
                         }
                     }
@@ -611,26 +614,31 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         for (uint32_t pi : candidatePathIdxs) {
                             if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                             if (pi >= pathIdxToRecords_.size()) continue;
-                            std::string rPath = pathPool_.str(pi);
-                            std::string lowerPath = me::toLower(rPath);
-                            if (lowerPath.find(pathPart) == std::string::npos) continue;
+                            const char* pd2 = pathPool_.data(pi);
+                            uint16_t pl2 = pathPool_.length(pi);
+                            // Pre-filter: check if lowered path contains pathPart
+                            if (pathBuf.size() < pl2) pathBuf.resize(static_cast<size_t>(pl2) * 2);
+                            memcpy(pathBuf.data(), pd2, pl2);
+                            me::simdToLowerAscii(pathBuf.data(), pl2);
+                            if (!me::simdContains(pathBuf.data(), pl2, pathPart.data(), pathPart.size())) continue;
                             const auto& recIndices = pathIdxToRecords_[pi];
                             for (uint32_t idx : recIndices) {
                                 if (records_[idx].type == 0) continue;
                                 if (isCandidate.test(idx)) continue;
                                 const char* nd = namePool_.data(idx);
                                 uint16_t nl = namePool_.length(idx);
-                                std::string fullPath;
-                                fullPath.reserve(rPath.size() + 1 + nl);
-                                fullPath.append(rPath);
-                                if (!fullPath.empty() && fullPath.back() != '/') fullPath.push_back('/');
-                                fullPath.append(nd, nl);
-                                me::simdToLowerAscii(fullPath.data(), rPath.size());
-                                if (fullPath.find(lowerKey) == std::string::npos) continue;
+                                size_t fullLen = static_cast<size_t>(pl2) + 1 + nl;
+                                if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+                                // Re-copy path since pathBuf may have been resized
+                                memcpy(pathBuf.data(), pd2, pl2);
+                                pathBuf[pl2] = '/';
+                                memcpy(pathBuf.data() + pl2 + 1, nd, nl);
+                                me::simdToLowerAscii(pathBuf.data(), pl2);
+                                if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                                 uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                     ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
                                     : 3;
-                                uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + nl);
+                                uint32_t pLen = static_cast<uint32_t>(pl2 + 1 + nl);
                                 merged.push_back({idx, priority, pLen});
                             }
                         }
@@ -640,26 +648,30 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     for (uint32_t pi : candidatePathIdxs) {
                         if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                         if (pi >= pathIdxToRecords_.size()) continue;
-                        std::string rPath = pathPool_.str(pi);
-                        std::string lowerPath = me::toLower(rPath);
-                        if (lowerPath.find(pathPart) == std::string::npos) continue;
+                        const char* pd = pathPool_.data(pi);
+                        uint16_t pl = pathPool_.length(pi);
+                        // Pre-filter: check if lowered path contains pathPart
+                        if (pathBuf.size() < pl) pathBuf.resize(static_cast<size_t>(pl) * 2);
+                        memcpy(pathBuf.data(), pd, pl);
+                        me::simdToLowerAscii(pathBuf.data(), pl);
+                        if (!me::simdContains(pathBuf.data(), pl, pathPart.data(), pathPart.size())) continue;
                         const auto& recIndices = pathIdxToRecords_[pi];
                         for (uint32_t idx : recIndices) {
                             if (records_[idx].type == 0) continue;
                             if (isCandidate.test(idx)) continue;
                             const char* nd = namePool_.data(idx);
                             uint16_t nl = namePool_.length(idx);
-                            std::string fullPath;
-                            fullPath.reserve(rPath.size() + 1 + nl);
-                            fullPath.append(rPath);
-                            if (!fullPath.empty() && fullPath.back() != '/') fullPath.push_back('/');
-                            fullPath.append(nd, nl);
-                            me::simdToLowerAscii(fullPath.data(), rPath.size());
-                            if (fullPath.find(lowerKey) == std::string::npos) continue;
+                            size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
+                            if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+                            memcpy(pathBuf.data(), pd, pl);
+                            pathBuf[pl] = '/';
+                            memcpy(pathBuf.data() + pl + 1, nd, nl);
+                            me::simdToLowerAscii(pathBuf.data(), pl);
+                            if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                             uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                 ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
                                 : 3;
-                            uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + nl);
+                            uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
                             merged.push_back({idx, priority, pLen});
                         }
                     }
@@ -669,20 +681,22 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                         if (records_[idx].type == 0) continue;
                         if (isCandidate.test(idx)) continue;
-                        std::string rPath = pathPool_.str(pathIndices_[idx]);
+                        uint32_t pi = pathIndices_[idx];
+                        const char* pd = pathPool_.data(pi);
+                        uint16_t pl = pathPool_.length(pi);
                         const char* nd = namePool_.data(idx);
                         uint16_t nl = namePool_.length(idx);
-                        std::string fullPath;
-                        fullPath.reserve(rPath.size() + 1 + nl);
-                        fullPath.append(rPath);
-                        if (!fullPath.empty() && fullPath.back() != '/') fullPath.push_back('/');
-                        fullPath.append(nd, nl);
-                        me::simdToLowerAscii(fullPath.data(), rPath.size());
-                        if (fullPath.find(lowerKey) == std::string::npos) continue;
+                        size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
+                        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+                        memcpy(pathBuf.data(), pd, pl);
+                        pathBuf[pl] = '/';
+                        memcpy(pathBuf.data() + pl + 1, nd, nl);
+                        me::simdToLowerAscii(pathBuf.data(), pl);
+                        if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                         uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                             ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
                             : 3;
-                        uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + nl);
+                        uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
                         merged.push_back({idx, priority, pLen});
                     }
                 }

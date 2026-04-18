@@ -68,10 +68,12 @@ struct ResultRow: View {
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 2) {
-                highlightMatches(in: item.name, keyword: keyword, font: .title3, color: .primary)
-                    .lineLimit(1)
-                highlightMatches(in: item.path, keyword: keyword, font: .subheadline, color: .secondary)
-                    .lineLimit(1)
+                let highlighted = highlightCrossMatches(
+                    path: item.path, name: item.name, keyword: keyword,
+                    nameFont: .title3, nameColor: .primary,
+                    pathFont: .subheadline, pathColor: .secondary)
+                highlighted.nameText.lineLimit(1)
+                highlighted.pathText.lineLimit(1)
             }
 
             Spacer()

@@ -16,6 +16,7 @@
 #include <set>
 
 #include "IndexWAL.h"
+#include "QueryAST.h"
 
 /// Deduplication table for directory path strings.
 /// Interns unique paths and returns a compact uint32_t index.
@@ -110,6 +111,13 @@ public:
     /// Same as query() but also populates timing breakdown.
     std::vector<uint32_t> query(const std::string& keyword, uint32_t maxResults,
                                 bool useTrigram, QueryTimingInfo& timing) const;
+
+    /// Advanced query: evaluate an AST with boolean operators, quoted phrases,
+    /// and filter nodes. Uses trigram index for TERM nodes, then applies
+    /// AND/OR/NOT logic. Called automatically by query() when advanced syntax
+    /// is detected.
+    std::vector<uint32_t> queryAdvanced(const std::string& input, uint32_t maxResults,
+                                         bool useTrigram, QueryTimingInfo& timing) const;
 
     FileRecord getRecord(uint32_t index) const;
     uint32_t recordCount() const;

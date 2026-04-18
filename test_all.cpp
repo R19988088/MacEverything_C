@@ -98,6 +98,8 @@ namespace fs = std::filesystem;
 #include "tests/test_string_pool.h"
 #include "tests/test_simd_search.h"
 #include "tests/test_paged_persistence_v5.h"
+#include "tests/test_query_tokenizer.h"
+#include "tests/test_query_parser.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -141,7 +143,8 @@ static void printUsage(const char* prog) {
     std::cout << "  46 (10M query performance),\n";
     std::cout << "  49 (MCP protocol),\n";
     std::cout << "  50 (string pool), 51 (SIMD search), 52 (lowerPathPool),\n";
-    std::cout << "  53 (paged persistence v5)\n";
+    std::cout << "  53 (paged persistence v5),\n";
+    std::cout << "  54 (query tokenizer), 55 (query parser)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -156,7 +159,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55"});
         } else if (arg == "--bench") {
             explicitSelection = true;
             selectedParts.insert({"44", "46"});
@@ -182,7 +185,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55"};
     }
 
     // Validate root path if scan test is selected
@@ -267,6 +270,8 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("51")) runSIMDSearchTests();
     if (selectedParts.count("52")) runLowerPathPoolTests();
     if (selectedParts.count("53")) runPagedPersistenceV5Tests();
+    if (selectedParts.count("54")) runQueryTokenizerTests();
+    if (selectedParts.count("55")) runQueryParserTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

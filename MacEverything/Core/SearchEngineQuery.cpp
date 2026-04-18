@@ -1,6 +1,8 @@
 #include "SearchEngine.h"
 #include "StringUtils.h"
 #include "Logger.h"
+#include "QueryTokenizer.h"
+#include "QueryParser.h"
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -578,6 +580,12 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     uint64_t myGen = queryGeneration_.fetch_add(1, std::memory_order_relaxed) + 1;
 
     if (keyword.empty()) return {};
+
+    // Route to advanced query path if the input contains boolean operators,
+    // grouping, quoted phrases, or known filter functions.
+    if (QueryTokenizer::hasAdvancedSyntax(keyword)) {
+        return queryAdvanced(keyword, maxResults, useTrigram, timing);
+    }
 
     auto queryStart = std::chrono::steady_clock::now();
     std::string lowerKey = me::toLower(keyword);

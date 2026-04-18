@@ -1,6 +1,5 @@
 #pragma once
-#include "tests/test_helpers.h"
-#include "MacEverything/Core/SIMDSearch.h"
+#include "test_helpers.h"
 #include <string>
 #include <vector>
 #include <cstring>

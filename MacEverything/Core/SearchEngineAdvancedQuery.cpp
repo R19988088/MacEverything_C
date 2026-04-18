@@ -2,6 +2,7 @@
 #include "StringUtils.h"
 #include "QueryParser.h"
 #include "QueryTokenizer.h"
+#include "QueryFilterParser.h"
 #include "Logger.h"
 #include <algorithm>
 #include <cstring>
@@ -11,19 +12,139 @@
 // ---------------------------------------------------------------------------
 // queryAdvanced: evaluate a parsed AST against the record set.
 //
-// Phase 1 strategy (boolean + text terms only):
+// Strategy:
 // 1. Parse the query into an AST.
-// 2. Collect all TERM nodes from the AST.
-// 3. For each TERM, run the existing substring/glob search to get matching
-//    record indices as a bitset.
-// 4. Combine bitsets according to AND/OR/NOT logic.
-// 5. Score, sort, and return results.
+// 2. Extract best TERM for trigram pre-filtering.
+// 3. Evaluate AST per-record: TERM=substring/glob, FILTER=structured filters,
+//    AND/OR/NOT=boolean logic.
+// 4. Score, sort, and return results.
 //
-// FILTER nodes are recognized but passed through as always-true in Phase 1.
-// They will be implemented in Phase 2.
+// Supported FILTER types: ext:, size:, file:, folder:, type:, path:, nopath:,
+// parent:, depth:, len:
 // ---------------------------------------------------------------------------
 
 namespace {
+
+/// Compare a numeric value against a filter's parsed operator and thresholds.
+static bool compareNumeric(uint64_t val, CompareOp op, uint64_t v1, uint64_t v2) {
+    switch (op) {
+        case CompareOp::EQ:    return val == v1;
+        case CompareOp::LT:    return val < v1;
+        case CompareOp::LE:    return val <= v1;
+        case CompareOp::GT:    return val > v1;
+        case CompareOp::GE:    return val >= v1;
+        case CompareOp::RANGE: return val >= v1 && val <= v2;
+    }
+    return false;
+}
+
+/// Extract lowercase file extension from name data.
+/// Returns empty string_view if no extension found.
+static std::string getExtLower(const char* nameData, uint16_t nameLen) {
+    // Find last '.'
+    int dotPos = -1;
+    for (int i = static_cast<int>(nameLen) - 1; i >= 0; --i) {
+        if (nameData[i] == '.') { dotPos = i; break; }
+    }
+    if (dotPos < 0 || dotPos == static_cast<int>(nameLen) - 1) return {};
+    // nameData is already lowercase
+    return std::string(nameData + dotPos + 1, nameLen - dotPos - 1);
+}
+
+/// Count '/' in path to determine depth.
+static uint64_t computeDepth(const char* pathData, uint16_t pathLen) {
+    uint64_t depth = 0;
+    for (uint16_t i = 0; i < pathLen; ++i) {
+        if (pathData[i] == '/') depth++;
+    }
+    return depth;
+}
+
+/// Evaluate a FILTER node against a single record.
+static bool evalFilter(const QueryNode& node,
+                       const FileRecord& rec,
+                       const char* nameData, uint16_t nameLen,
+                       const char* pathData, uint16_t pathLen,
+                       std::vector<char>& pathBuf) {
+    const auto& name = node.filterName;
+
+    // ext: — match file extension
+    if (name == "ext") {
+        std::string ext = getExtLower(nameData, nameLen);
+        if (ext.empty()) return false;
+        for (auto& e : node.extList) {
+            if (ext == e) return true;
+        }
+        return false;
+    }
+
+    // size: — compare file size
+    if (name == "size") {
+        return compareNumeric(rec.size, node.op, node.numVal1, node.numVal2);
+    }
+
+    // file: — match files only
+    if (name == "file") {
+        return rec.type == 1; // 1=file
+    }
+
+    // folder: — match directories only
+    if (name == "folder") {
+        return rec.type == 2; // 2=dir
+    }
+
+    // type: — shorthand for file/folder
+    if (name == "type") {
+        if (node.filterArg == "file") return rec.type == 1;
+        if (node.filterArg == "folder" || node.filterArg == "dir") return rec.type == 2;
+        return false;
+    }
+
+    // path: — path must contain substring (case insensitive)
+    if (name == "path") {
+        // Build full path: pathData + '/' + nameData
+        size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
+        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+        memcpy(pathBuf.data(), pathData, pathLen);
+        pathBuf[pathLen] = '/';
+        memcpy(pathBuf.data() + pathLen + 1, nameData, nameLen);
+        return me::simdContains(pathBuf.data(), fullLen,
+                                node.filterArg.data(), node.filterArg.size());
+    }
+
+    // nopath: — path must NOT contain substring
+    if (name == "nopath") {
+        size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
+        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+        memcpy(pathBuf.data(), pathData, pathLen);
+        pathBuf[pathLen] = '/';
+        memcpy(pathBuf.data() + pathLen + 1, nameData, nameLen);
+        return !me::simdContains(pathBuf.data(), fullLen,
+                                 node.filterArg.data(), node.filterArg.size());
+    }
+
+    // parent: — direct parent path must match exactly
+    if (name == "parent") {
+        // filterArg is lowercased; pathData is already lowercased
+        std::string pathStr(pathData, pathLen);
+        return pathStr == node.filterArg;
+    }
+
+    // depth: — directory depth (count of '/' in full path)
+    if (name == "depth") {
+        uint64_t depth = computeDepth(pathData, pathLen);
+        return compareNumeric(depth, node.op, node.numVal1, node.numVal2);
+    }
+
+    // len: — filename length
+    if (name == "len") {
+        return compareNumeric(static_cast<uint64_t>(nameLen), node.op,
+                              node.numVal1, node.numVal2);
+    }
+
+    // Unknown filter — pass through
+    return true;
+}
 
 /// Evaluate a TERM node against a single record.
 /// Returns true if the record's name or full path matches the term text.
@@ -74,9 +195,7 @@ static bool evalNode(const QueryNode& node,
             return !evalNode(*node.children[0], rec, nameData, nameLen, pathData, pathLen, pathBuf);
 
         case QueryNodeType::FILTER:
-            // Phase 1: filters are recognized but not evaluated.
-            // Always return true; Phase 2 will add actual filter logic.
-            return true;
+            return evalFilter(node, rec, nameData, nameLen, pathData, pathLen, pathBuf);
     }
     return false;
 }

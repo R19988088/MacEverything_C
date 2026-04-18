@@ -1141,6 +1141,21 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             if (!globUsedTrigram) {
                 queryLinearScan(lowerKey, useGlob, totalSize, myGen, merged);
             }
+        } else if (hasSlash && useTrigram && !pathTrigramIndex_.empty()) {
+            // Slash query: try trigram-split path directly.
+            // The name-trigram gate (L972-983) rejects slash queries because
+            // cross-slash trigrams (e.g. "r/l") don't exist in nameTrigramIndex_.
+            // Bypass that gate and call querySlashSplit directly.
+            beforeTrigram = std::chrono::steady_clock::now();
+            std::vector<uint32_t> emptyPhase1;
+            useSlashSplit = querySlashSplit(lowerKey, totalSize, myGen, emptyPhase1, merged);
+            afterTrigram = std::chrono::steady_clock::now();
+            if (useSlashSplit) {
+                useTrigramIndex = true;  // for searchPath label
+            } else {
+                // Both parts < 3 chars, fall back to linear scan
+                queryLinearScan(lowerKey, false, totalSize, myGen, merged);
+            }
         } else {
             queryLinearScan(lowerKey, useGlob, totalSize, myGen, merged);
         }

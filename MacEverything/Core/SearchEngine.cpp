@@ -468,7 +468,9 @@ bool SearchEngine::isGlobPattern(const std::string& s) {
     return s.find('*') != std::string::npos || s.find('?') != std::string::npos;
 }
 
-bool SearchEngine::globMatch(const std::string& pattern, const std::string& text) {
+namespace {
+
+bool globMatchImpl(const std::string& pattern, const std::string& text) {
     size_t px = 0, tx = 0;
     size_t starPx = std::string::npos, starTx = 0;
 
@@ -489,6 +491,71 @@ bool SearchEngine::globMatch(const std::string& pattern, const std::string& text
 
     while (px < pattern.size() && pattern[px] == '*') px++;
     return px == pattern.size();
+}
+
+struct CompiledGlob {
+    enum Type { SUFFIX, PREFIX, CONTAINS, EXACT, GENERIC };
+    Type type;
+    std::string fixed;      // literal part for fast match
+    std::string original;   // original pattern for GENERIC fallback
+};
+
+CompiledGlob compileGlob(const std::string& pattern) {
+    // *.ext → SUFFIX(".ext")
+    if (pattern.size() >= 2 && pattern[0] == '*' &&
+        pattern.find('*', 1) == std::string::npos &&
+        pattern.find('?', 1) == std::string::npos) {
+        return {CompiledGlob::SUFFIX, pattern.substr(1), pattern};
+    }
+    // prefix* → PREFIX("prefix")
+    if (pattern.size() >= 2 && pattern.back() == '*' &&
+        pattern.find('*') == pattern.size() - 1 &&
+        pattern.find('?') == std::string::npos) {
+        return {CompiledGlob::PREFIX, pattern.substr(0, pattern.size() - 1), pattern};
+    }
+    // *keyword* → CONTAINS("keyword")
+    if (pattern.size() >= 3 && pattern.front() == '*' && pattern.back() == '*') {
+        std::string mid = pattern.substr(1, pattern.size() - 2);
+        if (mid.find('*') == std::string::npos &&
+            mid.find('?') == std::string::npos) {
+            return {CompiledGlob::CONTAINS, mid, pattern};
+        }
+    }
+    // No wildcard → EXACT
+    if (pattern.find('*') == std::string::npos &&
+        pattern.find('?') == std::string::npos) {
+        return {CompiledGlob::EXACT, pattern, pattern};
+    }
+    return {CompiledGlob::GENERIC, "", pattern};
+}
+
+bool compiledGlobMatch(const CompiledGlob& cg, const char* text, size_t len) {
+    switch (cg.type) {
+    case CompiledGlob::SUFFIX:
+        return len >= cg.fixed.size() &&
+               memcmp(text + len - cg.fixed.size(),
+                      cg.fixed.data(), cg.fixed.size()) == 0;
+    case CompiledGlob::PREFIX:
+        return len >= cg.fixed.size() &&
+               memcmp(text, cg.fixed.data(), cg.fixed.size()) == 0;
+    case CompiledGlob::CONTAINS:
+        return me::simdContains(text, static_cast<uint16_t>(std::min(len, size_t(65535))),
+                                cg.fixed.data(), cg.fixed.size());
+    case CompiledGlob::EXACT:
+        return len == cg.fixed.size() &&
+               memcmp(text, cg.fixed.data(), len) == 0;
+    case CompiledGlob::GENERIC: {
+        std::string s(text, len);
+        return globMatchImpl(cg.original, s);
+    }
+    }
+    return false;
+}
+
+} // anonymous namespace
+
+bool SearchEngine::globMatch(const std::string& pattern, const std::string& text) {
+    return globMatchImpl(pattern, text);
 }
 
 size_t SearchEngine::buildFullPathBuf(std::vector<char>& buf,
@@ -805,6 +872,11 @@ void SearchEngine::queryLinearScan(const std::string& lowerKey,
     }
     const auto* pathMatchCachePtr = &pathMatchCache;
 
+    // Pre-compile glob pattern once before dispatch_apply
+    CompiledGlob cg;
+    if (useGlob) cg = compileGlob(lowerKey);
+    const auto* cgPtr = useGlob ? &cg : nullptr;
+
     dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
     const auto* genPtr = &queryGeneration_;
     uint64_t capturedGen = myGen;
@@ -814,9 +886,7 @@ void SearchEngine::queryLinearScan(const std::string& lowerKey,
         if (start >= end) return;
 
         auto& local = (*threadResultsPtr)[t];
-        // Thread-local reusable buffers to avoid per-iteration heap allocations
         std::vector<char> pathBuf;
-        std::string lowerName; // reused for glob path only
         for (size_t i = start; i < end; i++) {
             if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
             if (records[i].type == 0) continue;
@@ -826,21 +896,18 @@ void SearchEngine::queryLinearScan(const std::string& lowerKey,
 
             bool nameMatch;
             if (useGlob) {
-                lowerName.assign(nd, nl);
-                nameMatch = globMatch(lowerKey, lowerName);
+                nameMatch = compiledGlobMatch(*cgPtr, nd, nl);
             } else {
                 nameMatch = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size());
             }
             bool pathMatch = false;
             if (!nameMatch) {
-                // O(1) dedup path check: skip if path doesn't match and no slash boundary possible
                 if (!useGlob && !(*pathMatchCachePtr)[pIndices[i]] && !hasSlash) continue;
                 const char* pd = lowerPathPool.data(pIndices[i]);
                 uint16_t pl = lowerPathPool.length(pIndices[i]);
                 size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
                 if (useGlob) {
-                    std::string fullPath(pathBuf.data(), fullLen);
-                    pathMatch = globMatch(lowerKey, fullPath);
+                    pathMatch = compiledGlobMatch(*cgPtr, pathBuf.data(), fullLen);
                 } else {
                     pathMatch = me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size());
                 }
@@ -959,9 +1026,49 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             afterPhase2 = std::chrono::steady_clock::now();
         }
     } else {
-        // Non-trigram: full linear scan (glob patterns or short keywords)
+        // Non-trigram path — glob can still try trigram pre-filtering
         beforePhase2 = std::chrono::steady_clock::now();
-        queryLinearScan(lowerKey, useGlob, totalSize, myGen, merged);
+        if (useGlob) {
+            auto cg = compileGlob(lowerKey);
+            bool globUsedTrigram = false;
+            if (useTrigram && cg.fixed.size() >= 3 && !nameTrigramIndex_.empty()) {
+                beforeTrigram = std::chrono::steady_clock::now();
+                bool allFound = false;
+                auto candidates = intersectPostingLists(nameTrigramIndex_, cg.fixed, allFound);
+                afterTrigram = std::chrono::steady_clock::now();
+                if (allFound && candidates.size() <= totalSize / 67) {
+                    globUsedTrigram = true;
+                    std::vector<char> pathBuf;
+                    for (size_t ci = 0; ci < candidates.size(); ci++) {
+                        if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                        uint32_t idx = candidates[ci];
+                        if (records_[idx].type == 0) continue;
+                        const char* nd = namePool_.data(idx);
+                        uint16_t nl = namePool_.length(idx);
+                        if (compiledGlobMatch(cg, nd, nl)) {
+                            uint8_t priority = namePriority(nd, nl, lowerKey.data(), lowerKey.size());
+                            uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[idx]) + 1 + nl);
+                            merged.push_back({idx, priority, pLen});
+                        } else {
+                            const char* pd = lowerPathPool_.data(pathIndices_[idx]);
+                            uint16_t pl = lowerPathPool_.length(pathIndices_[idx]);
+                            size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
+                            if (compiledGlobMatch(cg, pathBuf.data(), fullLen)) {
+                                uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
+                                merged.push_back({idx, 3, pLen});
+                            }
+                        }
+                    }
+                    trigramCandidates = std::move(candidates);
+                    useTrigramIndex = true;  // for searchPath label
+                }
+            }
+            if (!globUsedTrigram) {
+                queryLinearScan(lowerKey, useGlob, totalSize, myGen, merged);
+            }
+        } else {
+            queryLinearScan(lowerKey, useGlob, totalSize, myGen, merged);
+        }
         afterPhase2 = std::chrono::steady_clock::now();
     }
 
@@ -1011,7 +1118,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     timing.pathMatches = merged.size() > phase1Results ? merged.size() - phase1Results : 0;
     timing.resultCount = result.size();
     timing.usedTrigram = useTrigramIndex;
-    timing.searchPath = useTrigramIndex ? (useSlashSplit ? "trigram-split" : "trigram") : "linear";
+    timing.searchPath = useTrigramIndex ? (useGlob ? "glob-trigram" : (useSlashSplit ? "trigram-split" : "trigram")) : "linear";
 
     auto ms = static_cast<long long>(timing.totalMs);
     if (ms > 100) {

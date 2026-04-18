@@ -110,8 +110,8 @@ static void runTrigramIndexTests() {
         check(res.size() == 3, "Single char 'a': all 3 files match");
     }
 
-    // -- Test 5: Glob patterns bypass trigram index --
-    std::cout << "\n  --- Glob pattern bypass ---\n";
+    // -- Test 5: Glob patterns still return correct results --
+    std::cout << "\n  --- Glob pattern matching ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
@@ -121,10 +121,18 @@ static void runTrigramIndexTests() {
         engine.loadRecords(std::move(records));
 
         auto res = engine.query("*.cpp");
-        check(res.size() == 2, "Glob '*.cpp': 2 matches (bypasses trigram)");
+        check(res.size() == 2, "Glob '*.cpp': 2 matches");
 
         res = engine.query("hello.*");
-        check(res.size() == 2, "Glob 'hello.*': 2 matches (bypasses trigram)");
+        check(res.size() == 2, "Glob 'hello.*': 2 matches");
+
+        // Glob with '?' wildcard
+        res = engine.query("hello.?");
+        check(res.size() == 1, "Glob 'hello.?': 1 match (hello.h)");
+
+        // Glob with no match
+        res = engine.query("*.xyz");
+        check(res.empty(), "Glob '*.xyz': 0 matches");
     }
 
     // -- Test 6: No-match keyword returns empty --
@@ -351,6 +359,97 @@ static void runTrigramIndexTests() {
                   << ", candidates=" << timing1.candidates << "\n";
         std::cout << "    'unique_xyz': " << res2.size() << " results, path=" << timing2.searchPath
                   << ", candidates=" << timing2.candidates << "\n";
+    }
+
+    // -- Test 12: Compiled glob + trigram pre-filtering --
+    std::cout << "\n  --- Compiled glob + trigram pre-filtering ---\n";
+    {
+        // Build a dataset large enough that trigram pre-filter is meaningful
+        const uint32_t totalRecords = 10000;
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.reserve(totalRecords);
+
+        // 50 .cpp files
+        for (uint32_t i = 0; i < 50; i++) {
+            records.push_back({"source_" + std::to_string(i) + ".cpp",
+                              "/project/src", 1, (uint64_t)i, (time_t)i});
+        }
+        // 30 .hpp files
+        for (uint32_t i = 0; i < 30; i++) {
+            records.push_back({"header_" + std::to_string(i) + ".hpp",
+                              "/project/include", 1, (uint64_t)(50 + i), (time_t)(50 + i)});
+        }
+        // Fill rest with .txt
+        for (uint32_t i = 80; i < totalRecords; i++) {
+            records.push_back({"data_" + std::to_string(i) + ".txt",
+                              "/data/dir" + std::to_string(i % 100), 1, (uint64_t)i, (time_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        // *.cpp — SUFFIX pattern, fixed=".cpp" has 4 chars >= 3 → trigram pre-filter
+        QueryTimingInfo timing1;
+        auto res1 = engine.query("*.cpp", 0, true, timing1);
+        check(res1.size() == 50, "Glob trigram: '*.cpp' finds 50 .cpp files");
+        // With 10000 records, .cpp candidates should be small enough for trigram
+        std::cout << "    '*.cpp': " << res1.size() << " results, path=" << timing1.searchPath
+                  << ", candidates=" << timing1.candidates << "\n";
+
+        // *.hpp — SUFFIX pattern, fixed=".hpp" >= 3
+        QueryTimingInfo timing2;
+        auto res2 = engine.query("*.hpp", 0, true, timing2);
+        check(res2.size() == 30, "Glob trigram: '*.hpp' finds 30 .hpp files");
+        std::cout << "    '*.hpp': " << res2.size() << " results, path=" << timing2.searchPath
+                  << ", candidates=" << timing2.candidates << "\n";
+
+        // *.h — SUFFIX pattern, fixed=".h" only 2 chars < 3 → linear fallback
+        QueryTimingInfo timing3;
+        auto res3 = engine.query("*.h", 0, true, timing3);
+        // .h matches .hpp files too via glob
+        check(timing3.searchPath == "linear",
+              "Glob linear: '*.h' falls back to linear (fixed part too short for trigram)");
+        std::cout << "    '*.h': " << res3.size() << " results, path=" << timing3.searchPath << "\n";
+
+        // source_* — PREFIX pattern, fixed="source_" >= 3 → trigram pre-filter
+        QueryTimingInfo timing4;
+        auto res4 = engine.query("source_*", 0, true, timing4);
+        check(res4.size() == 50, "Glob trigram: 'source_*' finds 50 files");
+        std::cout << "    'source_*': " << res4.size() << " results, path=" << timing4.searchPath
+                  << ", candidates=" << timing4.candidates << "\n";
+
+        // *data* — CONTAINS pattern, fixed="data" >= 3
+        QueryTimingInfo timing5;
+        auto res5 = engine.query("*data*", 0, true, timing5);
+        // data_ prefix in 9920 .txt files — candidates will exceed threshold → linear
+        std::cout << "    '*data*': " << res5.size() << " results, path=" << timing5.searchPath
+                  << ", candidates=" << timing5.candidates << "\n";
+
+        // Performance: glob with trigram should be much faster than without
+        auto t0 = std::chrono::steady_clock::now();
+        for (int run = 0; run < 100; run++) {
+            auto res = engine.query("*.cpp", 100, true);
+            (void)res;
+        }
+        auto t1 = std::chrono::steady_clock::now();
+        double trigramGlobTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+        t0 = std::chrono::steady_clock::now();
+        for (int run = 0; run < 100; run++) {
+            auto res = engine.query("*.cpp", 100, false);  // force no-trigram
+            (void)res;
+        }
+        t1 = std::chrono::steady_clock::now();
+        double linearGlobTime = std::chrono::duration<double>(t1 - t0).count() * 1000;
+
+        std::cout << "    100x '*.cpp' (trigram glob): " << std::fixed << std::setprecision(2)
+                  << trigramGlobTime << "ms (" << trigramGlobTime / 100 << "ms/query)\n";
+        std::cout << "    100x '*.cpp' (linear glob):  " << std::fixed << std::setprecision(2)
+                  << linearGlobTime << "ms (" << linearGlobTime / 100 << "ms/query)\n";
+        if (trigramGlobTime < linearGlobTime) {
+            std::cout << "    Glob trigram speedup: " << std::fixed << std::setprecision(1)
+                      << linearGlobTime / trigramGlobTime << "x\n";
+        }
+        check(true, "Compiled glob + trigram benchmark completed");
     }
 
     std::cout << "\n";

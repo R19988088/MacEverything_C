@@ -34,7 +34,7 @@ uint64_t IndexPersistence::load() {
         if (loaded) {
             lastEventId = meta.lastEventId;
             LOG_INFO("IndexPersistence", "Loaded paged index, lastEventId=" << lastEventId
-                      << ", records=" << engine_->liveRecordCount());
+                      << ", liveRecords=" << engine_->liveRecordCount());
         } else {
             LOG_ERROR("IndexPersistence", "Paged index corrupt, trying legacy format");
         }
@@ -45,7 +45,7 @@ uint64_t IndexPersistence::load() {
         loaded = engine_->loadFromFile(basePath_, &lastEventId);
         if (loaded) {
             LOG_INFO("IndexPersistence", "Loaded legacy index, lastEventId=" << lastEventId
-                      << ", records=" << engine_->liveRecordCount());
+                      << ", liveRecords=" << engine_->liveRecordCount());
             // Migrate: write out paged format for next time
             IndexMetadata migrateMeta;
             migrateMeta.lastEventId = lastEventId;
@@ -62,7 +62,7 @@ uint64_t IndexPersistence::load() {
     if (!entries.empty()) {
         LOG_INFO("IndexPersistence", "Replaying " << entries.size() << " WAL entries (in-place mode)");
         engine_->replayWALEntries(std::move(entries));
-        LOG_INFO("IndexPersistence", "WAL replay done, live records=" << engine_->liveRecordCount());
+        LOG_INFO("IndexPersistence", "WAL replay done, liveRecords=" << engine_->liveRecordCount());
     }
 
     return lastEventId;
@@ -166,7 +166,7 @@ void IndexPersistence::flush(const IndexMetadata& metadata, bool force) {
 
     if (writeOk) {
         LOG_INFO("IndexPersistence", "Flushed paged index, lastEventId=" << metadata.lastEventId
-                  << ", records=" << engine_->liveRecordCount());
+                  << ", liveRecords=" << engine_->liveRecordCount());
     } else {
         LOG_ERROR("IndexPersistence", "Failed to flush paged index — keeping old WAL for recovery");
         if (oldWal) oldWal->close();
@@ -205,7 +205,14 @@ void IndexPersistence::fullCompact(const IndexMetadata& metadata) {
     engine_->attachWAL(newWal);
 
     // 3. Compact in-memory records (remove tombstones)
+    uint32_t beforeTotal = engine_->recordCount();
+    uint32_t beforeLive = engine_->liveRecordCount();
     auto remap = engine_->compactRecords();
+    uint32_t reclaimed = beforeTotal - beforeLive;
+    if (reclaimed > 0) {
+        LOG_INFO("IndexPersistence", "Reclaimed " << reclaimed << " tombstones ("
+                  << beforeTotal << " -> " << beforeLive << " records)");
+    }
     if (!remap.empty() && contentIndex_) {
         contentIndex_->remapFileIndices(remap);
         // Flush content index to disk so its base file stays in sync with the
@@ -219,7 +226,7 @@ void IndexPersistence::fullCompact(const IndexMetadata& metadata) {
     // 4. Full rewrite paged files
     if (pagedWriter_->fullRewrite(*engine_, metadata)) {
         LOG_INFO("IndexPersistence", "Full compaction done, lastEventId=" << metadata.lastEventId
-                  << ", records=" << engine_->liveRecordCount());
+                  << ", liveRecords=" << engine_->liveRecordCount());
     } else {
         LOG_ERROR("IndexPersistence", "Failed to write full compaction — keeping old WAL");
         if (oldWal) oldWal->close();

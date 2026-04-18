@@ -356,6 +356,12 @@ bool SearchEngine::globMatch(const std::string& pattern, const std::string& text
 
 std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t maxResults,
                                           bool useTrigram) const {
+    QueryTimingInfo unused;
+    return query(keyword, maxResults, useTrigram, unused);
+}
+
+std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t maxResults,
+                                          bool useTrigram, QueryTimingInfo& timing) const {
     // Increment generation so any in-flight query detects it has been superseded.
     // Must happen before the empty check so clearing the search box also cancels stale queries.
     uint64_t myGen = queryGeneration_.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -953,31 +959,39 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         result.push_back(merged[i].idx);
     }
 
-    auto elapsed = std::chrono::steady_clock::now() - queryStart;
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-    if (ms > 100) {
-        auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterLock - beforeLock).count();
-        auto lockHeldMs = std::chrono::duration_cast<std::chrono::milliseconds>(beforeUnlock - afterLock).count();
-        auto sortMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterSort - beforeSort).count();
+    // Populate timing info (always, using microsecond precision)
+    auto toMs = [](auto dur) { return std::chrono::duration<double, std::milli>(dur).count(); };
+    timing.totalMs = toMs(std::chrono::steady_clock::now() - queryStart);
+    timing.lockWaitMs = toMs(afterLock - beforeLock);
+    timing.lockHeldMs = toMs(beforeUnlock - afterLock);
+    timing.sortMs = toMs(afterSort - beforeSort);
+    timing.trigramMs = toMs(afterTrigram - beforeTrigram);
+    timing.phase1Ms = toMs(afterPhase1 - afterTrigram);
+    timing.phase2Ms = toMs(afterPhase2 - beforePhase2);
+    timing.totalRecords = totalSize;
+    timing.candidates = trigramCandidates.size();
+    timing.nameMatches = phase1Results;
+    timing.pathMatches = merged.size() > phase1Results ? merged.size() - phase1Results : 0;
+    timing.resultCount = result.size();
+    timing.usedTrigram = useTrigramIndex;
+    timing.searchPath = useTrigramIndex ? (useSlashSplit ? "trigram-split" : "trigram") : "linear";
 
+    auto ms = static_cast<long long>(timing.totalMs);
+    if (ms > 100) {
         if (useTrigramIndex) {
-            auto trigramMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterTrigram - beforeTrigram).count();
-            auto phase1Ms = std::chrono::duration_cast<std::chrono::milliseconds>(afterPhase1 - afterTrigram).count();
-            auto phase2Ms = std::chrono::duration_cast<std::chrono::milliseconds>(afterPhase2 - beforePhase2).count();
             LOG_INFO("SearchEngine", "Query \"" << keyword << "\" total=" << ms
-                << "ms lock_wait=" << lockWaitMs << "ms trigram=" << trigramMs
-                << "ms phase1=" << phase1Ms << "ms phase2=" << phase2Ms
-                << "ms lock_held=" << lockHeldMs << "ms sort=" << sortMs
-                << "ms | path=" << (useSlashSplit ? "trigram-split" : "trigram") << " candidates=" << trigramCandidates.size()
-                << " phase1=" << phase1Results
-                << " phase2=" << (merged.size() - phase1Results)
-                << " results=" << result.size() << " totalRecords=" << totalSize);
+                << "ms lock_wait=" << static_cast<long long>(timing.lockWaitMs) << "ms trigram=" << static_cast<long long>(timing.trigramMs)
+                << "ms phase1=" << static_cast<long long>(timing.phase1Ms) << "ms phase2=" << static_cast<long long>(timing.phase2Ms)
+                << "ms lock_held=" << static_cast<long long>(timing.lockHeldMs) << "ms sort=" << static_cast<long long>(timing.sortMs)
+                << "ms | path=" << timing.searchPath << " candidates=" << timing.candidates
+                << " phase1=" << timing.nameMatches
+                << " phase2=" << timing.pathMatches
+                << " results=" << timing.resultCount << " totalRecords=" << timing.totalRecords);
         } else {
-            auto scanMs = std::chrono::duration_cast<std::chrono::milliseconds>(afterPhase2 - beforePhase2).count();
             LOG_INFO("SearchEngine", "Query \"" << keyword << "\" total=" << ms
-                << "ms lock_wait=" << lockWaitMs << "ms scan=" << scanMs
-                << "ms lock_held=" << lockHeldMs << "ms sort=" << sortMs
-                << "ms | path=linear results=" << result.size() << " totalRecords=" << totalSize);
+                << "ms lock_wait=" << static_cast<long long>(timing.lockWaitMs) << "ms scan=" << static_cast<long long>(timing.phase2Ms)
+                << "ms lock_held=" << static_cast<long long>(timing.lockHeldMs) << "ms sort=" << static_cast<long long>(timing.sortMs)
+                << "ms | path=linear results=" << timing.resultCount << " totalRecords=" << timing.totalRecords);
         }
     }
 

@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <poll.h>
 #include <sstream>
+#include <iomanip>
 #include <chrono>
 #include <algorithm>
 #include <cstdlib>
@@ -367,7 +368,8 @@ std::string HttpServer::handleSearch(
     if (!engine) return errorResponse(503, "Engine not available");
 
     auto start = std::chrono::steady_clock::now();
-    auto indices = engine->query(keyword, limit, useTrigram);
+    QueryTimingInfo timing;
+    auto indices = engine->query(keyword, limit, useTrigram, timing);
 
     std::ostringstream json;
     json << "{\"results\":[";
@@ -389,8 +391,25 @@ std::string HttpServer::handleSearch(
     auto elapsed = std::chrono::steady_clock::now() - start;
     double ms = std::chrono::duration<double, std::milli>(elapsed).count();
 
+    json << std::fixed << std::setprecision(2);
     json << "],\"count\":" << indices.size()
-         << ",\"queryTimeMs\":" << ms << "}";
+         << ",\"queryTimeMs\":" << ms
+         << ",\"timing\":{"
+         << "\"totalMs\":" << timing.totalMs
+         << ",\"lockWaitMs\":" << timing.lockWaitMs
+         << ",\"trigramMs\":" << timing.trigramMs
+         << ",\"phase1Ms\":" << timing.phase1Ms
+         << ",\"phase2Ms\":" << timing.phase2Ms
+         << ",\"sortMs\":" << timing.sortMs
+         << ",\"lockHeldMs\":" << timing.lockHeldMs
+         << ",\"totalRecords\":" << timing.totalRecords
+         << ",\"candidates\":" << timing.candidates
+         << ",\"nameMatches\":" << timing.nameMatches
+         << ",\"pathMatches\":" << timing.pathMatches
+         << ",\"resultCount\":" << timing.resultCount
+         << ",\"usedTrigram\":" << (timing.usedTrigram ? "true" : "false")
+         << ",\"searchPath\":\"" << timing.searchPath << "\""
+         << "}}";
 
     return jsonResponse(200, json.str());
 }

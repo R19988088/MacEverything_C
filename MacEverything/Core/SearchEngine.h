@@ -70,6 +70,24 @@ struct IndexMetadata {
     static constexpr const char* kRecordFormat = "record_format";  // e.g. "v2_inode"
 };
 
+/// Detailed timing breakdown from a search query.
+struct QueryTimingInfo {
+    double totalMs = 0;
+    double lockWaitMs = 0;
+    double trigramMs = 0;     // trigram index lookup (trigram path only)
+    double phase1Ms = 0;      // name verification (trigram path only)
+    double phase2Ms = 0;      // path-only match / NEON full scan
+    double sortMs = 0;
+    double lockHeldMs = 0;
+    size_t totalRecords = 0;
+    size_t candidates = 0;    // trigram candidates count
+    size_t nameMatches = 0;   // phase1 results (name matches)
+    size_t pathMatches = 0;   // phase2 results (path-only matches)
+    size_t resultCount = 0;
+    bool usedTrigram = false;
+    std::string searchPath;   // "trigram", "trigram-split", or "linear"
+};
+
 class SearchEngine {
 public:
     /// Takes ownership of scanned records and pre-computes lowercase names.
@@ -80,6 +98,10 @@ public:
     /// If useTrigram is false, bypasses trigram index and does NEON full scan.
     std::vector<uint32_t> query(const std::string& keyword, uint32_t maxResults = 0,
                                 bool useTrigram = true) const;
+
+    /// Same as query() but also populates timing breakdown.
+    std::vector<uint32_t> query(const std::string& keyword, uint32_t maxResults,
+                                bool useTrigram, QueryTimingInfo& timing) const;
 
     FileRecord getRecord(uint32_t index) const;
     uint32_t recordCount() const;

@@ -44,6 +44,8 @@
 		A1000022 /* ServiceEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000036; };
 		A1000023 /* ServiceEngine+FSEvents.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000037; };
 		A1000024 /* ServiceEngine+Content.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000038; };
+		A1000025 /* SearchEngineQuery.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000039; };
+		A1000026 /* SearchEngineIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200003A; };
 		B1000001 /* MacEverythingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001; };
 		D1000001 /* MCPConfigManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000001; };
 		D1000002 /* MacEverythingMCP in Copy MCP Binary */ = {isa = PBXBuildFile; fileRef = C2000099; };
@@ -125,6 +127,8 @@
 		A2000036 /* ServiceEngine.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ServiceEngine.cpp; sourceTree = "<group>"; };
 		A2000037 /* ServiceEngine+FSEvents.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = "ServiceEngine+FSEvents.cpp"; sourceTree = "<group>"; };
 		A2000038 /* ServiceEngine+Content.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = "ServiceEngine+Content.cpp"; sourceTree = "<group>"; };
+		A2000039 /* SearchEngineQuery.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEngineQuery.cpp; sourceTree = "<group>"; };
+		A200003A /* SearchEngineIndex.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEngineIndex.cpp; sourceTree = "<group>"; };
 		B2000001 /* MacEverythingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEverythingUITests.swift; sourceTree = "<group>"; };
 		B2000002 /* MacEverythingUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacEverythingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000001 /* mcp_main.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = mcp_main.cpp; sourceTree = "<group>"; };
@@ -265,6 +269,8 @@
 				A200000B /* DirectoryScanner.cpp */,
 				A200000C /* SearchEngine.h */,
 				A200000D /* SearchEngine.cpp */,
+				A2000039 /* SearchEngineQuery.cpp */,
+				A200003A /* SearchEngineIndex.cpp */,
 				A2000013 /* FileSystemWatcher.h */,
 				A2000014 /* FileSystemWatcher.cpp */,
 				A2000016 /* IndexWAL.h */,
@@ -415,6 +421,8 @@
 				A1000008 /* MacSearchBridge.mm in Sources */,
 				A1000009 /* DirectoryScanner.cpp in Sources */,
 				A100000A /* SearchEngine.cpp in Sources */,
+				A1000025 /* SearchEngineQuery.cpp in Sources */,
+				A1000026 /* SearchEngineIndex.cpp in Sources */,
 				A100000C /* FileSystemWatcher.cpp in Sources */,
 				A100000E /* IndexWAL.cpp in Sources */,
 				A100000F /* IndexPersistence.cpp in Sources */,

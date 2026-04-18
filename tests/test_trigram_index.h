@@ -301,5 +301,57 @@ static void runTrigramIndexTests() {
         check(true, "removeByPathPrefix benchmark completed");
     }
 
+    // -- Test 11: Trigram candidate threshold fallback to linear scan --
+    std::cout << "\n  --- Trigram candidate threshold fallback ---\n";
+    {
+        // Create a dataset where a common keyword produces candidates > 1.5% of total
+        // Total = 10000 records, threshold = 10000/67 ≈ 149
+        // "test" appears in 200 filenames (2% > 1.5%) → should fallback to linear
+        // "unique_xyz" appears in 5 filenames (0.05% < 1.5%) → should stay trigram
+        const uint32_t totalRecords = 10000;
+        const uint32_t commonCount = 200; // 2% of total
+
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.reserve(totalRecords);
+
+        // First commonCount records contain "test" in the name
+        for (uint32_t i = 0; i < commonCount; i++) {
+            records.push_back({"test_file_" + std::to_string(i) + ".txt",
+                              "/data/dir" + std::to_string(i % 50), 1, (uint64_t)i, (time_t)i});
+        }
+        // A few records with a rare keyword
+        for (uint32_t i = 0; i < 5; i++) {
+            records.push_back({"unique_xyz_" + std::to_string(i) + ".txt",
+                              "/data/rare", 1, (uint64_t)(commonCount + i), (time_t)(commonCount + i)});
+        }
+        // Fill remaining with unrelated names
+        for (uint32_t i = commonCount + 5; i < totalRecords; i++) {
+            records.push_back({"item_" + std::to_string(i) + ".dat",
+                              "/data/bulk" + std::to_string(i % 100), 1, (uint64_t)i, (time_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        // Common keyword "test" should exceed threshold and fallback to linear
+        QueryTimingInfo timing1;
+        auto res1 = engine.query("test", 0, true, timing1);
+        check(res1.size() == commonCount,
+              "Threshold fallback: 'test' finds all matches");
+        check(timing1.searchPath == "linear",
+              "Threshold fallback: 'test' uses linear scan");
+
+        // Rare keyword "unique_xyz" should stay on trigram path
+        QueryTimingInfo timing2;
+        auto res2 = engine.query("unique_xyz", 0, true, timing2);
+        check(res2.size() == 5, "Threshold fallback: 'unique_xyz' finds 5 matches");
+        check(timing2.searchPath != "linear",
+              "Threshold fallback: 'unique_xyz' stays on trigram");
+
+        std::cout << "    'test': " << res1.size() << " results, path=" << timing1.searchPath
+                  << ", candidates=" << timing1.candidates << "\n";
+        std::cout << "    'unique_xyz': " << res2.size() << " results, path=" << timing2.searchPath
+                  << ", candidates=" << timing2.candidates << "\n";
+    }
+
     std::cout << "\n";
 }

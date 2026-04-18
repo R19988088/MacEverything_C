@@ -1150,6 +1150,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             std::vector<uint32_t> emptyPhase1;
             useSlashSplit = querySlashSplit(lowerKey, totalSize, myGen, emptyPhase1, merged);
             afterTrigram = std::chrono::steady_clock::now();
+            afterPhase1 = afterTrigram;  // No Phase 1 in this path; zero out phase1Ms
             if (useSlashSplit) {
                 useTrigramIndex = true;  // for searchPath label
             } else {

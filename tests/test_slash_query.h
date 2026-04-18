@@ -213,4 +213,31 @@ static void runSlashQueryTests() {
         check(timing4.searchPath == "linear",
               ("Short slash query 'a/b' falls back to linear (got: " + timing4.searchPath + ")").c_str());
     }
+
+    // -- Test 12: Verify phase1Ms is non-negative for slash queries --
+    std::cout << "\n  --- Test 12: Slash query phase1Ms non-negative ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"brew", "/usr/local/bin", 1, 100, 1000});
+        records.push_back({"python3", "/usr/local/bin", 1, 200, 2000});
+        records.push_back({"gcc", "/usr/bin", 1, 300, 3000});
+        records.push_back({"lib.a", "/usr/local/lib", 1, 400, 4000});
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto res = engine.query("local/bin", 0, true, timing);
+        check(timing.searchPath == "trigram-split",
+              ("Expected trigram-split path (got: " + timing.searchPath + ")").c_str());
+        check(timing.phase1Ms >= 0.0,
+              "phase1Ms must be non-negative for slash queries (trigram-split path)");
+        check(timing.trigramMs >= 0.0,
+              "trigramMs must be non-negative for slash queries");
+        check(timing.phase2Ms >= 0.0,
+              "phase2Ms must be non-negative for slash queries");
+
+        std::cout << "    timing: trigram=" << timing.trigramMs
+                  << "ms phase1=" << timing.phase1Ms
+                  << "ms phase2=" << timing.phase2Ms << "ms\n";
+    }
 }

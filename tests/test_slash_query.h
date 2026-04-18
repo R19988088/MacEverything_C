@@ -174,4 +174,43 @@ static void runSlashQueryTests() {
         auto res = engine.query("/usr/local/bin");
         check(res.size() == 2, "AbsPath slash query: '/usr/local/bin' matches 2 files");
     }
+
+    // -- Test 11: Verify trigram-split search path is used --
+    std::cout << "\n  --- Test 11: Slash query uses trigram-split path ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"brew", "/usr/local/bin", 1, 100, 1000});
+        records.push_back({"python3", "/usr/local/bin", 1, 200, 2000});
+        records.push_back({"gcc", "/usr/bin", 1, 300, 3000});
+        records.push_back({"lib.a", "/usr/local/lib", 1, 400, 4000});
+        engine.loadRecords(std::move(records));
+
+        // "local/bin" — pathPart="local", namePart="bin": pathPart >= 3, should use trigram-split
+        QueryTimingInfo timing;
+        auto res = engine.query("local/bin", 0, true, timing);
+        check(res.size() >= 1, "Slash query 'local/bin' finds results");
+        check(timing.searchPath == "trigram-split",
+              ("Slash query 'local/bin' uses trigram-split path (got: " + timing.searchPath + ")").c_str());
+
+        // Absolute path slash query: "/usr/local" — pathPart="/usr", namePart="local"
+        QueryTimingInfo timing2;
+        auto res2 = engine.query("/usr/local", 0, true, timing2);
+        check(res2.size() == 3, "AbsPath '/usr/local' finds 3 results");
+        check(timing2.searchPath == "trigram-split",
+              ("AbsPath '/usr/local' uses trigram-split path (got: " + timing2.searchPath + ")").c_str());
+
+        // "/usr" — pathPart="" -> "/usr" (4 chars), namePart="usr" (3 chars): both >= 3
+        QueryTimingInfo timing3;
+        auto res3 = engine.query("/usr", 0, true, timing3);
+        check(res3.size() >= 1, "AbsPath '/usr' finds results");
+        check(timing3.searchPath == "trigram-split",
+              ("AbsPath '/usr' uses trigram-split path (got: " + timing3.searchPath + ")").c_str());
+
+        // "a/b" — both parts < 3 chars: should fall back to linear
+        QueryTimingInfo timing4;
+        auto res4 = engine.query("a/b", 0, true, timing4);
+        check(timing4.searchPath == "linear",
+              ("Short slash query 'a/b' falls back to linear (got: " + timing4.searchPath + ")").c_str());
+    }
 }

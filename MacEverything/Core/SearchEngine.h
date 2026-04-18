@@ -93,6 +93,14 @@ public:
     /// Takes ownership of scanned records and pre-computes lowercase names.
     void loadRecords(std::vector<FileRecord>&& records);
 
+    /// v5 fast-path load: accepts pre-separated data from on-disk path dictionary.
+    /// Skips toLower of names and path dedup since they are pre-computed.
+    void loadRecordsV5(std::vector<FileRecord>&& records,
+                       std::vector<std::string>&& lowerNames,
+                       std::vector<uint32_t>&& pathIndices,
+                       StringPool&& pathDict,
+                       StringPool&& lowerPathDict);
+
     /// Case-insensitive substring search. Returns indices into the records array.
     /// If maxResults > 0, stops early once enough matches are found.
     /// If useTrigram is false, bypasses trigram index and does NEON full scan.
@@ -221,6 +229,31 @@ public:
             std::string path = pathPool_.str(pathIndices_[i]);
             func(i, records_[i], path);
         }
+    }
+
+    /// Batch callback for v5 serialization. Provides pathIdx and lower name data directly.
+    /// Callback signature: void(uint32_t idx, const FileRecord& rec, uint32_t pathIdx,
+    ///                          const char* lowerName, uint16_t lowerNameLen)
+    template<typename Func>
+    void forEachRecordInRangeV5(uint32_t startIdx, uint32_t count, Func&& func) const {
+        std::shared_lock lock(mutex_);
+        uint32_t end = std::min(startIdx + count, static_cast<uint32_t>(records_.size()));
+        for (uint32_t i = startIdx; i < end; i++) {
+            func(i, records_[i], pathIndices_[i],
+                 namePool_.data(i), namePool_.length(i));
+        }
+    }
+
+    /// Thread-safe copy of pathPool_ for serialization.
+    StringPool pathPoolSnapshot() const {
+        std::shared_lock lock(mutex_);
+        return pathPool_;
+    }
+
+    /// Thread-safe copy of lowerPathPool_ for serialization.
+    StringPool lowerPathPoolSnapshot() const {
+        std::shared_lock lock(mutex_);
+        return lowerPathPool_;
     }
 
     /// Thread-safe snapshot of PathTable. Reconstructs from pathPool_ for compatibility.

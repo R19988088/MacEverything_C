@@ -374,6 +374,96 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     fullRewriteNeeded_.store(false, std::memory_order_relaxed);
 }
 
+void SearchEngine::loadRecordsV5(std::vector<FileRecord>&& records,
+                                  std::vector<std::string>&& lowerNames,
+                                  std::vector<uint32_t>&& pathIndices,
+                                  StringPool&& pathDict,
+                                  StringPool&& lowerPathDict) {
+    std::unique_lock lock(mutex_);
+
+    records_ = std::move(records);
+
+    // Install pre-lowered names directly into namePool_ (skip parallel toLower)
+    namePool_.loadBulk(lowerNames);
+
+    // Install pre-built path dictionaries (skip path dedup + internPath loop)
+    pathPool_ = std::move(pathDict);
+    lowerPathPool_ = std::move(lowerPathDict);
+    pathIndices_ = std::move(pathIndices);
+
+    // Rebuild pathLookup_ from pathPool_ entries
+    pathLookup_.clear();
+    pathLookup_.reserve(pathPool_.entryCount());
+    for (uint32_t i = 0; i < pathPool_.entryCount(); i++) {
+        if (pathPool_.isLive(i)) {
+            pathLookup_[pathPool_.str(i)] = i;
+        }
+    }
+
+    // Build pathIndex_ (lowercase full path -> record index)
+    // Parallelize toLower computation of full paths
+    unsigned numThreads = std::thread::hardware_concurrency();
+    if (numThreads < 1) numThreads = 1;
+    if (numThreads > 32) numThreads = 32;
+    size_t chunkSize = (records_.size() + numThreads - 1) / numThreads;
+    std::vector<std::string> loweredPaths(records_.size());
+    {
+        std::vector<std::thread> pathThreads;
+        pathThreads.reserve(numThreads);
+        for (unsigned t = 0; t < numThreads; t++) {
+            size_t start = t * chunkSize;
+            size_t end = std::min(start + chunkSize, records_.size());
+            if (start >= end) break;
+            pathThreads.emplace_back([this, &loweredPaths, start, end] {
+                for (size_t i = start; i < end; i++) {
+                    loweredPaths[i] = makeFullPath(lowerPathPool_.str(pathIndices_[i]),
+                                                    std::string(namePool_.data(static_cast<uint32_t>(i)),
+                                                                namePool_.length(static_cast<uint32_t>(i))));
+                }
+            });
+        }
+        for (auto& th : pathThreads) th.join();
+    }
+    pathIndex_.clear();
+    pathIndex_.reserve(records_.size());
+    for (size_t i = 0; i < records_.size(); i++) {
+        pathIndex_[std::move(loweredPaths[i])] = static_cast<uint32_t>(i);
+    }
+
+    // Tombstone orphaned duplicates
+    std::unordered_set<uint32_t> winnerIndices;
+    winnerIndices.reserve(pathIndex_.size());
+    for (const auto& [_, idx] : pathIndex_) {
+        winnerIndices.insert(idx);
+    }
+    uint32_t actualLive = 0;
+    for (size_t i = 0; i < records_.size(); i++) {
+        if (records_[i].type == 0) continue;
+        if (winnerIndices.count(static_cast<uint32_t>(i))) {
+            actualLive++;
+        } else {
+            records_[i].type = 0;
+            records_[i].name.clear();
+            records_[i].size = 0;
+            records_[i].modTime = 0;
+            namePool_.tombstone(static_cast<uint32_t>(i));
+        }
+    }
+
+    // Build trigram index for fast filename search
+    buildTrigramIndex();
+    buildPathTrigramIndex();
+    rebuildPathIdxToRecords();
+    rebuildRecentCache();
+
+    liveCount_.store(actualLive, std::memory_order_relaxed);
+
+    // Initialize dirty page bitmap
+    uint32_t pageCount = (static_cast<uint32_t>(records_.size()) + kRecordsPerPage - 1) / kRecordsPerPage;
+    dirtyPages_.assign(pageCount, false);
+    fullRewriteNeeded_.store(false, std::memory_order_relaxed);
+}
+
 bool SearchEngine::isGlobPattern(const std::string& s) {
     return s.find('*') != std::string::npos || s.find('?') != std::string::npos;
 }

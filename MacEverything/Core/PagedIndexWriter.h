@@ -37,7 +37,9 @@ public:
 
     static constexpr uint32_t kPagesMagic  = 0x4D455047; // "MEPG"
     static constexpr uint32_t kPtableMagic = 0x4D455054; // "MEPT"
-    static constexpr uint32_t kVersion     = 1;
+    static constexpr uint32_t kVersionV4   = 1;  // v4: per-record full path strings
+    static constexpr uint32_t kVersionV5   = 2;  // v5: path dictionary + namePool direct write
+    static constexpr uint32_t kVersion     = kVersionV5; // current write version
 
 private:
     struct PageEntry {
@@ -55,8 +57,32 @@ private:
     /// Write the .ptable file atomically (tmp + fsync + rename).
     bool writePtable(const IndexMetadata& meta, uint32_t totalRecords) const;
 
-    /// Parse a page blob back into FileRecord vector.
+    /// Parse a v4 page blob back into FileRecord vector.
     static bool deserializePage(const uint8_t* data, size_t len,
                                 uint16_t expectedCount,
                                 std::vector<FileRecord>& out);
+
+    /// Parse a v5 page blob. Returns records (original name, path cleared),
+    /// lowerNames, and pathIndices for direct installation into SearchEngine.
+    struct V5PageResult {
+        std::vector<FileRecord> records;
+        std::vector<std::string> lowerNames;
+        std::vector<uint32_t> pathIndices;
+    };
+    static bool deserializePageV5(const uint8_t* data, size_t len,
+                                  uint16_t expectedCount,
+                                  V5PageResult& out);
+
+    /// Loaded ptable version (1=v4, 2=v5) for migration detection.
+    uint32_t loadedVersion_ = 0;
+
+    /// Cached path dictionaries for v5 serialization.
+    StringPool pathDict_;
+    StringPool lowerPathDict_;
+
+    /// Write a StringPool (buffer + entries) to a FILE with CRC32. Returns false on I/O error.
+    static bool writeStringPool(FILE* f, const StringPool& pool);
+
+    /// Read a StringPool (buffer + entries) from a FILE, verifying CRC32. Returns false on error.
+    static bool readStringPool(FILE* f, StringPool& pool);
 };

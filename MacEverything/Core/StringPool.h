@@ -111,6 +111,14 @@ public:
         }
     }
 
+    /// Construct pool directly from raw binary data (zero-copy bulk load).
+    /// Used by v5 persistence to restore a StringPool from on-disk buffer+entries.
+    void loadRaw(const char* buffer, size_t bufferSize,
+                 const Entry* entries, uint32_t entryCount) {
+        buffer_.assign(buffer, buffer + bufferSize);
+        entries_.assign(entries, entries + entryCount);
+    }
+
     /// Clear all entries and buffer.
     void clear() {
         buffer_.clear();

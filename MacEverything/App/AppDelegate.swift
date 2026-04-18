@@ -30,7 +30,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        DispatchQueue.global(qos: .userInitiated).async {
+            MacSearchBridge.shared().prepareForTermination()
+            DispatchQueue.main.async {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        // Safety net: shutdown is idempotent (compare_exchange_strong guard)
         MacSearchBridge.shared().prepareForTermination()
     }
 

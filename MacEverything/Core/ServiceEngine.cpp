@@ -445,10 +445,15 @@ void ServiceEngine::shutdown() {
     cancelContentIndexing_.store(true, std::memory_order_relaxed);
     contentIndexGeneration_.fetch_add(1, std::memory_order_acq_rel);
 
-    // Wait for all background GCD blocks to complete (scan, content indexing, etc.)
-    // This must happen BEFORE stopMonitoring() because the scan block may call startMonitoring().
-    // Use FOREVER: ServiceEngine is only destroyed at process exit, and GCD blocks capture `this`.
-    dispatch_group_wait(backgroundGroup_, DISPATCH_TIME_FOREVER);
+    // Wait for background GCD blocks with a timeout.
+    // Background blocks check shuttingDown_ and bail quickly, so this typically completes in < 500ms.
+    // The 3s timeout prevents infinite hangs if a block is stuck in I/O, ensuring the critical
+    // flush below can proceed before macOS's termination watchdog kills the process.
+    long waitResult = dispatch_group_wait(backgroundGroup_,
+        dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
+    if (waitResult != 0) {
+        LOG_WARN("ServiceEngine", "Background tasks did not complete within 3s — proceeding with flush");
+    }
 
     uint64_t lastEventId = watcher_ ? watcher_->getLastEventId() : 0;
 

@@ -316,6 +316,13 @@ private:
         const std::string& keyword,
         bool& allFound);
 
+    /// Build full path in a reusable buffer: path + '/' + name.
+    /// Lowercases the path portion via SIMD. Returns the full path length.
+    /// Buffer is resized if needed (with 2x growth).
+    static size_t buildFullPathBuf(std::vector<char>& buf,
+                                   const char* pathData, uint16_t pathLen,
+                                   const char* nameData, uint16_t nameLen);
+
     /// Build trigram index from standalone data (no member access, used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>
         buildTrigramIndexFromData(const std::vector<FileRecord>& records,

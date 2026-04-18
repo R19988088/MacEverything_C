@@ -401,6 +401,17 @@ bool SearchEngine::globMatch(const std::string& pattern, const std::string& text
     return px == pattern.size();
 }
 
+size_t SearchEngine::buildFullPathBuf(std::vector<char>& buf,
+                                      const char* pathData, uint16_t pathLen,
+                                      const char* nameData, uint16_t nameLen) {
+    size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
+    if (buf.size() < fullLen) buf.resize(fullLen * 2);
+    memcpy(buf.data(), pathData, pathLen);
+    buf[pathLen] = '/';
+    memcpy(buf.data() + pathLen + 1, nameData, nameLen);
+    return fullLen;
+}
+
 std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t maxResults,
                                           bool useTrigram) const {
     QueryTimingInfo unused;
@@ -557,11 +568,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             uint16_t pl = lowerPathPool_.length(pi);
                             const char* nd = namePool_.data(idx);
                             uint16_t nl = namePool_.length(idx);
-                            size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                            if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                            memcpy(pathBuf.data(), pd, pl);
-                            pathBuf[pl] = '/';
-                            memcpy(pathBuf.data() + pl + 1, nd, nl);
+                            size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
                             if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                             uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                 ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
@@ -591,11 +598,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                                 if (isCandidate.test(idx)) continue;
                                 const char* nd = namePool_.data(idx);
                                 uint16_t nl = namePool_.length(idx);
-                                size_t fullLen = static_cast<size_t>(pl2) + 1 + nl;
-                                if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                                memcpy(pathBuf.data(), pd2, pl2);
-                                pathBuf[pl2] = '/';
-                                memcpy(pathBuf.data() + pl2 + 1, nd, nl);
+                                size_t fullLen = buildFullPathBuf(pathBuf, pd2, pl2, nd, nl);
                                 if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                                 uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                     ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
@@ -619,11 +622,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             if (isCandidate.test(idx)) continue;
                             const char* nd = namePool_.data(idx);
                             uint16_t nl = namePool_.length(idx);
-                            size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                            if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                            memcpy(pathBuf.data(), pd, pl);
-                            pathBuf[pl] = '/';
-                            memcpy(pathBuf.data() + pl + 1, nd, nl);
+                            size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
                             if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                             uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                 ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
@@ -642,11 +641,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         uint16_t pl = lowerPathPool_.length(pi);
                         const char* nd = namePool_.data(idx);
                         uint16_t nl = namePool_.length(idx);
-                        size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                        memcpy(pathBuf.data(), pd, pl);
-                        pathBuf[pl] = '/';
-                        memcpy(pathBuf.data() + pl + 1, nd, nl);
+                        size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
                         if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                         uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                             ? namePriority(nd, nl, lowerKey.data(), lowerKey.size()) : 3;
@@ -756,11 +751,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         // Build full path from pre-lowered path pool (no runtime lowering needed)
                         const char* pd = lowerPathPool.data(pIndices[i]);
                         uint16_t pl = lowerPathPool.length(pIndices[i]);
-                        size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                        memcpy(pathBuf.data(), pd, pl);
-                        pathBuf[pl] = '/';
-                        memcpy(pathBuf.data() + pl + 1, nd, nl);
+                        size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
                         if (me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) {
                             local.push_back({static_cast<uint32_t>(i), uint8_t(3), static_cast<uint32_t>(fullLen)});
                         }
@@ -840,11 +831,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     if (!useGlob && !(*pathMatchCachePtr)[pIndices[i]] && !hasSlash) continue;
                     const char* pd = lowerPathPool.data(pIndices[i]);
                     uint16_t pl = lowerPathPool.length(pIndices[i]);
-                    size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
-                    if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                    memcpy(pathBuf.data(), pd, pl);
-                    pathBuf[pl] = '/';
-                    memcpy(pathBuf.data() + pl + 1, nd, nl);
+                    size_t fullLen = buildFullPathBuf(pathBuf, pd, pl, nd, nl);
                     if (useGlob) {
                         std::string fullPath(pathBuf.data(), fullLen);
                         pathMatch = globMatch(lowerKey, fullPath);

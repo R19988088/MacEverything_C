@@ -1,6 +1,6 @@
 #pragma once
-#include "tests/test_helpers.h"
-#include "MacEverything/Core/StringPool.h"
+#include "test_helpers.h"
+#include "../MacEverything/Core/StringPool.h"
 #include <string>
 #include <vector>
 #include <cstring>

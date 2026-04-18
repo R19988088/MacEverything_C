@@ -43,6 +43,8 @@ static std::string ptablePathFor(const std::string& basePath) {
 
 static int passed = 0, failed = 0;
 
+#define CHECK(expr) check((expr), #expr)
+
 static void check(bool cond, const char* msg) {
     if (cond) {
         std::cout << "    [PASS] " << msg << "\n";

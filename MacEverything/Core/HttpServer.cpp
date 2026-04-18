@@ -357,11 +357,17 @@ std::string HttpServer::handleSearch(
         if (endptr != lIt->second.c_str() && v > 0) limit = static_cast<uint32_t>(std::min(v, 10000L));
     }
 
+    bool useTrigram = true;
+    auto tIt = params.find("trigram");
+    if (tIt != params.end() && tIt->second == "0") {
+        useTrigram = false;
+    }
+
     auto engine = getEngine_();
     if (!engine) return errorResponse(503, "Engine not available");
 
     auto start = std::chrono::steady_clock::now();
-    auto indices = engine->query(keyword, limit);
+    auto indices = engine->query(keyword, limit, useTrigram);
 
     std::ostringstream json;
     json << "{\"results\":[";

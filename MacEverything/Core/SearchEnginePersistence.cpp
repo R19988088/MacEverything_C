@@ -111,8 +111,8 @@ bool SearchEngine::saveToFile(const std::string& filePath, const IndexMetadata& 
     for (size_t i = 0; i < records_.size(); i++) {
         const auto& r = records_[i];
         if (r.type == 0) continue;
-        // Resolve path from PathTable (record.path is cleared after interning)
-        const std::string& resolvedPath = pathTable_.resolve(pathIndices_[i]);
+        // Resolve path from pathPool_ (record.path is cleared after interning)
+        std::string resolvedPath = pathPool_.str(pathIndices_[i]);
         if (!writeRecord(f, r, resolvedPath)) {
             fclose(f);
             remove(tmpPath.c_str());

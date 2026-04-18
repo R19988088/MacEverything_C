@@ -1,8 +1,11 @@
 #pragma once
 #include "FileRecord.h"
 #include "ContentIndex.h" // for Trigram type and extractTrigrams/makeTrigram
+#include "StringPool.h"
+#include "SIMDSearch.h"
 #include <vector>
 #include <string>
+#include <string_view>
 #include <cstdint>
 #include <cstdio>
 #include <shared_mutex>
@@ -74,7 +77,9 @@ public:
 
     /// Case-insensitive substring search. Returns indices into the records array.
     /// If maxResults > 0, stops early once enough matches are found.
-    std::vector<uint32_t> query(const std::string& keyword, uint32_t maxResults = 0) const;
+    /// If useTrigram is false, bypasses trigram index and does NEON full scan.
+    std::vector<uint32_t> query(const std::string& keyword, uint32_t maxResults = 0,
+                                bool useTrigram = true) const;
 
     FileRecord getRecord(uint32_t index) const;
     uint32_t recordCount() const;
@@ -109,7 +114,7 @@ public:
     uint32_t liveRecordCount() const { return liveCount_.load(std::memory_order_relaxed); }
 
     /// Compact in-memory records by removing tombstoned entries.
-    /// Rebuilds pathIndex_ and lowerNames_. Thread-safe.
+    /// Rebuilds pathIndex_ and namePool_. Thread-safe.
     /// Returns a mapping from old index → new index for live records.
     /// Returns empty map if nothing was compacted.
     std::unordered_map<uint32_t, uint32_t> compactRecords();
@@ -163,12 +168,12 @@ public:
     /// Build the full path from a record's path and name components.
     static std::string makeFullPath(const std::string& path, const std::string& name);
 
-    /// Resolve a record's path via PathTable. Thread-safe (acquires shared_lock).
+    /// Resolve a record's path via pathPool_. Thread-safe (acquires shared_lock).
     /// Returns by value to prevent dangling references during concurrent compaction.
     std::string resolveRecordPath(uint32_t index) const {
         std::shared_lock lock(mutex_);
         if (index >= pathIndices_.size()) return {};
-        return pathTable_.resolve(pathIndices_[index]);
+        return pathPool_.str(pathIndices_[index]);
     }
 
     /// Batch callback access under a single shared_lock. Avoids per-record copy.
@@ -178,7 +183,8 @@ public:
         std::shared_lock lock(mutex_);
         for (uint32_t idx : indices) {
             if (idx >= records_.size() || records_[idx].type == 0) continue;
-            func(idx, records_[idx], pathTable_.resolve(pathIndices_[idx]));
+            std::string path = pathPool_.str(pathIndices_[idx]);
+            func(idx, records_[idx], path);
         }
     }
 
@@ -190,25 +196,30 @@ public:
         std::shared_lock lock(mutex_);
         uint32_t end = std::min(startIdx + count, static_cast<uint32_t>(records_.size()));
         for (uint32_t i = startIdx; i < end; i++) {
-            func(i, records_[i], pathTable_.resolve(pathIndices_[i]));
+            std::string path = pathPool_.str(pathIndices_[i]);
+            func(i, records_[i], path);
         }
     }
 
-    /// Thread-safe snapshot of PathTable. Returns a copy under shared_lock.
+    /// Thread-safe snapshot of PathTable. Reconstructs from pathPool_ for compatibility.
     PathTable pathTableSnapshot() const {
         std::shared_lock lock(mutex_);
-        return pathTable_;
+        PathTable pt;
+        for (uint32_t i = 0; i < pathPool_.entryCount(); i++) {
+            if (pathPool_.isLive(i)) {
+                pt.intern(pathPool_.str(i));
+            }
+        }
+        return pt;
     }
 
 private:
-    /// Internal access — callers that need thread-safe access should use pathTableSnapshot().
-    const PathTable& pathTable() const { return pathTable_; }
-
     std::vector<FileRecord> records_;
-    std::vector<std::string> lowerNames_; // pre-computed lowercase filenames
-    std::vector<uint32_t> pathIndices_;    // per-record index into pathTable_
-    PathTable pathTable_;                  // deduplication table for directory paths
-    std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> index
+    StringPool namePool_;                  // contiguous lowercase filenames
+    std::vector<uint32_t> pathIndices_;    // per-record index into pathPool_
+    StringPool pathPool_;                  // contiguous directory paths (deduplicated)
+    std::unordered_map<std::string, uint32_t> pathLookup_; // path string -> pathPool_ index
+    std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> record index
     std::atomic<uint32_t> liveCount_{0};
     mutable std::shared_mutex mutex_;
 
@@ -219,14 +230,14 @@ private:
     std::unordered_map<Trigram, std::vector<uint32_t>> pathTrigramIndex_; // trigram -> sorted pathIdx
     std::vector<std::vector<uint32_t>> pathIdxToRecords_; // pathIdx -> sorted record indices
 
-    /// Build trigram index from lowerNames_ (called inside loadRecords/compactRecords under lock)
+    /// Build trigram index from namePool_ (called inside loadRecords/compactRecords under lock)
     void buildTrigramIndex();
     /// Add trigrams for a single record to the index
-    void addTrigramsForRecord(uint32_t idx, const std::string& lowerName);
+    void addTrigramsForRecord(uint32_t idx, const char* data, uint16_t len);
     /// Remove trigrams for a single record from the index
     void removeTrigramsForRecord(uint32_t idx);
 
-    /// Build path trigram index from pathTable_
+    /// Build path trigram index from pathPool_
     void buildPathTrigramIndex();
     /// Rebuild pathIdx -> record indices mapping
     void rebuildPathIdxToRecords();
@@ -269,17 +280,17 @@ private:
     /// Build trigram index from standalone data (no member access, used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>
         buildTrigramIndexFromData(const std::vector<FileRecord>& records,
-                                  const std::vector<std::string>& lowerNames);
+                                  const StringPool& namePool);
 
-    /// Build path trigram index from standalone PathTable (used by COW compaction)
+    /// Build path trigram index from standalone StringPool (used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>
-        buildPathTrigramIndexFromData(const PathTable& pathTable);
+        buildPathTrigramIndexFromData(const StringPool& pathPool);
 
     /// Build pathIdx -> record indices mapping from standalone data (used by COW compaction)
     static std::vector<std::vector<uint32_t>>
         buildPathIdxToRecordsFromData(const std::vector<FileRecord>& records,
                                       const std::vector<uint32_t>& pathIndices,
-                                      uint32_t pathTableSize);
+                                      uint32_t pathPoolSize);
 
     /// Build recent cache from standalone data (no member access, used by COW compaction)
     static std::set<RecentEntry>

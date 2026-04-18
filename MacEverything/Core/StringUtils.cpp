@@ -1,4 +1,5 @@
 #include "StringUtils.h"
+#include "SIMDSearch.h"
 #include <cctype>
 #include <cstring>
 #include <CoreFoundation/CoreFoundation.h>
@@ -7,15 +8,14 @@ namespace me {
 
 std::string toLower(const std::string& s) {
     // ASCII fast-path — skip CoreFoundation for pure-ASCII strings
-    // (>95% of filenames on typical systems)
+    // (>95% of filenames on typical systems). Uses NEON SIMD on ARM64.
     bool allAscii = true;
     for (unsigned char c : s) {
         if (c >= 128) { allAscii = false; break; }
     }
     if (allAscii) {
-        std::string result(s.size(), '\0');
-        for (size_t i = 0; i < s.size(); i++)
-            result[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+        std::string result = s;
+        simdToLowerAscii(result.data(), result.size());
         return result;
     }
 

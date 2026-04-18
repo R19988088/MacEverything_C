@@ -1,4 +1,4 @@
-# 087 — Fix Cross-Boundary Keyword Highlighting
+# 088 — Fix Cross-Boundary Keyword Highlighting
 
 ## 问题
 

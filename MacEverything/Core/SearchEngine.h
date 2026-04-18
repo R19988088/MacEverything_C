@@ -308,6 +308,14 @@ private:
     static uint8_t namePriority(const char* nameData, uint16_t nameLen,
                                 const char* keyData, size_t keyLen);
 
+    /// Intersect posting lists from a trigram index for a given keyword.
+    /// Returns sorted candidate indices, or empty if any trigram is missing.
+    /// Sets allFound to false if any trigram is not in the index.
+    static std::vector<uint32_t> intersectPostingLists(
+        const std::unordered_map<Trigram, std::vector<uint32_t>>& index,
+        const std::string& keyword,
+        bool& allFound);
+
     /// Build trigram index from standalone data (no member access, used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>
         buildTrigramIndexFromData(const std::vector<FileRecord>& records,

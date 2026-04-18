@@ -69,6 +69,41 @@ uint8_t SearchEngine::namePriority(const char* nameData, uint16_t nameLen,
     return 2; // contains
 }
 
+std::vector<uint32_t> SearchEngine::intersectPostingLists(
+    const std::unordered_map<Trigram, std::vector<uint32_t>>& index,
+    const std::string& keyword,
+    bool& allFound) {
+    allFound = true;
+    auto keyTrigrams = ContentIndex::extractTrigrams(keyword);
+    std::unordered_set<Trigram> unique(keyTrigrams.begin(), keyTrigrams.end());
+    if (unique.empty()) { allFound = false; return {}; }
+
+    std::vector<const std::vector<uint32_t>*> postings;
+    for (Trigram t : unique) {
+        auto it = index.find(t);
+        if (it == index.end()) { allFound = false; return {}; }
+        postings.push_back(&it->second);
+    }
+
+    std::sort(postings.begin(), postings.end(),
+        [](const auto* a, const auto* b) { return a->size() < b->size(); });
+
+    std::vector<uint32_t> result;
+    result.reserve(postings[0]->size());
+    result.assign(postings[0]->begin(), postings[0]->end());
+
+    for (size_t i = 1; i < postings.size() && !result.empty(); i++) {
+        const auto& other = *postings[i];
+        std::vector<uint32_t> isect;
+        isect.reserve(std::min(result.size(), other.size()));
+        std::set_intersection(result.begin(), result.end(),
+                              other.begin(), other.end(),
+                              std::back_inserter(isect));
+        result = std::move(isect);
+    }
+    return result;
+}
+
 std::unordered_map<Trigram, std::vector<uint32_t>>
 SearchEngine::buildTrigramIndexFromData(const std::vector<FileRecord>& records,
                                         const StringPool& namePool) {
@@ -411,48 +446,12 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (useTrigramIndex) {
         beforeTrigram = std::chrono::steady_clock::now();
-        auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
-        std::unordered_set<Trigram> uniqueKeyTrigrams(keyTrigrams.begin(), keyTrigrams.end());
-
-        if (!uniqueKeyTrigrams.empty()) {
-            // Collect posting lists sorted by size (smallest first)
-            std::vector<const std::vector<uint32_t>*> postingLists;
-            bool allFound = true;
-            for (Trigram t : uniqueKeyTrigrams) {
-                auto it = nameTrigramIndex_.find(t);
-                if (it == nameTrigramIndex_.end()) {
-                    allFound = false;
-                    break;
-                }
-                postingLists.push_back(&it->second);
-            }
-
-            if (allFound && !postingLists.empty()) {
-                std::sort(postingLists.begin(), postingLists.end(),
-                    [](const auto* a, const auto* b) { return a->size() < b->size(); });
-
-                // H-1 fix: reserve + assign avoids reallocation during copy
-                trigramCandidates.reserve(postingLists[0]->size());
-                trigramCandidates.assign(postingLists[0]->begin(), postingLists[0]->end());
-
-                // Intersect with remaining lists using sorted merge
-                for (size_t li = 1; li < postingLists.size() && !trigramCandidates.empty(); li++) {
-                    const auto& other = *postingLists[li];
-                    std::vector<uint32_t> intersection;
-                    intersection.reserve(std::min(trigramCandidates.size(), other.size()));
-                    std::set_intersection(trigramCandidates.begin(), trigramCandidates.end(),
-                                          other.begin(), other.end(),
-                                          std::back_inserter(intersection));
-                    trigramCandidates = std::move(intersection);
-                }
-            }
-            // Trigram candidates exceed threshold — linear scan is faster due to
-            // cache-friendly sequential access vs random posting-list traversal
-            if (trigramCandidates.size() > totalSize / 67) { // ~1.5%
-                trigramCandidates.clear();
-                useTrigramIndex = false;
-            }
-        } else {
+        bool nameAllFound = false;
+        trigramCandidates = intersectPostingLists(nameTrigramIndex_, lowerKey, nameAllFound);
+        if (!nameAllFound) {
+            useTrigramIndex = false;
+        } else if (trigramCandidates.size() > totalSize / 67) { // ~1.5%
+            trigramCandidates.clear();
             useTrigramIndex = false;
         }
         afterTrigram = std::chrono::steady_clock::now();
@@ -526,54 +525,14 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 std::vector<uint32_t> candidatePathIdxs;
                 bool pathFound = true;
                 if (pathPartUsable) {
-                    auto pathTrigrams = ContentIndex::extractTrigrams(pathPart);
-                    std::unordered_set<Trigram> uniquePT(pathTrigrams.begin(), pathTrigrams.end());
-                    std::vector<const std::vector<uint32_t>*> pathPostingLists;
-                    for (Trigram t : uniquePT) {
-                        auto it = pathTrigramIndex_.find(t);
-                        if (it == pathTrigramIndex_.end()) { pathFound = false; break; }
-                        pathPostingLists.push_back(&it->second);
-                    }
-                    if (pathFound && !pathPostingLists.empty()) {
-                        std::sort(pathPostingLists.begin(), pathPostingLists.end(),
-                            [](const auto* a, const auto* b) { return a->size() < b->size(); });
-                        candidatePathIdxs.assign(pathPostingLists[0]->begin(), pathPostingLists[0]->end());
-                        for (size_t li = 1; li < pathPostingLists.size() && !candidatePathIdxs.empty(); li++) {
-                            const auto& other = *pathPostingLists[li];
-                            std::vector<uint32_t> isect;
-                            isect.reserve(std::min(candidatePathIdxs.size(), other.size()));
-                            std::set_intersection(candidatePathIdxs.begin(), candidatePathIdxs.end(),
-                                                  other.begin(), other.end(), std::back_inserter(isect));
-                            candidatePathIdxs = std::move(isect);
-                        }
-                    }
+                    candidatePathIdxs = intersectPostingLists(pathTrigramIndex_, pathPart, pathFound);
                 }
 
                 // Step 2: Get candidate record indices from nameTrigramIndex_ (if namePart >= 3)
                 std::vector<uint32_t> nameRecCandidates;
                 bool nameFound = true;
                 if (namePartUsable && !nameTrigramIndex_.empty()) {
-                    auto nameTrigrams = ContentIndex::extractTrigrams(namePart);
-                    std::unordered_set<Trigram> uniqueNT(nameTrigrams.begin(), nameTrigrams.end());
-                    std::vector<const std::vector<uint32_t>*> namePostingLists;
-                    for (Trigram t : uniqueNT) {
-                        auto it = nameTrigramIndex_.find(t);
-                        if (it == nameTrigramIndex_.end()) { nameFound = false; break; }
-                        namePostingLists.push_back(&it->second);
-                    }
-                    if (nameFound && !namePostingLists.empty()) {
-                        std::sort(namePostingLists.begin(), namePostingLists.end(),
-                            [](const auto* a, const auto* b) { return a->size() < b->size(); });
-                        nameRecCandidates.assign(namePostingLists[0]->begin(), namePostingLists[0]->end());
-                        for (size_t li = 1; li < namePostingLists.size() && !nameRecCandidates.empty(); li++) {
-                            const auto& other = *namePostingLists[li];
-                            std::vector<uint32_t> isect;
-                            isect.reserve(std::min(nameRecCandidates.size(), other.size()));
-                            std::set_intersection(nameRecCandidates.begin(), nameRecCandidates.end(),
-                                                  other.begin(), other.end(), std::back_inserter(isect));
-                            nameRecCandidates = std::move(isect);
-                        }
-                    }
+                    nameRecCandidates = intersectPostingLists(nameTrigramIndex_, namePart, nameFound);
                 }
 
                 // Step 3: Combine candidates and verify full path match
@@ -703,40 +662,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         if (useSlashSplit) {
             // Already handled above — skip to end of Phase 2
         } else if (usePathTrigram) {
-            // Extract trigrams from keyword and intersect pathTrigramIndex_ posting lists
-            auto keyTrigrams = ContentIndex::extractTrigrams(lowerKey);
-            std::unordered_set<Trigram> uniquePathTrigrams(keyTrigrams.begin(), keyTrigrams.end());
-
-            std::vector<uint32_t> candidatePathIdxs;
-            bool pathAllFound = true;
-
-            if (!uniquePathTrigrams.empty()) {
-                std::vector<const std::vector<uint32_t>*> pathPostingLists;
-                for (Trigram t : uniquePathTrigrams) {
-                    auto it = pathTrigramIndex_.find(t);
-                    if (it == pathTrigramIndex_.end()) {
-                        pathAllFound = false;
-                        break;
-                    }
-                    pathPostingLists.push_back(&it->second);
-                }
-
-                if (pathAllFound && !pathPostingLists.empty()) {
-                    std::sort(pathPostingLists.begin(), pathPostingLists.end(),
-                        [](const auto* a, const auto* b) { return a->size() < b->size(); });
-
-                    candidatePathIdxs.assign(pathPostingLists[0]->begin(), pathPostingLists[0]->end());
-                    for (size_t li = 1; li < pathPostingLists.size() && !candidatePathIdxs.empty(); li++) {
-                        const auto& other = *pathPostingLists[li];
-                        std::vector<uint32_t> intersection;
-                        intersection.reserve(std::min(candidatePathIdxs.size(), other.size()));
-                        std::set_intersection(candidatePathIdxs.begin(), candidatePathIdxs.end(),
-                                              other.begin(), other.end(),
-                                              std::back_inserter(intersection));
-                        candidatePathIdxs = std::move(intersection);
-                    }
-                }
-            }
+            bool pathAllFound = false;
+            std::vector<uint32_t> candidatePathIdxs = intersectPostingLists(pathTrigramIndex_, lowerKey, pathAllFound);
 
             // Expand pathIdx -> record indices, excluding Phase 1 trigramCandidates
             if (pathAllFound && !candidatePathIdxs.empty()) {

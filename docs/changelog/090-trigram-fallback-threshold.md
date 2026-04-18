@@ -1,4 +1,4 @@
-# 089 — Trigram 候选数过多时回退到 Linear Scan
+# 090 — Trigram 候选数过多时回退到 Linear Scan
 
 ## 问题
 

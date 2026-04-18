@@ -1,5 +1,4 @@
 #pragma once
-#include "MacEverything/Core/QueryParser.h"
 #include <cassert>
 #include <iostream>
 #include <string>

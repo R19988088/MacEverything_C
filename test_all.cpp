@@ -16,6 +16,8 @@
 #include "MacEverything/Core/CompactionTimer.h"
 #include "MacEverything/Core/HttpServer.h"
 #include "MacEverything/Core/ServiceEngine.h"
+#include "MacEverything/Core/QueryTokenizer.h"
+#include "MacEverything/Core/QueryParser.h"
 #include <chrono>
 #include <iostream>
 #include <iomanip>

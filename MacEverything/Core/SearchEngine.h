@@ -240,6 +240,7 @@ private:
     StringPool namePool_;                  // contiguous lowercase filenames
     std::vector<uint32_t> pathIndices_;    // per-record index into pathPool_
     StringPool pathPool_;                  // contiguous directory paths (deduplicated)
+    StringPool lowerPathPool_;             // parallel to pathPool_, stores pre-lowered paths
     std::unordered_map<std::string, uint32_t> pathLookup_; // path string -> pathPool_ index
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> record index
     std::atomic<uint32_t> liveCount_{0};
@@ -251,6 +252,10 @@ private:
     // Path trigram index: two-level lookup for fast path-only matching
     std::unordered_map<Trigram, std::vector<uint32_t>> pathTrigramIndex_; // trigram -> sorted pathIdx
     std::vector<std::vector<uint32_t>> pathIdxToRecords_; // pathIdx -> sorted record indices
+
+    /// Intern a directory path into pathPool_ and lowerPathPool_. Returns pathPool_ index.
+    /// Deduplicates via pathLookup_. Must be called under unique_lock.
+    uint32_t internPath(const std::string& path);
 
     /// Build trigram index from namePool_ (called inside loadRecords/compactRecords under lock)
     void buildTrigramIndex();
@@ -304,9 +309,9 @@ private:
         buildTrigramIndexFromData(const std::vector<FileRecord>& records,
                                   const StringPool& namePool);
 
-    /// Build path trigram index from standalone StringPool (used by COW compaction)
+    /// Build path trigram index from pre-lowered StringPool (used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>
-        buildPathTrigramIndexFromData(const StringPool& pathPool);
+        buildPathTrigramIndexFromData(const StringPool& lowerPathPool);
 
     /// Build pathIdx -> record indices mapping from standalone data (used by COW compaction)
     static std::vector<std::vector<uint32_t>>

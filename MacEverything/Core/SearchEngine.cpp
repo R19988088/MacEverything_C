@@ -51,6 +51,15 @@ std::string SearchEngine::makeFullPath(const std::string& path, const std::strin
     return path + "/" + name;
 }
 
+uint32_t SearchEngine::internPath(const std::string& path) {
+    auto it = pathLookup_.find(path);
+    if (it != pathLookup_.end()) return it->second;
+    uint32_t pIdx = pathPool_.append(path);
+    lowerPathPool_.append(me::toLower(path));
+    pathLookup_[path] = pIdx;
+    return pIdx;
+}
+
 std::unordered_map<Trigram, std::vector<uint32_t>>
 SearchEngine::buildTrigramIndexFromData(const std::vector<FileRecord>& records,
                                         const StringPool& namePool) {
@@ -114,12 +123,12 @@ void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
 // --- Path trigram index methods ---
 
 std::unordered_map<Trigram, std::vector<uint32_t>>
-SearchEngine::buildPathTrigramIndexFromData(const StringPool& pathPool) {
+SearchEngine::buildPathTrigramIndexFromData(const StringPool& lowerPathPool) {
     std::unordered_map<Trigram, std::vector<uint32_t>> index;
-    for (uint32_t pi = 0; pi < pathPool.entryCount(); pi++) {
-        if (!pathPool.isLive(pi)) continue;
-        std::string lowerPath = me::toLower(std::string(pathPool.data(pi), pathPool.length(pi)));
-        auto trigrams = ContentIndex::extractTrigrams(lowerPath);
+    for (uint32_t pi = 0; pi < lowerPathPool.entryCount(); pi++) {
+        if (!lowerPathPool.isLive(pi)) continue;
+        std::string_view pathView(lowerPathPool.data(pi), lowerPathPool.length(pi));
+        auto trigrams = ContentIndex::extractTrigrams(std::string(pathView));
         std::sort(trigrams.begin(), trigrams.end());
         trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
         for (Trigram t : trigrams) {
@@ -151,7 +160,7 @@ SearchEngine::buildPathIdxToRecordsFromData(const std::vector<FileRecord>& recor
 }
 
 void SearchEngine::buildPathTrigramIndex() {
-    pathTrigramIndex_ = buildPathTrigramIndexFromData(pathPool_);
+    pathTrigramIndex_ = buildPathTrigramIndexFromData(lowerPathPool_);
 }
 
 void SearchEngine::rebuildPathIdxToRecords() {
@@ -183,8 +192,7 @@ void SearchEngine::removePathTrigramsForRecord(uint32_t idx) {
 
 void SearchEngine::ensurePathTrigramsForPathIdx(uint32_t pathIdx) {
     // Check if this pathIdx already has entries in pathTrigramIndex_
-    std::string path = pathPool_.str(pathIdx);
-    std::string lowerPath = me::toLower(path);
+    std::string lowerPath = lowerPathPool_.str(pathIdx);
     auto trigrams = ContentIndex::extractTrigrams(lowerPath);
     std::sort(trigrams.begin(), trigrams.end());
     trigrams.erase(std::unique(trigrams.begin(), trigrams.end()), trigrams.end());
@@ -247,20 +255,13 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     }
     namePool_.loadBulk(tempLowerNames);
 
-    // Path deduplication: intern paths into pathPool_ + pathLookup_
+    // Path deduplication: intern paths into pathPool_ + lowerPathPool_ + pathLookup_
     pathPool_.clear();
+    lowerPathPool_.clear();
     pathLookup_.clear();
     pathIndices_.resize(records_.size());
     for (size_t i = 0; i < records_.size(); i++) {
-        const auto& path = records_[i].path;
-        auto it = pathLookup_.find(path);
-        if (it != pathLookup_.end()) {
-            pathIndices_[i] = it->second;
-        } else {
-            uint32_t pi = pathPool_.append(path);
-            pathLookup_[path] = pi;
-            pathIndices_[i] = pi;
-        }
+        pathIndices_[i] = internPath(records_[i].path);
         records_[i].path.clear();
     }
 
@@ -280,7 +281,9 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
             if (start >= end) break;
             pathThreads.emplace_back([this, &loweredPaths, start, end] {
                 for (size_t i = start; i < end; i++) {
-                    loweredPaths[i] = me::toLower(makeFullPath(pathPool_.str(pathIndices_[i]), records_[i].name));
+                    loweredPaths[i] = makeFullPath(lowerPathPool_.str(pathIndices_[i]),
+                                                   std::string(namePool_.data(static_cast<uint32_t>(i)),
+                                                               namePool_.length(static_cast<uint32_t>(i))));
                 }
             });
         }
@@ -590,8 +593,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             if (records_[idx].type == 0) continue;
                             if (isCandidate.test(idx)) continue;
                             if (nameSet.find(idx) == nameSet.end()) continue;
-                            const char* pd = pathPool_.data(pi);
-                            uint16_t pl = pathPool_.length(pi);
+                            const char* pd = lowerPathPool_.data(pi);
+                            uint16_t pl = lowerPathPool_.length(pi);
                             const char* nd = namePool_.data(idx);
                             uint16_t nl = namePool_.length(idx);
                             size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
@@ -599,7 +602,6 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             memcpy(pathBuf.data(), pd, pl);
                             pathBuf[pl] = '/';
                             memcpy(pathBuf.data() + pl + 1, nd, nl);
-                            me::simdToLowerAscii(pathBuf.data(), pl);
                             if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                             uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                 ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
@@ -620,13 +622,10 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         for (uint32_t pi : candidatePathIdxs) {
                             if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                             if (pi >= pathIdxToRecords_.size()) continue;
-                            const char* pd2 = pathPool_.data(pi);
-                            uint16_t pl2 = pathPool_.length(pi);
+                            const char* pd2 = lowerPathPool_.data(pi);
+                            uint16_t pl2 = lowerPathPool_.length(pi);
                             // Pre-filter: check if lowered path contains pathPart
-                            if (pathBuf.size() < pl2) pathBuf.resize(static_cast<size_t>(pl2) * 2);
-                            memcpy(pathBuf.data(), pd2, pl2);
-                            me::simdToLowerAscii(pathBuf.data(), pl2);
-                            if (!me::simdContains(pathBuf.data(), pl2, pathPart.data(), pathPart.size())) continue;
+                            if (!me::simdContains(pd2, pl2, pathPart.data(), pathPart.size())) continue;
                             const auto& recIndices = pathIdxToRecords_[pi];
                             for (uint32_t idx : recIndices) {
                                 if (records_[idx].type == 0) continue;
@@ -635,11 +634,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                                 uint16_t nl = namePool_.length(idx);
                                 size_t fullLen = static_cast<size_t>(pl2) + 1 + nl;
                                 if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-                                // Re-copy path since pathBuf may have been resized
                                 memcpy(pathBuf.data(), pd2, pl2);
                                 pathBuf[pl2] = '/';
                                 memcpy(pathBuf.data() + pl2 + 1, nd, nl);
-                                me::simdToLowerAscii(pathBuf.data(), pl2);
                                 if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                                 uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                     ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
@@ -654,13 +651,10 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     for (uint32_t pi : candidatePathIdxs) {
                         if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                         if (pi >= pathIdxToRecords_.size()) continue;
-                        const char* pd = pathPool_.data(pi);
-                        uint16_t pl = pathPool_.length(pi);
+                        const char* pd = lowerPathPool_.data(pi);
+                        uint16_t pl = lowerPathPool_.length(pi);
                         // Pre-filter: check if lowered path contains pathPart
-                        if (pathBuf.size() < pl) pathBuf.resize(static_cast<size_t>(pl) * 2);
-                        memcpy(pathBuf.data(), pd, pl);
-                        me::simdToLowerAscii(pathBuf.data(), pl);
-                        if (!me::simdContains(pathBuf.data(), pl, pathPart.data(), pathPart.size())) continue;
+                        if (!me::simdContains(pd, pl, pathPart.data(), pathPart.size())) continue;
                         const auto& recIndices = pathIdxToRecords_[pi];
                         for (uint32_t idx : recIndices) {
                             if (records_[idx].type == 0) continue;
@@ -672,7 +666,6 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                             memcpy(pathBuf.data(), pd, pl);
                             pathBuf[pl] = '/';
                             memcpy(pathBuf.data() + pl + 1, nd, nl);
-                            me::simdToLowerAscii(pathBuf.data(), pl);
                             if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                             uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                                 ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
@@ -688,8 +681,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         if (records_[idx].type == 0) continue;
                         if (isCandidate.test(idx)) continue;
                         uint32_t pi = pathIndices_[idx];
-                        const char* pd = pathPool_.data(pi);
-                        uint16_t pl = pathPool_.length(pi);
+                        const char* pd = lowerPathPool_.data(pi);
+                        uint16_t pl = lowerPathPool_.length(pi);
                         const char* nd = namePool_.data(idx);
                         uint16_t nl = namePool_.length(idx);
                         size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
@@ -697,7 +690,6 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         memcpy(pathBuf.data(), pd, pl);
                         pathBuf[pl] = '/';
                         memcpy(pathBuf.data() + pl + 1, nd, nl);
-                        me::simdToLowerAscii(pathBuf.data(), pl);
                         if (!me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) continue;
                         uint8_t priority = me::simdContains(nd, nl, lowerKey.data(), lowerKey.size())
                             ? ((nl == lowerKey.size() && memcmp(nd, lowerKey.data(), nl) == 0) ? 0 : (nl >= lowerKey.size() && memcmp(nd, lowerKey.data(), lowerKey.size()) == 0 ? 1 : 2))
@@ -761,9 +753,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     if (pi >= pathIdxToRecords_.size()) continue;
 
                     // Verify this path actually contains the keyword (false positive filter)
-                    std::string rPath = pathPool_.str(pi);
-                    std::string lowerPath = me::toLower(rPath);
-                    if (lowerPath.find(lowerKey) == std::string::npos) continue;
+                    std::string_view lowerPath(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
+                    if (lowerPath.find(lowerKey) == std::string_view::npos) continue;
 
                     const auto& recIndices = pathIdxToRecords_[pi];
                     for (uint32_t idx : recIndices) {
@@ -780,7 +771,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         } else {
                             priority = 3;
                         }
-                        uint32_t pLen = static_cast<uint32_t>(rPath.size() + 1 + nl);
+                        uint32_t pLen = static_cast<uint32_t>(lowerPath.size() + 1 + nl);
                         merged.push_back({idx, priority, pLen});
                     }
                 }
@@ -800,13 +791,25 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
             const auto& records = records_;
             const auto& namePool = namePool_;
-            const auto& pathPool = pathPool_;
+            const auto& lowerPathPool = lowerPathPool_;
             const auto& pIndices = pathIndices_;
 
             auto& isCandidate = threadLocalBitmap();
             isCandidate.prepare(totalSize);
             isCandidate.populateFrom(trigramCandidates);
             const auto* isCandidateBits = &isCandidate.bits;
+
+            // Dedup path matching for fallback linear scan
+            bool hasSlashFb = lowerKey.find('/') != std::string::npos;
+            uint32_t pathCountFb = lowerPathPool.entryCount();
+            std::vector<bool> pathMatchCacheFb(pathCountFb, false);
+            for (uint32_t pi = 0; pi < pathCountFb; pi++) {
+                if (!lowerPathPool.isLive(pi)) continue;
+                if (me::simdContains(lowerPathPool.data(pi), lowerPathPool.length(pi),
+                                     lowerKey.data(), lowerKey.size()))
+                    pathMatchCacheFb[pi] = true;
+            }
+            const auto* pathMatchCacheFbPtr = &pathMatchCacheFb;
 
             dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
             const auto* genPtr = &queryGeneration_;
@@ -817,9 +820,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 if (start >= end) return;
 
                 auto& local = (*threadResultsPtr)[t];
-                // Thread-local reusable buffer for lowercased full paths.
-                // Avoids per-iteration heap allocations that cause nanov2
-                // allocator corruption under high dispatch_apply concurrency.
+                // Thread-local reusable buffer for full paths.
                 std::vector<char> pathBuf;
                 for (size_t i = start; i < end; i++) {
                     if ((i & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
@@ -834,18 +835,19 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                         else if (nl >= lowerKey.size() &&
                                  memcmp(nd, lowerKey.data(), lowerKey.size()) == 0) priority = 1;
                         else priority = 2;
-                        uint32_t pLen = static_cast<uint32_t>(pathPool.length(pIndices[i]) + 1 + nl);
+                        uint32_t pLen = static_cast<uint32_t>(lowerPathPool.length(pIndices[i]) + 1 + nl);
                         local.push_back({static_cast<uint32_t>(i), priority, pLen});
                     } else {
-                        // Build lowercased full path in reusable buffer (no heap churn)
-                        const char* pd = pathPool.data(pIndices[i]);
-                        uint16_t pl = pathPool.length(pIndices[i]);
+                        // O(1) dedup path check: skip if path doesn't match and no slash boundary
+                        if (!(*pathMatchCacheFbPtr)[pIndices[i]] && !hasSlashFb) continue;
+                        // Build full path from pre-lowered path pool (no runtime lowering needed)
+                        const char* pd = lowerPathPool.data(pIndices[i]);
+                        uint16_t pl = lowerPathPool.length(pIndices[i]);
                         size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
                         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
                         memcpy(pathBuf.data(), pd, pl);
                         pathBuf[pl] = '/';
                         memcpy(pathBuf.data() + pl + 1, nd, nl);
-                        me::simdToLowerAscii(pathBuf.data(), pl); // lowercase path only; name already lower
                         if (me::simdContains(pathBuf.data(), fullLen, lowerKey.data(), lowerKey.size())) {
                             local.push_back({static_cast<uint32_t>(i), uint8_t(3), static_cast<uint32_t>(fullLen)});
                         }
@@ -876,8 +878,22 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         auto* threadResultsPtr = &threadResults;
         const auto& records = records_;
         const auto& namePool = namePool_;
-        const auto& pathPool = pathPool_;
+        const auto& lowerPathPool = lowerPathPool_;
         const auto& pIndices = pathIndices_;
+
+        // Dedup path matching: pre-scan ~100K unique paths once, then O(1) lookup per record
+        bool hasSlash = !useGlob && lowerKey.find('/') != std::string::npos;
+        uint32_t pathCount = lowerPathPool.entryCount();
+        std::vector<bool> pathMatchCache(pathCount, false);
+        if (!useGlob) {
+            for (uint32_t pi = 0; pi < pathCount; pi++) {
+                if (!lowerPathPool.isLive(pi)) continue;
+                if (me::simdContains(lowerPathPool.data(pi), lowerPathPool.length(pi),
+                                     lowerKey.data(), lowerKey.size()))
+                    pathMatchCache[pi] = true;
+            }
+        }
+        const auto* pathMatchCachePtr = &pathMatchCache;
 
         dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
         const auto* genPtr = &queryGeneration_;
@@ -907,14 +923,15 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                 }
                 bool pathMatch = false;
                 if (!nameMatch) {
-                    const char* pd = pathPool.data(pIndices[i]);
-                    uint16_t pl = pathPool.length(pIndices[i]);
+                    // O(1) dedup path check: skip if path doesn't match and no slash boundary possible
+                    if (!useGlob && !(*pathMatchCachePtr)[pIndices[i]] && !hasSlash) continue;
+                    const char* pd = lowerPathPool.data(pIndices[i]);
+                    uint16_t pl = lowerPathPool.length(pIndices[i]);
                     size_t fullLen = static_cast<size_t>(pl) + 1 + nl;
                     if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
                     memcpy(pathBuf.data(), pd, pl);
                     pathBuf[pl] = '/';
                     memcpy(pathBuf.data() + pl + 1, nd, nl);
-                    me::simdToLowerAscii(pathBuf.data(), pl); // lowercase path; name already lower
                     if (useGlob) {
                         std::string fullPath(pathBuf.data(), fullLen);
                         pathMatch = globMatch(lowerKey, fullPath);
@@ -933,7 +950,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     } else {
                         priority = 3;
                     }
-                    uint32_t pLen = static_cast<uint32_t>(pathPool.length(pIndices[i]) + 1 + nl);
+                    uint32_t pLen = static_cast<uint32_t>(lowerPathPool.length(pIndices[i]) + 1 + nl);
                     local.push_back({static_cast<uint32_t>(i), priority, pLen});
                 }
             }
@@ -1062,14 +1079,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     }
 
     // Intern path before moving record
-    uint32_t pIdx;
-    auto pathIt = pathLookup_.find(record.path);
-    if (pathIt != pathLookup_.end()) {
-        pIdx = pathIt->second;
-    } else {
-        pIdx = pathPool_.append(record.path);
-        pathLookup_[record.path] = pIdx;
-    }
+    uint32_t pIdx = internPath(record.path);
     if (pIdx >= pathIdxToRecords_.size()) {
         ensurePathTrigramsForPathIdx(pIdx);
     }
@@ -1209,14 +1219,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
 
         if (wal_) wal_->append(WALOp::Update, fullPath, record);
 
-        auto plIt = pathLookup_.find(record.path);
-        uint32_t pIdx;
-        if (plIt != pathLookup_.end()) {
-            pIdx = plIt->second;
-        } else {
-            pIdx = pathPool_.append(record.path);
-            pathLookup_[record.path] = pIdx;
-        }
+        uint32_t pIdx = internPath(record.path);
         if (pIdx >= pathIdxToRecords_.size()) {
             ensurePathTrigramsForPathIdx(pIdx);
         }
@@ -1272,14 +1275,7 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     std::string lower = me::toLower(updated.name);
 
     // Intern path before moving record
-    auto plIt = pathLookup_.find(updated.path);
-    uint32_t pIdx;
-    if (plIt != pathLookup_.end()) {
-        pIdx = plIt->second;
-    } else {
-        pIdx = pathPool_.append(updated.path);
-        pathLookup_[updated.path] = pIdx;
-    }
+    uint32_t pIdx = internPath(updated.path);
     if (pIdx >= pathIdxToRecords_.size()) {
         ensurePathTrigramsForPathIdx(pIdx);
     }
@@ -1336,6 +1332,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     std::vector<uint32_t> cdPathIndices;
     cdPathIndices.reserve(snapSize);
     StringPool cdPathPool;
+    StringPool cdLowerPathPool;
     std::unordered_map<std::string, uint32_t> cdPathLookup;
     std::unordered_map<std::string, uint32_t> cdPathIndex;
     cdPathIndex.reserve(snapSize);
@@ -1349,13 +1346,14 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         if (pathIt == snapPathIndex.end() || pathIt->second != static_cast<uint32_t>(i)) continue;
         uint32_t newIdx = static_cast<uint32_t>(cdRecords.size());
         remap[static_cast<uint32_t>(i)] = newIdx;
-        // Intern path into compacted pool
+        // Intern path into compacted pool (both original and lowered)
         uint32_t newPIdx;
         auto cdPlIt = cdPathLookup.find(origPath);
         if (cdPlIt != cdPathLookup.end()) {
             newPIdx = cdPlIt->second;
         } else {
             newPIdx = cdPathPool.append(origPath);
+            cdLowerPathPool.append(me::toLower(origPath));
             cdPathLookup[origPath] = newPIdx;
         }
         cdPathIndex[fullPathLower] = newIdx;
@@ -1368,7 +1366,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
 
     // Build trigram index, path trigram index, and recent cache outside any lock
     auto cdTrigramIndex = buildTrigramIndexFromData(cdRecords, cdNamePool);
-    auto cdPathTrigramIndex = buildPathTrigramIndexFromData(cdPathPool);
+    auto cdPathTrigramIndex = buildPathTrigramIndexFromData(cdLowerPathPool);
     auto cdPathIdxToRecords = buildPathIdxToRecordsFromData(cdRecords, cdPathIndices, cdPathPool.entryCount());
     auto cdRecentCache = buildRecentCacheFromData(cdRecords, kRecentCacheSize);
 
@@ -1394,6 +1392,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         namePool_ = std::move(cdNamePool);
         pathIndices_ = std::move(cdPathIndices);
         pathPool_ = std::move(cdPathPool);
+        lowerPathPool_ = std::move(cdLowerPathPool);
         pathLookup_ = std::move(cdPathLookup);
         pathIndex_ = std::move(cdPathIndex);
         nameTrigramIndex_ = std::move(cdTrigramIndex);
@@ -1407,14 +1406,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
             if (oldRecords[i].type == 0) continue;
             uint32_t newIdx = static_cast<uint32_t>(records_.size());
             std::string origPath = oldPathPool.str(oldPathIndices[i]);
-            auto plIt = pathLookup_.find(origPath);
-            uint32_t pIdx;
-            if (plIt != pathLookup_.end()) {
-                pIdx = plIt->second;
-            } else {
-                pIdx = pathPool_.append(origPath);
-                pathLookup_[origPath] = pIdx;
-            }
+            uint32_t pIdx = internPath(origPath);
             if (pIdx >= pathIdxToRecords_.size()) {
                 ensurePathTrigramsForPathIdx(pIdx);
             }
@@ -1573,14 +1565,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
 
             uint32_t idx = static_cast<uint32_t>(records_.size());
             std::string lower = me::toLower(e.record.name);
-            auto plIt = pathLookup_.find(e.record.path);
-            uint32_t pIdx;
-            if (plIt != pathLookup_.end()) {
-                pIdx = plIt->second;
-            } else {
-                pIdx = pathPool_.append(e.record.path);
-                pathLookup_[e.record.path] = pIdx;
-            }
+            uint32_t pIdx = internPath(e.record.path);
             if (pIdx >= pathIdxToRecords_.size()) {
                 ensurePathTrigramsForPathIdx(pIdx);
             }
@@ -1635,14 +1620,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             // Add updated record
             uint32_t newIdx = static_cast<uint32_t>(records_.size());
             std::string lower = me::toLower(e.record.name);
-            auto plIt = pathLookup_.find(e.record.path);
-            uint32_t pIdx;
-            if (plIt != pathLookup_.end()) {
-                pIdx = plIt->second;
-            } else {
-                pIdx = pathPool_.append(e.record.path);
-                pathLookup_[e.record.path] = pIdx;
-            }
+            uint32_t pIdx = internPath(e.record.path);
             if (pIdx >= pathIdxToRecords_.size()) {
                 ensurePathTrigramsForPathIdx(pIdx);
             }

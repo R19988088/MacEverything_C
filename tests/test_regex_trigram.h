@@ -175,7 +175,7 @@ static void runRegexTrigramTests() {
         // Pattern with only metacharacters, no extractable literals
         auto results = engine.queryAdvanced("regex:.*", 100, true, timing);
         check(results.size() == 50, "60.11 regex no literals: linear fallback, all matched");
-        check(timing.searchPath == "advanced-linear", "60.11 searchPath is advanced-linear");
+        check(timing.searchPath == "advanced-linear-gcd", "60.11 searchPath is advanced-linear-gcd");
     }
 
     // ── Test 12: Empty pattern ──

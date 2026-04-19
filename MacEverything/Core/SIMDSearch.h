@@ -229,4 +229,124 @@ inline void simdToLowerAscii(char* data, size_t len) {
 #endif
 }
 
+// ─── SIMD batch filter for SoA columnar arrays ──────────────────────────────
+
+/// Batch-check 16 type bytes for liveness (type != 0). Returns 16-bit mask (1=live).
+inline uint16_t simdTypeLive16(const uint8_t* types) {
+#if ME_HAS_NEON
+    uint8x16_t v = vld1q_u8(types);
+    uint8x16_t zero = vdupq_n_u8(0);
+    uint8x16_t neq = vmvnq_u8(vceqq_u8(v, zero));  // != 0
+    return neon_movemask(neq);
+#else
+    uint16_t mask = 0;
+    for (int i = 0; i < 16; i++) {
+        if (types[i] != 0) mask |= (1u << i);
+    }
+    return mask;
+#endif
+}
+
+/// Batch-check 16 type bytes for equality with target. Returns 16-bit mask (1=match).
+inline uint16_t simdTypeEq16(const uint8_t* types, uint8_t target) {
+#if ME_HAS_NEON
+    uint8x16_t v = vld1q_u8(types);
+    uint8x16_t t = vdupq_n_u8(target);
+    return neon_movemask(vceqq_u8(v, t));
+#else
+    uint16_t mask = 0;
+    for (int i = 0; i < 16; i++) {
+        if (types[i] == target) mask |= (1u << i);
+    }
+    return mask;
+#endif
+}
+
+/// Batch-compare 2 uint64 values against a threshold. Returns 2-bit mask (1=pass).
+/// Uses NEON uint64x2_t comparison on ARM64.
+inline uint8_t simdCompareU64x2GT(const uint64_t* vals, uint64_t threshold) {
+#if ME_HAS_NEON
+    uint64x2_t v = vld1q_u64(vals);
+    uint64x2_t t = vdupq_n_u64(threshold);
+    uint64x2_t cmp = vcgtq_u64(v, t);
+    uint8_t mask = 0;
+    if (vgetq_lane_u64(cmp, 0)) mask |= 1;
+    if (vgetq_lane_u64(cmp, 1)) mask |= 2;
+    return mask;
+#else
+    uint8_t mask = 0;
+    if (vals[0] > threshold) mask |= 1;
+    if (vals[1] > threshold) mask |= 2;
+    return mask;
+#endif
+}
+
+inline uint8_t simdCompareU64x2GE(const uint64_t* vals, uint64_t threshold) {
+#if ME_HAS_NEON
+    uint64x2_t v = vld1q_u64(vals);
+    uint64x2_t t = vdupq_n_u64(threshold);
+    uint64x2_t cmp = vcgeq_u64(v, t);
+    uint8_t mask = 0;
+    if (vgetq_lane_u64(cmp, 0)) mask |= 1;
+    if (vgetq_lane_u64(cmp, 1)) mask |= 2;
+    return mask;
+#else
+    uint8_t mask = 0;
+    if (vals[0] >= threshold) mask |= 1;
+    if (vals[1] >= threshold) mask |= 2;
+    return mask;
+#endif
+}
+
+inline uint8_t simdCompareU64x2LT(const uint64_t* vals, uint64_t threshold) {
+#if ME_HAS_NEON
+    uint64x2_t v = vld1q_u64(vals);
+    uint64x2_t t = vdupq_n_u64(threshold);
+    uint64x2_t cmp = vcltq_u64(v, t);
+    uint8_t mask = 0;
+    if (vgetq_lane_u64(cmp, 0)) mask |= 1;
+    if (vgetq_lane_u64(cmp, 1)) mask |= 2;
+    return mask;
+#else
+    uint8_t mask = 0;
+    if (vals[0] < threshold) mask |= 1;
+    if (vals[1] < threshold) mask |= 2;
+    return mask;
+#endif
+}
+
+inline uint8_t simdCompareU64x2LE(const uint64_t* vals, uint64_t threshold) {
+#if ME_HAS_NEON
+    uint64x2_t v = vld1q_u64(vals);
+    uint64x2_t t = vdupq_n_u64(threshold);
+    uint64x2_t cmp = vcleq_u64(v, t);
+    uint8_t mask = 0;
+    if (vgetq_lane_u64(cmp, 0)) mask |= 1;
+    if (vgetq_lane_u64(cmp, 1)) mask |= 2;
+    return mask;
+#else
+    uint8_t mask = 0;
+    if (vals[0] <= threshold) mask |= 1;
+    if (vals[1] <= threshold) mask |= 2;
+    return mask;
+#endif
+}
+
+inline uint8_t simdCompareU64x2EQ(const uint64_t* vals, uint64_t threshold) {
+#if ME_HAS_NEON
+    uint64x2_t v = vld1q_u64(vals);
+    uint64x2_t t = vdupq_n_u64(threshold);
+    uint64x2_t cmp = vceqq_u64(v, t);
+    uint8_t mask = 0;
+    if (vgetq_lane_u64(cmp, 0)) mask |= 1;
+    if (vgetq_lane_u64(cmp, 1)) mask |= 2;
+    return mask;
+#else
+    uint8_t mask = 0;
+    if (vals[0] == threshold) mask |= 1;
+    if (vals[1] == threshold) mask |= 2;
+    return mask;
+#endif
+}
+
 } // namespace me

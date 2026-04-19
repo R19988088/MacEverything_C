@@ -3,6 +3,8 @@
 #include "QueryParser.h"
 #include "QueryTokenizer.h"
 #include "QueryFilterParser.h"
+#include "QueryNeedsAnalysis.h"
+#include "SIMDSearch.h"
 #include "Logger.h"
 #include <algorithm>
 #include <cstring>
@@ -11,6 +13,8 @@
 #include <chrono>
 #include <regex>
 #include <functional>
+#include <thread>
+#include <dispatch/dispatch.h>
 
 // ---------------------------------------------------------------------------
 // queryAdvanced: evaluate a parsed AST against the record set.
@@ -446,6 +450,66 @@ static std::vector<std::string> extractRegexLiteralsFromAST(const QueryNode& nod
     return allLiterals;
 }
 
+/// Evaluate a FILTER node using SoA columnar values (no string access).
+/// Only handles type/size/modTime filters. Other filters return true (pass-through).
+static bool evalFilterSoA(const QueryNode& node,
+                          uint8_t type, uint64_t size, int64_t modTime) {
+    const auto& name = node.filterName;
+
+    if (name == "size") {
+        return compareNumeric(size, node.op, node.numVal1, node.numVal2);
+    }
+    if (name == "file") {
+        return type == 1;
+    }
+    if (name == "folder") {
+        return type == 2;
+    }
+    if (name == "type") {
+        if (node.filterArg == "file") return type == 1;
+        if (node.filterArg == "folder" || node.filterArg == "dir") return type == 2;
+        return false;
+    }
+    if (name == "dm" || name == "datemodified") {
+        return compareNumeric(static_cast<uint64_t>(modTime), node.op,
+                              node.numVal1, node.numVal2);
+    }
+    if (name == "dc" || name == "datecreated") {
+        return compareNumeric(static_cast<uint64_t>(modTime), node.op,
+                              node.numVal1, node.numVal2);
+    }
+    if (name == "da" || name == "dateaccessed") {
+        return compareNumeric(static_cast<uint64_t>(modTime), node.op,
+                              node.numVal1, node.numVal2);
+    }
+    return true;
+}
+
+/// Recursively evaluate AST node using SoA columnar values only (pure-filter fast path).
+static bool evalNodeSoA(const QueryNode& node,
+                        uint8_t type, uint64_t size, int64_t modTime) {
+    switch (node.type) {
+        case QueryNodeType::TERM:
+            return false; // Should never happen in pure-filter path
+        case QueryNodeType::AND:
+            for (auto& child : node.children) {
+                if (!evalNodeSoA(*child, type, size, modTime)) return false;
+            }
+            return true;
+        case QueryNodeType::OR:
+            for (auto& child : node.children) {
+                if (evalNodeSoA(*child, type, size, modTime)) return true;
+            }
+            return false;
+        case QueryNodeType::NOT:
+            if (node.children.empty()) return true;
+            return !evalNodeSoA(*node.children[0], type, size, modTime);
+        case QueryNodeType::FILTER:
+            return evalFilterSoA(node, type, size, modTime);
+    }
+    return false;
+}
+
 /// Extract the first SUBSTRING TERM text from the AST for result scoring.
 /// Returns empty string if no suitable term is found (pure filter queries).
 static std::string extractScoringTerm(const QueryNode& node) {
@@ -479,6 +543,9 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     // Parse the AST
     auto ast = QueryParser::parse(input);
     if (!ast) return {};
+
+    // Analyze which record fields the query actually needs
+    QueryNeeds needs = analyzeQueryNeeds(*ast);
 
     // Pre-compile all regex patterns before acquiring lock
     RegexCache regexCache;
@@ -540,47 +607,149 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     }
 
     // Evaluate AST against each candidate (or all records for linear scan)
-    struct Match { uint32_t idx; uint8_t priority; uint32_t pathLen; };
+    // Uses SearchEngine::Match (declared in SearchEngine.h)
     std::vector<Match> merged;
     std::vector<char> pathBuf;
 
     // Extract scoring term from AST (not raw input) — hoisted out of per-record loop
     std::string scoringTerm = extractScoringTerm(*ast);
 
-    auto evalRecord = [&](uint32_t idx) {
-        if (records_[idx].type == 0) return;
-        const char* nd = namePool_.data(idx);
-        uint16_t nl = namePool_.length(idx);
-        uint32_t pi = pathIndices_[idx];
-        const char* pd = lowerPathPool_.data(pi);
-        uint16_t pl = lowerPathPool_.length(pi);
-
-        if (!evalNode(*ast, records_[idx], nd, nl, pd, pl, pathBuf, regexCache)) return;
-
-        // Compute priority: 0=exact, 1=starts-with, 2=contains name, 3=path-only
-        uint8_t priority = 2;
-        if (!scoringTerm.empty()) {
-            if (me::simdContains(nd, nl, scoringTerm.data(), scoringTerm.size())) {
-                priority = namePriority(nd, nl, scoringTerm.data(), scoringTerm.size());
-            } else {
-                priority = 3;
-            }
-        }
-        uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
-        merged.push_back({idx, priority, pLen});
-    };
-
     auto beforePhase = std::chrono::steady_clock::now();
 
     if (useTrigramIndex) {
+        // Trigram-filtered path: candidates are already small, single-threaded
         for (size_t ci = 0; ci < candidates.size(); ci++) {
             if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-            evalRecord(candidates[ci]);
+            uint32_t idx = candidates[ci];
+            if (records_[idx].type == 0) continue;
+            const char* nd = namePool_.data(idx);
+            uint16_t nl = namePool_.length(idx);
+            uint32_t pi = pathIndices_[idx];
+            const char* pd = lowerPathPool_.data(pi);
+            uint16_t pl = lowerPathPool_.length(pi);
+            if (!evalNode(*ast, records_[idx], nd, nl, pd, pl, pathBuf, regexCache)) continue;
+            uint8_t priority = 2;
+            if (!scoringTerm.empty()) {
+                if (me::simdContains(nd, nl, scoringTerm.data(), scoringTerm.size())) {
+                    priority = namePriority(nd, nl, scoringTerm.data(), scoringTerm.size());
+                } else {
+                    priority = 3;
+                }
+            }
+            merged.push_back({idx, priority, static_cast<uint32_t>(pl + 1 + nl)});
         }
     } else {
-        for (uint32_t idx = 0; idx < totalSize; idx++) {
-            if ((idx & 4095) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-            evalRecord(idx);
+        // Linear scan — parallelize with GCD dispatch_apply
+        unsigned numThreads = std::thread::hardware_concurrency();
+        if (numThreads < 1) numThreads = 1;
+        if (numThreads > 32) numThreads = 32;
+        // For small record sets, don't over-parallelize
+        if (totalSize < 10000) numThreads = 1;
+
+        size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+        __block std::vector<std::vector<Match>> threadResults(numThreads);
+
+        const auto* genPtr = &queryGeneration_;
+        uint64_t capturedGen = myGen;
+        bool pureFilter = needs.isPureFilter();
+
+        // Capture references for block
+        const auto* astPtr = ast.get();
+        const auto* typesPtr = types_.data();
+        const auto* sizesPtr = sizes_.data();
+        const auto* modTimesPtr = modTimes_.data();
+        const auto& records = records_;
+        const auto& namePool = namePool_;
+        const auto& lowerPathPool = lowerPathPool_;
+        const auto& pIndices = pathIndices_;
+        const auto& regCache = regexCache;
+        const auto& sTerm = scoringTerm;
+
+        dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+        dispatch_apply(numThreads, queue, ^(size_t t) {
+            size_t start = t * chunkSize;
+            size_t end = std::min(start + chunkSize, totalSize);
+            if (start >= end) return;
+
+            auto& local = threadResults[t];
+            std::vector<char> localPathBuf;
+
+            if (pureFilter) {
+                // ── SIMD-batched pure-filter fast path ──
+                // Process 16 records at a time: batch liveness via simdTypeLive16,
+                // then evaluate surviving records through the SoA AST evaluator.
+                size_t idx = start;
+
+                // Align to 16-byte boundary for SIMD loads
+                size_t alignedStart = (start + 15) & ~size_t(15);
+                if (alignedStart > end) alignedStart = end;
+
+                // Scalar pre-amble (before alignment)
+                for (; idx < alignedStart; idx++) {
+                    if (typesPtr[idx] == 0) continue;
+                    if (!evalNodeSoA(*astPtr, typesPtr[idx], sizesPtr[idx], modTimesPtr[idx])) continue;
+                    local.push_back({static_cast<uint32_t>(idx), 2, 0});
+                }
+
+                // SIMD main loop: 16 records per iteration
+                for (; idx + 16 <= end; idx += 16) {
+                    if ((idx & 4095) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
+
+                    // Batch liveness: skip chunk if all 16 are tombstones
+                    uint16_t liveMask = me::simdTypeLive16(typesPtr + idx);
+                    if (liveMask == 0) continue;
+
+                    // Process live records in this chunk
+                    while (liveMask) {
+                        int bit = __builtin_ctz(liveMask);
+                        size_t ri = idx + bit;
+                        if (evalNodeSoA(*astPtr, typesPtr[ri], sizesPtr[ri], modTimesPtr[ri])) {
+                            local.push_back({static_cast<uint32_t>(ri), 2, 0});
+                        }
+                        liveMask &= liveMask - 1;
+                    }
+                }
+
+                // Scalar tail
+                for (; idx < end; idx++) {
+                    if (typesPtr[idx] == 0) continue;
+                    if (!evalNodeSoA(*astPtr, typesPtr[idx], sizesPtr[idx], modTimesPtr[idx])) continue;
+                    local.push_back({static_cast<uint32_t>(idx), 2, 0});
+                }
+            } else {
+                // ── Full evaluation path (needs string access) ──
+                for (size_t idx = start; idx < end; idx++) {
+                    if ((idx & 4095) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
+
+                    if (records[idx].type == 0) continue;
+                    const char* nd = namePool.data(static_cast<uint32_t>(idx));
+                    uint16_t nl = namePool.length(static_cast<uint32_t>(idx));
+                    uint32_t pi = pIndices[idx];
+                    const char* pd = lowerPathPool.data(pi);
+                    uint16_t pl = lowerPathPool.length(pi);
+
+                    if (!evalNode(*astPtr, records[idx], nd, nl, pd, pl, localPathBuf, regCache)) continue;
+
+                    uint8_t priority = 2;
+                    if (!sTerm.empty()) {
+                        if (me::simdContains(nd, nl, sTerm.data(), sTerm.size())) {
+                            priority = namePriority(nd, nl, sTerm.data(), sTerm.size());
+                        } else {
+                            priority = 3;
+                        }
+                    }
+                    uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
+                    local.push_back({static_cast<uint32_t>(idx), priority, pLen});
+                }
+            }
+        });
+
+        // Check if superseded after dispatch_apply
+        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+
+        // Merge thread-local results
+        for (auto& v : threadResults) {
+            merged.insert(merged.end(), v.begin(), v.end());
         }
     }
 
@@ -630,8 +799,10 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     timing.usedTrigram = useTrigramIndex;
     if (useTrigramIndex) {
         timing.searchPath = trigramKey.empty() ? "advanced-regex-trigram" : "advanced-trigram";
+    } else if (needs.isPureFilter()) {
+        timing.searchPath = "advanced-pure-filter-soa-gcd";
     } else {
-        timing.searchPath = "advanced-linear";
+        timing.searchPath = "advanced-linear-gcd";
     }
 
     auto ms = static_cast<long long>(timing.totalMs);

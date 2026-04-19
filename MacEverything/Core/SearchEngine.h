@@ -295,6 +295,11 @@ private:
     std::vector<uint32_t> pathIndices_;    // per-record index into pathPool_
     StringPool pathPool_;                  // contiguous directory paths (deduplicated)
     StringPool lowerPathPool_;             // parallel to pathPool_, stores pre-lowered paths
+
+    // SoA columnar arrays for cache-friendly filter evaluation (P0)
+    std::vector<uint8_t>  types_;          // records_[i].type  — 1B per record
+    std::vector<uint64_t> sizes_;          // records_[i].size  — 8B per record
+    std::vector<int64_t>  modTimes_;       // records_[i].modTime — 8B per record
     std::unordered_map<std::string, uint32_t> pathLookup_; // path string -> pathPool_ index
     std::unordered_map<std::string, uint32_t> lowerPathLookup_; // lowered path -> pathPool_ index
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> record index
@@ -311,6 +316,15 @@ private:
     /// Intern a directory path into pathPool_ and lowerPathPool_. Returns pathPool_ index.
     /// Deduplicates via pathLookup_. Must be called under unique_lock.
     uint32_t internPath(const std::string& path);
+
+    /// Tombstone a record at idx: clear record fields + SoA columns. Must be called under unique_lock.
+    void tombstoneAt(uint32_t idx);
+
+    /// Append a record + sync SoA columns. Must be called under unique_lock.
+    void pushRecord(FileRecord&& rec);
+
+    /// Rebuild SoA arrays from records_. Called after bulk assign (loadRecords/loadRecordsV5/compaction swap).
+    void rebuildSoA();
 
     /// Unlocked variants — caller must hold unique_lock on mutex_.
     bool removeByPathUnlocked(const std::string& fullPath);

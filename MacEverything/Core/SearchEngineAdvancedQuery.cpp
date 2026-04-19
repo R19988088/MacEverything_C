@@ -638,7 +638,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         beforeTrigram = std::chrono::steady_clock::now();
         bool allFound = false;
         nameCands = intersectPostingLists(nameTrigramIndex_, trigramKey, allFound);
-        nameOk = allFound && nameCands.size() <= totalSize / 67;
+        nameOk = allFound && nameCands.size() <= totalSize / 10;
         if (!nameOk) nameCands.clear();
         afterTrigram = std::chrono::steady_clock::now();
     }
@@ -650,7 +650,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             beforeTrigram = std::chrono::steady_clock::now();
             bool allFound = false;
             nameCands = intersectPostingListsMulti(nameTrigramIndex_, regexLiterals, allFound);
-            nameOk = allFound && nameCands.size() <= totalSize / 67;
+            nameOk = allFound && nameCands.size() <= totalSize / 10;
             if (!nameOk) nameCands.clear();
             afterTrigram = std::chrono::steady_clock::now();
         }

@@ -51,9 +51,10 @@ static void testIndexPersistenceSkipsCleanCompaction() {
     std::string basePath = tmpDir + "/index.bin";
     std::string walPath  = tmpDir + "/index.wal";
     std::string ptPath   = ptablePathFor(basePath);
+    std::string v6Path   = basePath + ".v6";
 
     auto engine = std::make_shared<SearchEngine>();
-    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptPath);
+    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptPath, v6Path);
     persistence.attachWAL();
 
     // Add a record so there's something to compact
@@ -67,10 +68,10 @@ static void testIndexPersistenceSkipsCleanCompaction() {
 
     // First compaction should succeed (WAL is dirty from addOrUpdate)
     persistence.compact(1, /*force=*/true);
-    check(fs::exists(ptPath), "ptable should be written after dirty compaction");
+    check(fs::exists(v6Path), "v6 index should be written after dirty compaction");
 
     // Get file modification time after first compaction
-    auto modTime1 = fs::last_write_time(ptPath);
+    auto modTime1 = fs::last_write_time(v6Path);
 
     // Wait briefly to ensure filesystem timestamp granularity
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -78,9 +79,9 @@ static void testIndexPersistenceSkipsCleanCompaction() {
     // Second compaction should be skipped (no mutations)
     persistence.compact(2);
 
-    // Ptable should not be rewritten
-    auto modTime2 = fs::last_write_time(ptPath);
-    check(modTime1 == modTime2, "ptable should NOT be rewritten when no mutations");
+    // v6 file should not be rewritten
+    auto modTime2 = fs::last_write_time(v6Path);
+    check(modTime1 == modTime2, "v6 index should NOT be rewritten when no mutations");
 
     // Clean up
     fs::remove_all(tmpDir);

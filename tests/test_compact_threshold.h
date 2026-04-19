@@ -11,7 +11,7 @@ static void testCompactSkipsBelowThreshold() {
     std::string walPath  = tmpDir + "/index.wal";
 
     auto engine = std::make_shared<SearchEngine>();
-    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
+    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath), basePath + ".v6");
     persistence.attachWAL();
 
     // Add a few records (below kCompactThreshold = 100)
@@ -42,7 +42,7 @@ static void testCompactProceedsAtThreshold() {
     std::string walPath  = tmpDir + "/index.wal";
 
     auto engine = std::make_shared<SearchEngine>();
-    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
+    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath), basePath + ".v6");
     persistence.attachWAL();
 
     // Add exactly kCompactThreshold records
@@ -58,7 +58,7 @@ static void testCompactProceedsAtThreshold() {
 
     // Compact without force — should proceed because entryCount >= threshold
     persistence.compact(1);
-    check(fs::exists(ptablePathFor(basePath)), "ptable SHOULD be written when at threshold");
+    check(fs::exists(basePath + ".v6"), "v6 index SHOULD be written when at threshold");
 
     fs::remove_all(tmpDir);
 }
@@ -73,7 +73,7 @@ static void testCompactForceIgnoresThreshold() {
     std::string walPath  = tmpDir + "/index.wal";
 
     auto engine = std::make_shared<SearchEngine>();
-    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
+    IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath), basePath + ".v6");
     persistence.attachWAL();
 
     // Add just 1 record (well below threshold)
@@ -87,7 +87,7 @@ static void testCompactForceIgnoresThreshold() {
 
     // Compact with force=true — should proceed regardless of entry count
     persistence.compact(1, /*force=*/true);
-    check(fs::exists(ptablePathFor(basePath)), "ptable SHOULD be written when force=true");
+    check(fs::exists(basePath + ".v6"), "v6 index SHOULD be written when force=true");
 
     fs::remove_all(tmpDir);
 }

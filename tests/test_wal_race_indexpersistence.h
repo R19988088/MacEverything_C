@@ -26,7 +26,7 @@ static void runWalRaceIndexPersistenceTest() {
     std::string basePath = tmpDir + "/idx.bin";
     std::string walPath = tmpDir + "/idx.wal";
     auto persistence = std::make_shared<IndexPersistence>(
-        engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
+        engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath), basePath + ".v6");
     persistence->attachWAL();
 
     // Test 1: Concurrent compact() calls should not race on wal_

@@ -35,12 +35,17 @@ void SearchEngine::tombstoneAt(uint32_t idx) {
     types_[idx] = 0;
     sizes_[idx] = 0;
     modTimes_[idx] = 0;
+    if (idx < inodes_.size()) inodes_[idx] = 0;
+    if (idx < devIds_.size()) devIds_[idx] = 0;
+    origNamePool_.tombstone(idx);
 }
 
 void SearchEngine::pushRecord(FileRecord&& rec) {
     types_.push_back(rec.type);
     sizes_.push_back(rec.size);
     modTimes_.push_back(static_cast<int64_t>(rec.modTime));
+    inodes_.push_back(rec.inode);
+    devIds_.push_back(rec.devId);
     records_.push_back(std::move(rec));
 }
 
@@ -49,10 +54,14 @@ void SearchEngine::rebuildSoA() {
     types_.resize(n);
     sizes_.resize(n);
     modTimes_.resize(n);
+    inodes_.resize(n);
+    devIds_.resize(n);
     for (size_t i = 0; i < n; i++) {
         types_[i] = records_[i].type;
         sizes_[i] = records_[i].size;
         modTimes_[i] = static_cast<int64_t>(records_[i].modTime);
+        inodes_[i] = records_[i].inode;
+        devIds_[i] = records_[i].devId;
     }
 }
 
@@ -61,6 +70,15 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
 
     records_ = std::move(records);
     rebuildSoA();
+
+    // Build origNamePool_ from original-case names (for v6 persistence)
+    {
+        std::vector<std::string> origNames(records_.size());
+        for (size_t i = 0; i < records_.size(); i++) {
+            origNames[i] = records_[i].name;
+        }
+        origNamePool_.loadBulk(origNames);
+    }
 
     // Pre-compute lowercase names into a temporary vector (parallel),
     // then bulk-load into namePool_ (single-threaded append)
@@ -167,6 +185,15 @@ void SearchEngine::loadRecordsV5(std::vector<FileRecord>&& records,
 
     records_ = std::move(records);
     rebuildSoA();
+
+    // Build origNamePool_ from original-case names (for v6 persistence)
+    {
+        std::vector<std::string> origNames(records_.size());
+        for (size_t i = 0; i < records_.size(); i++) {
+            origNames[i] = records_[i].name;
+        }
+        origNamePool_.loadBulk(origNames);
+    }
 
     // Install pre-lowered names directly into namePool_ (skip parallel toLower)
     namePool_.loadBulk(lowerNames);
@@ -294,6 +321,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     record.path.clear();
     record.path.shrink_to_fit();
 
+    origNamePool_.append(record.name);
     pushRecord(std::move(record));
     uint32_t nameIdx = namePool_.append(lower);
     (void)nameIdx; // nameIdx == idx since namePool_ grows in lockstep
@@ -422,6 +450,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
         record.path.clear();
         record.path.shrink_to_fit();
 
+        origNamePool_.append(record.name);
         pushRecord(std::move(record));
         namePool_.append(lower);
         pathIndices_.push_back(pIdx);
@@ -471,6 +500,7 @@ void SearchEngine::updateByPathUnlocked(const std::string& fullPath, FileRecord&
     updated.path.clear();
     updated.path.shrink_to_fit();
 
+    origNamePool_.append(updated.name);
     pushRecord(std::move(updated));
     namePool_.append(lower);
     pathIndices_.push_back(pIdx);
@@ -507,6 +537,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     // Queries continue unblocked during snapshot copy.
     std::vector<FileRecord> snapRecords;
     StringPool snapNamePool;
+    StringPool snapOrigNamePool;
     std::vector<uint32_t> snapPathIndices;
     StringPool snapPathPool;
     std::unordered_map<std::string, uint32_t> snapPathIndex;
@@ -517,6 +548,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         if (live == records_.size()) return {}; // nothing to compact
         snapRecords = records_;
         snapNamePool = namePool_;
+        snapOrigNamePool = origNamePool_;
         snapPathIndices = pathIndices_;
         snapPathPool = pathPool_;
         snapPathIndex = pathIndex_;
@@ -535,6 +567,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     std::vector<FileRecord> cdRecords;
     cdRecords.reserve(snapSize);
     StringPool cdNamePool;
+    StringPool cdOrigNamePool;
     std::vector<uint32_t> cdPathIndices;
     cdPathIndices.reserve(snapSize);
     StringPool cdPathPool;
@@ -566,6 +599,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         }
         cdPathIndex[fullPathLower] = newIdx;
         // Copy name from snapshot pool into compacted pool
+        cdOrigNamePool.append(snapOrigNamePool.data(i), snapOrigNamePool.length(i));
         cdNamePool.append(snapNamePool.data(i), snapNamePool.length(i));
         cdPathIndices.push_back(newPIdx);
         cdRecords.push_back(std::move(snapRecords[i]));
@@ -589,6 +623,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
 
         // Move out current (mutated-during-Phase2) state
         auto oldRecords = std::move(records_);
+        auto oldOrigNamePool = std::move(origNamePool_);
         auto oldNamePool = std::move(namePool_);
         auto oldPathIndices = std::move(pathIndices_);
         auto oldPathPool = std::move(pathPool_);
@@ -598,6 +633,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
 
         // Install compacted data
         records_ = std::move(cdRecords);
+        origNamePool_ = std::move(cdOrigNamePool);
         namePool_ = std::move(cdNamePool);
         pathIndices_ = std::move(cdPathIndices);
         pathPool_ = std::move(cdPathPool);
@@ -623,6 +659,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
             }
             std::string fullPath = me::toLower(makeFullPath(origPath, oldRecords[i].name));
             // Copy name from old pool into current pool
+            origNamePool_.append(oldOrigNamePool.data(i), oldOrigNamePool.length(i));
             namePool_.append(oldNamePool.data(i), oldNamePool.length(i));
             pathIndex_[fullPath] = newIdx;
             pathIndices_.push_back(pIdx);
@@ -662,6 +699,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     }
 
     fullRewriteNeeded_.store(true, std::memory_order_relaxed);
+    phase2Pending_.store(false, std::memory_order_release);
 
     return remap;
 }
@@ -774,6 +812,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             e.record.path.clear();
             e.record.path.shrink_to_fit();
 
+            origNamePool_.append(e.record.name);
             pushRecord(std::move(e.record));
             namePool_.append(lower);
             pathIndices_.push_back(pIdx);
@@ -819,6 +858,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             e.record.path.clear();
             e.record.path.shrink_to_fit();
 
+            origNamePool_.append(e.record.name);
             pushRecord(std::move(e.record));
             namePool_.append(lower);
             pathIndices_.push_back(pIdx);

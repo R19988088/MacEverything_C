@@ -290,24 +290,25 @@ static void testPagedV3Migration() {
 
     // Load via IndexPersistence — should auto-migrate
     auto engine2 = std::make_shared<SearchEngine>();
-    IndexPersistence persistence(engine2, basePath, walPath, pagesPath, ptablePath);
+    IndexPersistence persistence(engine2, basePath, walPath, pagesPath, ptablePath, basePath + ".v6");
     uint64_t eventId = persistence.load();
 
     check(eventId == 77, "P32-5: eventId preserved from v3");
     check(engine2->liveRecordCount() == 500, "P32-5: all 500 records loaded");
-    check(fs::exists(ptablePath), "P32-5: ptable created by migration");
-    check(fs::exists(pagesPath), "P32-5: pages created by migration");
+    std::string v6Path = basePath + ".v6";
+    check(fs::exists(v6Path), "P32-5: v6 file created by migration");
     check(fs::exists(basePath), "P32-5: v3 file retained as backup");
 
-    // Reload from paged format only
+    // Reload from v6 format
     auto engine3 = std::make_shared<SearchEngine>();
-    PagedIndexWriter reader(pagesPath, ptablePath);
+    FlatIndexWriter reader(v6Path);
     IndexMetadata loadedMeta;
-    check(reader.load(*engine3, &loadedMeta), "P32-5: reload from paged format");
-    check(engine3->liveRecordCount() == 500, "P32-5: all 500 records in paged format");
-    check(loadedMeta.lastEventId == 77, "P32-5: eventId in paged format matches v3");
+    check(reader.load(*engine3, &loadedMeta), "P32-5: reload from v6 format");
+    check(engine3->liveRecordCount() == 500, "P32-5: all 500 records in v6 format");
+    check(loadedMeta.lastEventId == 77, "P32-5: eventId in v6 format matches v3");
 
     // Spot-check a record
+    engine3->completePhase2();
     auto results = engine3->query("v3file42.txt", 10);
     bool found42 = false;
     for (uint32_t idx : results) {
@@ -343,7 +344,7 @@ static void testPagedAdaptiveInterval() {
         engine->addRecord(std::move(rec));
     }
 
-    IndexPersistence persistence(engine, basePath, walPath, pagesPath, ptablePath);
+    IndexPersistence persistence(engine, basePath, walPath, pagesPath, ptablePath, basePath + ".v6");
     persistence.attachWAL();
 
     // Flush to clear dirty pages

@@ -12,7 +12,7 @@ static void runDestructorSafetyTest() {
         auto engine = std::make_shared<SearchEngine>();
         std::string basePath = tmpDir + "/idx.bin";
         std::string walPath = tmpDir + "/idx.wal";
-        auto persistence = std::make_unique<IndexPersistence>(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
+        auto persistence = std::make_unique<IndexPersistence>(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath), basePath + ".v6");
         persistence->attachWAL();
         persistence->startAutoCompaction(0.1, std::shared_ptr<FileSystemWatcher>(nullptr));  // 100ms interval
         std::this_thread::sleep_for(std::chrono::milliseconds(50));

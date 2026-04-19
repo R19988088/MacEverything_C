@@ -36,6 +36,8 @@
 		A1000030 /* HighlightedSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000044; };
 		A1000031 /* SearchSyntaxHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000045; };
 		A1000032 /* HighlightHint.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000046; };
+		A1000033 /* SearchEngineV6.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000047; };
+		A1000034 /* FlatIndexWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000049; };
 		A100001A /* StringUtils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000028; };
 		A100001B /* Logger.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200002A; };
 		A100001C /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002B; };
@@ -144,6 +146,9 @@
 		A2000040 /* QueryFilterParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryFilterParser.h; sourceTree = "<group>"; };
 		A2000041 /* QueryDateParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryDateParser.h; sourceTree = "<group>"; };
 		A2000042 /* SearchEngineStructuredQuery.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEngineStructuredQuery.cpp; sourceTree = "<group>"; };
+		A2000047 /* SearchEngineV6.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEngineV6.cpp; sourceTree = "<group>"; };
+		A2000048 /* FlatIndexWriter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FlatIndexWriter.h; sourceTree = "<group>"; };
+		A2000049 /* FlatIndexWriter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FlatIndexWriter.cpp; sourceTree = "<group>"; };
 		A2000043 /* SearchOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchOptions.swift; sourceTree = "<group>"; };
 		B2000001 /* MacEverythingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEverythingUITests.swift; sourceTree = "<group>"; };
 		B2000002 /* MacEverythingUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacEverythingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -291,6 +296,7 @@
 				A200000D /* SearchEngine.cpp */,
 				A2000039 /* SearchEngineQuery.cpp */,
 				A200003A /* SearchEngineIndex.cpp */,
+				A2000047 /* SearchEngineV6.cpp */,
 				A2000013 /* FileSystemWatcher.h */,
 				A2000014 /* FileSystemWatcher.cpp */,
 				A2000016 /* IndexWAL.h */,
@@ -310,6 +316,8 @@
 				A200002D /* InstanceLock.cpp */,
 				A200002F /* PagedIndexWriter.h */,
 				A2000030 /* PagedIndexWriter.cpp */,
+				A2000048 /* FlatIndexWriter.h */,
+				A2000049 /* FlatIndexWriter.cpp */,
 				A2000033 /* HttpServer.h */,
 				A2000034 /* HttpServer.cpp */,
 				A2000035 /* ServiceEngine.h */,
@@ -449,6 +457,7 @@
 				A100000A /* SearchEngine.cpp in Sources */,
 				A1000025 /* SearchEngineQuery.cpp in Sources */,
 				A1000026 /* SearchEngineIndex.cpp in Sources */,
+				A1000033 /* SearchEngineV6.cpp in Sources */,
 				A100000C /* FileSystemWatcher.cpp in Sources */,
 				A100000E /* IndexWAL.cpp in Sources */,
 				A100000F /* IndexPersistence.cpp in Sources */,
@@ -470,6 +479,7 @@
 				A100001D /* InstanceLock.cpp in Sources */,
 				A100001E /* SearchHistoryStore.swift in Sources */,
 				A100001F /* PagedIndexWriter.cpp in Sources */,
+				A1000034 /* FlatIndexWriter.cpp in Sources */,
 				A1000021 /* HttpServer.cpp in Sources */,
 				A1000022 /* ServiceEngine.cpp in Sources */,
 				A1000023 /* ServiceEngine+FSEvents.cpp in Sources */,

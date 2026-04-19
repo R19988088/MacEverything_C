@@ -103,6 +103,43 @@ public:
                        StringPool&& pathDict,
                        StringPool&& lowerPathDict);
 
+    /// v6 fast-path load: accepts pre-separated SoA columns and StringPools.
+    /// Only builds pathIndex_ (required for mutations). Trigram indices deferred to Phase 2.
+    void loadRecordsV6(StringPool&& origNamePool,
+                       StringPool&& namePool,
+                       std::vector<uint32_t>&& pathIndices,
+                       StringPool&& pathPool,
+                       StringPool&& lowerPathPool,
+                       std::vector<uint8_t>&& types,
+                       std::vector<uint64_t>&& sizes,
+                       std::vector<int64_t>&& modTimes,
+                       std::vector<uint64_t>&& inodes,
+                       std::vector<int32_t>&& devIds);
+
+    /// Complete Phase 2 of two-stage startup: build trigram indices in background,
+    /// then swap under lock and replay mutations that occurred during build.
+    void completePhase2();
+
+    /// Whether Phase 2 is pending (trigram indices not yet built).
+    bool isPhase2Pending() const { return phase2Pending_.load(std::memory_order_acquire); }
+
+    /// Snapshot data for v6 serialization (thread-safe).
+    struct V6Snapshot {
+        std::vector<FileRecord> records;
+        StringPool origNamePool;  // original-case names
+        StringPool namePool;      // lowercase names
+        std::vector<uint32_t> pathIndices;
+        StringPool pathPool;
+        StringPool lowerPathPool;
+        std::vector<uint8_t> types;
+        std::vector<uint64_t> sizes;
+        std::vector<int64_t> modTimes;
+        std::vector<uint64_t> inodes;
+        std::vector<int32_t> devIds;
+        uint32_t liveCount;
+    };
+    V6Snapshot snapshotForV6() const;
+
     /// Case-insensitive substring search. Returns indices into the records array.
     /// If maxResults > 0, stops early once enough matches are found.
     /// If useTrigram is false, bypasses trigram index and does NEON full scan.
@@ -291,6 +328,7 @@ public:
 
 private:
     std::vector<FileRecord> records_;
+    StringPool origNamePool_;              // contiguous original-case filenames (for v6 persistence)
     StringPool namePool_;                  // contiguous lowercase filenames
     std::vector<uint32_t> pathIndices_;    // per-record index into pathPool_
     StringPool pathPool_;                  // contiguous directory paths (deduplicated)
@@ -300,6 +338,8 @@ private:
     std::vector<uint8_t>  types_;          // records_[i].type  — 1B per record
     std::vector<uint64_t> sizes_;          // records_[i].size  — 8B per record
     std::vector<int64_t>  modTimes_;       // records_[i].modTime — 8B per record
+    std::vector<uint64_t> inodes_;         // records_[i].inode — 8B per record
+    std::vector<int32_t>  devIds_;         // records_[i].devId — 4B per record
     std::unordered_map<std::string, uint32_t> pathLookup_; // path string -> pathPool_ index
     std::unordered_map<std::string, uint32_t> lowerPathLookup_; // lowered path -> pathPool_ index
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> record index
@@ -400,6 +440,10 @@ private:
 
     std::shared_ptr<IndexWAL> wal_;
     std::atomic<uint64_t> compactionGen_{0};
+
+    // Phase 2 two-stage startup: trigram indices built in background
+    std::atomic<bool> phase2Pending_{false};
+    uint32_t phase2StartRecordCount_{0};
 
     // Query cancellation: incremented on each query(), checked in scan loops
     mutable std::atomic<uint64_t> queryGeneration_{0};

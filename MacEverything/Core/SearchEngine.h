@@ -17,6 +17,7 @@
 
 #include "IndexWAL.h"
 #include "QueryAST.h"
+#include "StructuredQueryParser.h"
 
 /// Deduplication table for directory path strings.
 /// Interns unique paths and returns a compact uint32_t index.
@@ -329,6 +330,21 @@ private:
                          size_t totalSize, uint64_t myGen,
                          const std::vector<uint32_t>& trigramCandidates,
                          std::vector<Match>& merged) const;
+
+    /// Node-centric structured query: name trigram → name verify → path constraint verify.
+    /// Handles SEGMENTS and DIR_EXACT modes.
+    void queryStructured(const ParsedQuery& pq,
+                         size_t totalSize, uint64_t myGen,
+                         std::vector<Match>& merged) const;
+
+    /// DIR_LIST mode: find matching directories, return their direct children.
+    void queryDirList(const ParsedQuery& pq,
+                      size_t totalSize, uint64_t myGen,
+                      std::vector<Match>& merged) const;
+
+    /// Check if a directory path matches the path segment constraints.
+    static bool pathSegmentsMatch(const std::string& dirPath,
+                                  const std::vector<PathSegment>& segments);
 
     /// Path trigram strategy: lookup via pathTrigramIndex_ for non-slash queries.
     void queryPathTrigram(const std::string& lowerKey,

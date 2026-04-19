@@ -357,6 +357,234 @@ bool SearchEngine::querySlashSplit(const std::string& lowerKey,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// pathSegmentsMatch: check if dirPath satisfies path segment constraints
+// ---------------------------------------------------------------------------
+bool SearchEngine::pathSegmentsMatch(const std::string& dirPath,
+                                     const std::vector<PathSegment>& segments) {
+    if (segments.empty()) return true;
+
+    // Split dirPath into components by '/'
+    std::vector<std::string_view> components;
+    std::string_view dp(dirPath);
+    size_t start = 0;
+    for (size_t i = 0; i <= dp.size(); i++) {
+        if (i == dp.size() || dp[i] == '/') {
+            if (i > start) {
+                components.push_back(dp.substr(start, i - start));
+            }
+            start = i + 1;
+        }
+    }
+
+    // Match segments right-to-left against path components
+    int segIdx = static_cast<int>(segments.size()) - 1;
+    int compIdx = static_cast<int>(components.size()) - 1;
+
+    while (segIdx >= 0 && compIdx >= 0) {
+        // Lowercase comparison: check if component contains segment text
+        std::string lowerComp;
+        lowerComp.reserve(components[compIdx].size());
+        for (char c : components[compIdx]) {
+            lowerComp += (c >= 'A' && c <= 'Z') ? (c + 32) : c;
+        }
+
+        if (lowerComp.find(segments[segIdx].text) != std::string::npos) {
+            // Segment matched at this component position
+            segIdx--;
+            compIdx--;
+        } else {
+            // If the previous segment requires adjacency, this is a mismatch
+            if (segIdx < static_cast<int>(segments.size()) - 1 &&
+                segments[segIdx + 1].adjacentToNext == false) {
+                // Non-adjacent: skip this component, keep trying
+                compIdx--;
+            } else if (segIdx == static_cast<int>(segments.size()) - 1) {
+                // First (rightmost) segment to match — can skip components
+                compIdx--;
+            } else {
+                // Adjacent required but component doesn't match — fail
+                return false;
+            }
+        }
+    }
+
+    return segIdx < 0; // All segments matched
+}
+
+// ---------------------------------------------------------------------------
+// queryStructured: SEGMENTS and DIR_EXACT modes
+// ---------------------------------------------------------------------------
+void SearchEngine::queryStructured(const ParsedQuery& pq,
+                                   size_t totalSize, uint64_t myGen,
+                                   std::vector<Match>& merged) const {
+    const auto& namePattern = pq.namePattern;
+    if (namePattern.empty()) return;
+
+    // Try trigram index for name candidates
+    std::vector<uint32_t> candidates;
+    bool usedTrigram = false;
+
+    if (namePattern.size() >= 3 && !nameTrigramIndex_.empty()) {
+        bool allFound = false;
+        candidates = intersectPostingLists(nameTrigramIndex_, namePattern, allFound);
+        if (allFound && candidates.size() <= totalSize / 67) {
+            usedTrigram = true;
+        } else {
+            candidates.clear();
+        }
+    }
+
+    if (usedTrigram) {
+        // Verify name match + path constraints on trigram candidates
+        for (size_t ci = 0; ci < candidates.size(); ci++) {
+            if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+            uint32_t idx = candidates[ci];
+            if (records_[idx].type == 0) continue;
+
+            const char* nameData = namePool_.data(idx);
+            uint16_t nameLen = namePool_.length(idx);
+
+            if (pq.mode == QueryMode::DIR_EXACT) {
+                // DIR_EXACT: exact name match + must be directory (type==2)
+                if (records_[idx].type != 2) continue;
+                if (nameLen != namePattern.size()) continue;
+                if (std::memcmp(nameData, namePattern.data(), nameLen) != 0) continue;
+            } else {
+                // SEGMENTS: name contains pattern
+                if (!me::simdContains(nameData, nameLen, namePattern.data(), namePattern.size())) continue;
+            }
+
+            // Check path constraints
+            if (!pq.pathSegments.empty()) {
+                std::string dirPath = lowerPathPool_.str(pathIndices_[idx]);
+                if (!pathSegmentsMatch(dirPath, pq.pathSegments)) continue;
+            }
+
+            uint8_t priority = namePriority(nameData, nameLen, namePattern.data(), namePattern.size());
+            uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[idx]) + 1 + nameLen);
+            merged.push_back({idx, priority, pLen});
+        }
+    } else {
+        // Linear scan fallback
+        for (size_t i = 0; i < totalSize; i++) {
+            if ((i & 4095) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+            if (records_[i].type == 0) continue;
+
+            const char* nameData = namePool_.data(i);
+            uint16_t nameLen = namePool_.length(i);
+
+            if (pq.mode == QueryMode::DIR_EXACT) {
+                if (records_[i].type != 2) continue;
+                if (nameLen != namePattern.size()) continue;
+                if (std::memcmp(nameData, namePattern.data(), nameLen) != 0) continue;
+            } else {
+                if (!me::simdContains(nameData, nameLen, namePattern.data(), namePattern.size())) continue;
+            }
+
+            if (!pq.pathSegments.empty()) {
+                std::string dirPath = lowerPathPool_.str(pathIndices_[i]);
+                if (!pathSegmentsMatch(dirPath, pq.pathSegments)) continue;
+            }
+
+            uint8_t priority = namePriority(nameData, nameLen, namePattern.data(), namePattern.size());
+            uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[i]) + 1 + nameLen);
+            merged.push_back({static_cast<uint32_t>(i), priority, pLen});
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// queryDirList: DIR_LIST mode — find directory, return its children
+// ---------------------------------------------------------------------------
+void SearchEngine::queryDirList(const ParsedQuery& pq,
+                                size_t totalSize, uint64_t myGen,
+                                std::vector<Match>& merged) const {
+    const auto& dirName = pq.namePattern;
+    if (dirName.empty()) return;
+
+    // Find directory records whose name exactly matches dirName
+    std::vector<uint32_t> dirIndices;
+
+    if (dirName.size() >= 3 && !nameTrigramIndex_.empty()) {
+        bool allFound = false;
+        auto candidates = intersectPostingLists(nameTrigramIndex_, dirName, allFound);
+        if (allFound && candidates.size() <= totalSize / 67) {
+            for (uint32_t idx : candidates) {
+                if (records_[idx].type != 2) continue; // must be directory
+                const char* nd = namePool_.data(idx);
+                uint16_t nl = namePool_.length(idx);
+                if (nl != dirName.size()) continue;
+                if (std::memcmp(nd, dirName.data(), nl) != 0) continue;
+                // Check path constraints
+                if (!pq.pathSegments.empty()) {
+                    std::string dirPath = lowerPathPool_.str(pathIndices_[idx]);
+                    if (!pathSegmentsMatch(dirPath, pq.pathSegments)) continue;
+                }
+                dirIndices.push_back(idx);
+            }
+        } else {
+            // Fallback: linear scan for directories
+            for (size_t i = 0; i < totalSize; i++) {
+                if (records_[i].type != 2) continue;
+                const char* nd = namePool_.data(i);
+                uint16_t nl = namePool_.length(i);
+                if (nl != dirName.size()) continue;
+                if (std::memcmp(nd, dirName.data(), nl) != 0) continue;
+                if (!pq.pathSegments.empty()) {
+                    std::string dirPath = lowerPathPool_.str(pathIndices_[i]);
+                    if (!pathSegmentsMatch(dirPath, pq.pathSegments)) continue;
+                }
+                dirIndices.push_back(static_cast<uint32_t>(i));
+            }
+        }
+    } else {
+        // Short name or no trigram index — linear scan
+        for (size_t i = 0; i < totalSize; i++) {
+            if (records_[i].type != 2) continue;
+            const char* nd = namePool_.data(i);
+            uint16_t nl = namePool_.length(i);
+            if (nl != dirName.size()) continue;
+            if (std::memcmp(nd, dirName.data(), nl) != 0) continue;
+            if (!pq.pathSegments.empty()) {
+                std::string dirPath = lowerPathPool_.str(pathIndices_[i]);
+                if (!pathSegmentsMatch(dirPath, pq.pathSegments)) continue;
+            }
+            dirIndices.push_back(static_cast<uint32_t>(i));
+        }
+    }
+
+    if (dirIndices.empty()) return;
+
+    // For each matching directory, find its children via pathLookup_ + pathIdxToRecords_
+    for (uint32_t dirIdx : dirIndices) {
+        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+
+        // Build the full directory path: parentPath + "/" + dirName
+        std::string parentPath = pathPool_.str(pathIndices_[dirIdx]);
+        std::string fullDirPath = parentPath;
+        if (!fullDirPath.empty() && fullDirPath.back() != '/') fullDirPath += '/';
+        fullDirPath += std::string(namePool_.data(dirIdx), namePool_.length(dirIdx));
+
+        // Look up this full path in pathLookup_ to find its pathPool index
+        auto it = pathLookup_.find(fullDirPath);
+        if (it == pathLookup_.end()) continue;
+
+        uint32_t childPathIdx = it->second;
+        if (childPathIdx >= pathIdxToRecords_.size()) continue;
+
+        const auto& childRecords = pathIdxToRecords_[childPathIdx];
+        for (uint32_t childIdx : childRecords) {
+            if (records_[childIdx].type == 0) continue; // skip tombstones
+            const char* nd = namePool_.data(childIdx);
+            uint16_t nl = namePool_.length(childIdx);
+            uint8_t priority = 2; // children are all "contains" priority
+            uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[childIdx]) + 1 + nl);
+            merged.push_back({childIdx, priority, pLen});
+        }
+    }
+}
+
 void SearchEngine::queryPathTrigram(const std::string& lowerKey,
                                     size_t totalSize, uint64_t myGen,
                                     const std::vector<uint32_t>& trigramCandidates,
@@ -589,7 +817,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     auto queryStart = std::chrono::steady_clock::now();
     std::string lowerKey = me::toLower(keyword);
-    bool useGlob = isGlobPattern(lowerKey);
+    auto parsedQuery = parseQuery(keyword);
+    bool isStructured = (parsedQuery.mode != QueryMode::PLAIN);
+    bool useGlob = !isStructured && isGlobPattern(lowerKey);
     bool hasSlash = lowerKey.find('/') != std::string::npos;
 
     // C-1 fix: Hold shared_lock for the entire query to prevent use-after-free.
@@ -628,7 +858,16 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     std::vector<Match> merged;
 
-    if (useTrigramIndex) {
+    if (isStructured) {
+        // Node-centric structured query dispatch
+        beforePhase2 = std::chrono::steady_clock::now();
+        if (parsedQuery.mode == QueryMode::DIR_LIST) {
+            queryDirList(parsedQuery, totalSize, myGen, merged);
+        } else {
+            queryStructured(parsedQuery, totalSize, myGen, merged);
+        }
+        afterPhase2 = std::chrono::steady_clock::now();
+    } else if (useTrigramIndex) {
         // Phase 1: Check trigram candidates for name matches
         for (size_t ci = 0; ci < trigramCandidates.size(); ci++) {
             if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
@@ -772,7 +1011,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     timing.lockHeldMs = toMs(beforeUnlock - afterLock);
     timing.sortMs = toMs(afterSort - beforeSort);
     timing.trigramMs = toMs(afterTrigram - beforeTrigram);
-    timing.phase1Ms = toMs(afterPhase1 - afterTrigram);
+    timing.phase1Ms = isStructured ? 0.0 : toMs(afterPhase1 - afterTrigram);
     timing.phase2Ms = toMs(afterPhase2 - beforePhase2);
     timing.totalRecords = totalSize;
     timing.candidates = trigramCandidates.size();
@@ -780,7 +1019,11 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     timing.pathMatches = merged.size() > phase1Results ? merged.size() - phase1Results : 0;
     timing.resultCount = result.size();
     timing.usedTrigram = useTrigramIndex;
-    timing.searchPath = useTrigramIndex ? (useGlob ? "glob-trigram" : (useSlashSplit ? "trigram-split" : "trigram")) : "linear";
+    if (isStructured) {
+        timing.searchPath = (parsedQuery.mode == QueryMode::DIR_LIST) ? "dir-list" : "structured";
+    } else {
+        timing.searchPath = useTrigramIndex ? (useGlob ? "glob-trigram" : (useSlashSplit ? "trigram-split" : "trigram")) : "linear";
+    }
 
     auto ms = static_cast<long long>(timing.totalMs);
     if (ms > 100) {

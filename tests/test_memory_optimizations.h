@@ -59,9 +59,10 @@ static void runMemoryOptimizationTests() {
         res = engine.query("readme");
         check(res.size() == 1, "Query: 'readme' finds 1 result");
 
-        // Path-based match
+        // Path-based match — node-centric: name must contain "user"
+        // No record has "user" in its name, so 0 results
         res = engine.query("/home/user");
-        check(res.size() >= 2, "Query: '/home/user' matches at least 2 files by path");
+        check(res.size() == 0, "Query: '/home/user' returns 0 (no node name contains 'user')");
 
         // Case insensitive
         res = engine.query("README");

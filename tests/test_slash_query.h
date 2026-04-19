@@ -1,12 +1,14 @@
 #pragma once
-// Part 48: Slash Query Trigram Split
+// Part 48: Slash Query — Node-Centric (Structured Query)
+// Tests that slash queries use node-centric semantics:
+//   /abc/def → name contains "def", parent dir contains "abc"
 
 static void runSlashQueryTests() {
     std::cout << "========================================\n";
-    std::cout << "  Part 48: Slash Query Trigram Split\n";
+    std::cout << "  Part 48: Slash Query (Node-Centric)\n";
     std::cout << "========================================\n\n";
 
-    // -- Test 1: Basic slash query --
+    // -- Test 1: Basic slash query — name + path constraint --
     std::cout << "  --- Test 1: Basic slash query ---\n";
     {
         SearchEngine engine;
@@ -16,15 +18,15 @@ static void runSlashQueryTests() {
         records.push_back({"file.txt", "/unrelated/place", 1, 300, 3000});
         engine.loadRecords(std::move(records));
 
-        // "dir/file" should match only /path/to/dir/file.txt
+        // "dir/file" → name contains "file", path must contain "dir"
         auto res = engine.query("dir/file");
-        check(res.size() == 1, "Slash query: 'dir/file' matches 1 result");
+        check(res.size() == 1, "Slash query: 'dir/file' matches 1 result (name='file', path has 'dir')");
         auto rec = engine.getRecord(res[0]);
         check(std::string(rec.name) == "file.txt", "Slash query: matched file is file.txt");
     }
 
-    // -- Test 2: Deep path slash query --
-    std::cout << "\n  --- Test 2: Deep path slash query ---\n";
+    // -- Test 2: Name must match — path-only keywords don't match node name --
+    std::cout << "\n  --- Test 2: Name must match node name ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
@@ -33,18 +35,17 @@ static void runSlashQueryTests() {
         records.push_back({"readme.txt", "/usr/share/doc", 1, 300, 3000});
         engine.loadRecords(std::move(records));
 
-        // "local/bin" should match only gcc in /usr/local/bin
-        auto res = engine.query("local/bin");
-        check(res.size() == 1, "Slash query: 'local/bin' matches 1 file");
-        auto rec = engine.getRecord(res[0]);
-        check(std::string(rec.name) == "gcc", "Slash query: matched file is gcc");
+        // "local/gcc" → name contains "gcc", path contains "local"
+        auto res = engine.query("local/gcc");
+        check(res.size() == 1, "Slash query: 'local/gcc' matches gcc in /usr/local/bin");
 
-        // "usr/local" should match both files under /usr/local/
-        res = engine.query("usr/local");
-        check(res.size() == 2, "Slash query: 'usr/local' matches 2 files");
+        // "local/lib" → name contains "lib", path contains "local"
+        // lib.a → name "lib.a" contains "lib" ✓, path "/usr/local/lib" contains "local" ✓
+        res = engine.query("local/lib");
+        check(res.size() == 1, "Slash query: 'local/lib' matches lib.a");
     }
 
-    // -- Test 3: Long name slash query (the original perf issue) --
+    // -- Test 3: Long name slash query --
     std::cout << "\n  --- Test 3: Long name slash query ---\n";
     {
         SearchEngine engine;
@@ -55,7 +56,7 @@ static void runSlashQueryTests() {
         records.push_back({"unrelated.cpp", "/project/src", 1, 400, 4000});
         engine.loadRecords(std::move(records));
 
-        // "tests/test_query_perf" should match both test_query_perf_10m.h files
+        // "tests/test_query_perf" → name contains "test_query_perf", path contains "tests"
         auto res = engine.query("tests/test_query_perf");
         check(res.size() == 2, "Slash query: 'tests/test_query_perf' matches 2 results");
     }
@@ -68,6 +69,7 @@ static void runSlashQueryTests() {
         records.push_back({"file.txt", "/existing/path", 1, 100, 1000});
         engine.loadRecords(std::move(records));
 
+        // "nonexist/dir" → name contains "dir", path contains "nonexist" → 0
         auto res = engine.query("nonexist/dir");
         check(res.size() == 0, "Slash query: 'nonexist/dir' returns empty");
     }
@@ -82,40 +84,34 @@ static void runSlashQueryTests() {
         records.push_back({"b.c", "/x", 1, 300, 3000});
         engine.loadRecords(std::move(records));
 
-        // "a/b" — both parts < 3 chars, should fall back to linear scan
-        // but still produce correct results
+        // "a/b" → name contains "b", path contains "a"
+        // b.c in /a → name "b.c" contains "b" ✓, path "/a" contains "a" ✓
+        // b.c in /x → path "/x" doesn't contain "a" ✗
         auto res = engine.query("a/b");
         check(res.size() == 1, "Slash query: 'a/b' with short parts still finds correct result");
         auto rec = engine.getRecord(res[0]);
-        check(std::string(rec.name) == "b.c", "Slash query: short parts matched b.c");
+        check(std::string(rec.name) == "b.c", "Slash query: short parts matched b.c in /a");
     }
 
-    // -- Test 6: Phase 1 interaction (no double-counting) --
-    std::cout << "\n  --- Test 6: Phase 1 no double-counting ---\n";
+    // -- Test 6: No double-counting with path constraint --
+    std::cout << "\n  --- Test 6: No double-counting ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
-        // A file whose name contains "tests" — Phase 1 might match on name "tests_helper.cpp"
-        // but the slash query "src/tests" should also find it via Phase 2
         records.push_back({"tests_helper.cpp", "/project/src", 1, 100, 1000});
         records.push_back({"tests_helper.cpp", "/project/lib", 1, 200, 2000});
         records.push_back({"main.cpp", "/project/src", 1, 300, 3000});
         engine.loadRecords(std::move(records));
 
-        // "src/tests" should match only the one in /project/src, not /project/lib
+        // "src/tests" → name contains "tests", path contains "src"
         auto res = engine.query("src/tests");
         check(res.size() == 1, "Slash query: 'src/tests' matches only the file under /project/src");
         auto rec = engine.getRecord(res[0]);
         check(std::string(rec.name) == "tests_helper.cpp", "Slash query: correct file matched");
-
-        // Verify no duplicates in results
-        // Query without slash for comparison
-        auto res2 = engine.query("tests_helper");
-        check(res2.size() == 2, "Non-slash query: 'tests_helper' finds both files");
     }
 
-    // -- Test 7: Absolute path slash query --
-    std::cout << "\n  --- Test 7: Absolute path slash query ---\n";
+    // -- Test 7: Absolute path single segment --
+    std::cout << "\n  --- Test 7: Absolute path single segment ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
@@ -124,13 +120,13 @@ static void runSlashQueryTests() {
         records.push_back({"readme.txt", "/usr/share/doc", 1, 300, 3000});
         engine.loadRecords(std::move(records));
 
-        // "/usr/local" should match both files under /usr/local/
-        auto res = engine.query("/usr/local");
-        check(res.size() == 2, "AbsPath slash query: '/usr/local' matches 2 files");
+        // "/brew" → single segment: name contains "brew", no path constraint
+        auto res = engine.query("/brew");
+        check(res.size() == 1, "AbsPath: '/brew' matches brew");
     }
 
-    // -- Test 8: Absolute path root-level slash query --
-    std::cout << "\n  --- Test 8: Absolute path root-level query ---\n";
+    // -- Test 8: Multi-segment adjacency --
+    std::cout << "\n  --- Test 8: Multi-segment adjacency ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
@@ -139,44 +135,28 @@ static void runSlashQueryTests() {
         records.push_back({"config.txt", "/home/user", 1, 300, 3000});
         engine.loadRecords(std::move(records));
 
-        // "/etc" — pathPart="", namePart="etc" (3 chars, usable via nameTrigramIndex_)
-        auto res = engine.query("/etc");
-        check(res.size() == 2, "AbsPath slash query: '/etc' matches 2 files");
+        // "/etc/hosts" → name contains "hosts", path contains "etc"
+        auto res = engine.query("/etc/hosts");
+        check(res.size() == 1, "AbsPath: '/etc/hosts' matches hosts in /etc");
     }
 
-    // -- Test 9: Absolute path very short fallback --
-    std::cout << "\n  --- Test 9: Absolute path very short fallback ---\n";
+    // -- Test 9: Non-adjacent match with * --
+    std::cout << "\n  --- Test 9: Non-adjacent wildcard ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
-        records.push_back({"x", "/a", 1, 100, 1000});
-        records.push_back({"y", "/b", 1, 200, 2000});
+        records.push_back({"target.txt", "/project/src/core", 1, 100, 1000});
+        records.push_back({"target.txt", "/project/docs", 1, 200, 2000});
+        records.push_back({"target.txt", "/other/src/core", 1, 300, 3000});
         engine.loadRecords(std::move(records));
 
-        // "/a" — pathPart="" (0), namePart="a" (1) — both < 3, fallback linear scan
-        auto res = engine.query("/a");
-        check(res.size() == 1, "AbsPath slash query: '/a' fallback finds 1 result");
+        // "/project/*/target" → name contains "target", ancestor contains "project" (non-adj)
+        auto res = engine.query("/project/*/target");
+        check(res.size() == 2, "Non-adj wildcard: '/project/*/target' matches 2 under /project");
     }
 
-    // -- Test 10: Absolute path deep query --
-    std::cout << "\n  --- Test 10: Absolute path deep query ---\n";
-    {
-        SearchEngine engine;
-        std::vector<FileRecord> records;
-        records.push_back({"brew", "/usr/local/bin", 1, 100, 1000});
-        records.push_back({"python3", "/usr/local/bin", 1, 200, 2000});
-        records.push_back({"gcc", "/usr/bin", 1, 300, 3000});
-        records.push_back({"lib.a", "/usr/local/lib", 1, 400, 4000});
-        engine.loadRecords(std::move(records));
-
-        // "/usr/local/bin" — pathPart="/usr/local", namePart="bin"
-        // Should match brew and python3 in /usr/local/bin, NOT gcc in /usr/bin
-        auto res = engine.query("/usr/local/bin");
-        check(res.size() == 2, "AbsPath slash query: '/usr/local/bin' matches 2 files");
-    }
-
-    // -- Test 11: Verify trigram-split search path is used --
-    std::cout << "\n  --- Test 11: Slash query uses trigram-split path ---\n";
+    // -- Test 10: Structured search path label --
+    std::cout << "\n  --- Test 10: Structured search path label ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
@@ -186,58 +166,54 @@ static void runSlashQueryTests() {
         records.push_back({"lib.a", "/usr/local/lib", 1, 400, 4000});
         engine.loadRecords(std::move(records));
 
-        // "local/bin" — pathPart="local", namePart="bin": pathPart >= 3, should use trigram-split
+        // "local/brew" → SEGMENTS mode, should use "structured" path
         QueryTimingInfo timing;
-        auto res = engine.query("local/bin", 0, true, timing);
-        check(res.size() >= 1, "Slash query 'local/bin' finds results");
-        check(timing.searchPath == "trigram-split",
-              ("Slash query 'local/bin' uses trigram-split path (got: " + timing.searchPath + ")").c_str());
-
-        // Absolute path slash query: "/usr/local" — pathPart="/usr", namePart="local"
-        QueryTimingInfo timing2;
-        auto res2 = engine.query("/usr/local", 0, true, timing2);
-        check(res2.size() == 3, "AbsPath '/usr/local' finds 3 results");
-        check(timing2.searchPath == "trigram-split",
-              ("AbsPath '/usr/local' uses trigram-split path (got: " + timing2.searchPath + ")").c_str());
-
-        // "/usr" — pathPart="" -> "/usr" (4 chars), namePart="usr" (3 chars): both >= 3
-        QueryTimingInfo timing3;
-        auto res3 = engine.query("/usr", 0, true, timing3);
-        check(res3.size() >= 1, "AbsPath '/usr' finds results");
-        check(timing3.searchPath == "trigram-split",
-              ("AbsPath '/usr' uses trigram-split path (got: " + timing3.searchPath + ")").c_str());
-
-        // "a/b" — both parts < 3 chars: should fall back to linear
-        QueryTimingInfo timing4;
-        auto res4 = engine.query("a/b", 0, true, timing4);
-        check(timing4.searchPath == "linear",
-              ("Short slash query 'a/b' falls back to linear (got: " + timing4.searchPath + ")").c_str());
+        auto res = engine.query("local/brew", 0, true, timing);
+        check(res.size() == 1, "Structured path: 'local/brew' finds brew");
+        check(timing.searchPath == "structured",
+              ("Slash query uses 'structured' path (got: " + timing.searchPath + ")").c_str());
     }
 
-    // -- Test 12: Verify phase1Ms is non-negative for slash queries --
-    std::cout << "\n  --- Test 12: Slash query phase1Ms non-negative ---\n";
+    // -- Test 11: Timing non-negative --
+    std::cout << "\n  --- Test 11: Timing non-negative ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
         records.push_back({"brew", "/usr/local/bin", 1, 100, 1000});
         records.push_back({"python3", "/usr/local/bin", 1, 200, 2000});
         records.push_back({"gcc", "/usr/bin", 1, 300, 3000});
-        records.push_back({"lib.a", "/usr/local/lib", 1, 400, 4000});
         engine.loadRecords(std::move(records));
 
         QueryTimingInfo timing;
-        auto res = engine.query("local/bin", 0, true, timing);
-        check(timing.searchPath == "trigram-split",
-              ("Expected trigram-split path (got: " + timing.searchPath + ")").c_str());
+        auto res = engine.query("local/brew", 0, true, timing);
         check(timing.phase1Ms >= 0.0,
-              "phase1Ms must be non-negative for slash queries (trigram-split path)");
-        check(timing.trigramMs >= 0.0,
-              "trigramMs must be non-negative for slash queries");
+              "phase1Ms must be non-negative for structured queries");
         check(timing.phase2Ms >= 0.0,
-              "phase2Ms must be non-negative for slash queries");
+              "phase2Ms must be non-negative for structured queries");
 
-        std::cout << "    timing: trigram=" << timing.trigramMs
-                  << "ms phase1=" << timing.phase1Ms
+        std::cout << "    timing: phase1=" << timing.phase1Ms
                   << "ms phase2=" << timing.phase2Ms << "ms\n";
+    }
+
+    // -- Test 12: DIR_LIST via /*  --
+    std::cout << "\n  --- Test 12: DIR_LIST via /* ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"bin", "/usr/local", 2, 0, 1000});
+        records.push_back({"gcc", "/usr/local/bin", 1, 100, 2000});
+        records.push_back({"ls", "/usr/local/bin", 1, 200, 3000});
+        records.push_back({"cat", "/usr/bin", 1, 300, 4000});
+        engine.loadRecords(std::move(records));
+
+        // "/local/bin/*" → DIR_LIST: list children of "bin" where parent has "local"
+        auto res = engine.query("/local/bin/*");
+        std::set<std::string> names;
+        for (uint32_t idx : res) {
+            names.insert(engine.getRecord(idx).name);
+        }
+        check(names.count("gcc") == 1, "DIR_LIST: gcc found under /usr/local/bin");
+        check(names.count("ls") == 1, "DIR_LIST: ls found under /usr/local/bin");
+        check(names.count("cat") == 0, "DIR_LIST: cat not under /usr/local/bin");
     }
 }

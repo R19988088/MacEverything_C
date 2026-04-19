@@ -104,8 +104,8 @@ static void runPathTrigramTests() {
         }
     }
 
-    // -- Test 5: Keywords with '/' fall back to linear scan --
-    std::cout << "\n  --- Test 5: Slash in keyword uses linear scan ---\n";
+    // -- Test 5: Keywords with '/' use structured query (node-centric) --
+    std::cout << "\n  --- Test 5: Slash in keyword uses structured query ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
@@ -113,9 +113,10 @@ static void runPathTrigramTests() {
         records.push_back({"test.py", "/var/log", 1, 200, 2000});
         engine.loadRecords(std::move(records));
 
-        // "home/user" contains '/' — should still work via linear scan fallback
+        // "home/user" → structured: name must contain "user", path must contain "home"
+        // "test.py" doesn't contain "user" in name → 0 results
         auto res = engine.query("home/user");
-        check(res.size() == 1, "Slash keyword: 'home/user' falls back to linear and finds 1 match");
+        check(res.size() == 0, "Slash keyword: 'home/user' structured query, no name match → 0 results");
     }
 
     // -- Test 6: Compaction preserves path trigram index --

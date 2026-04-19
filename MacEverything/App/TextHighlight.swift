@@ -3,7 +3,8 @@ import SwiftUI
 /// Shared highlight function used by ResultRow and ContentResultRow.
 /// Finds all case-insensitive, non-overlapping occurrences of `keyword`
 /// in `text` and renders matched segments in bold + `highlightColor`.
-/// For glob-style keywords containing `*` or `?`, highlighting is skipped.
+/// For glob-style keywords containing `*` or `?`, highlights the literal
+/// (non-wildcard) segments extracted from the pattern.
 func highlightMatches(in text: String, keyword: String,
                       font: Font, color: Color,
                       highlightColor: Color = .accentColor) -> Text {
@@ -14,9 +15,14 @@ func highlightMatches(in text: String, keyword: String,
     let lowerText = text.lowercased()
     let lowerKey = keyword.lowercased()
 
-    // Glob patterns — fall back to no highlighting
+    // Glob patterns — highlight literal (non-wildcard) segments
     if lowerKey.contains("*") || lowerKey.contains("?") {
-        return Text(text).font(font).foregroundColor(color)
+        let literals = extractGlobLiterals(lowerKey)
+        if literals.isEmpty {
+            return Text(text).font(font).foregroundColor(color)
+        }
+        let ranges = findAllLiteralRanges(in: lowerText, literals: literals)
+        return buildHighlightedText(text: text, ranges: ranges, font: font, color: color, highlightColor: highlightColor)
     }
 
     // Find all non-overlapping occurrences
@@ -144,6 +150,41 @@ func highlightCrossMatches(path: String, name: String, keyword: String,
     let pathText = buildHighlightedText(text: path, ranges: pathRanges, font: pathFont, color: pathColor, highlightColor: highlightColor)
 
     return (nameText, pathText)
+}
+
+/// Extract literal (non-wildcard) segments from a glob pattern.
+/// Splits by `*` and `?`, returns non-empty segments.
+private func extractGlobLiterals(_ pattern: String) -> [String] {
+    pattern.components(separatedBy: CharacterSet(charactersIn: "*?"))
+           .filter { !$0.isEmpty }
+}
+
+/// Find all case-insensitive occurrences of any literal in `text`,
+/// merge overlapping ranges, and return sorted non-overlapping ranges.
+private func findAllLiteralRanges(in lowerText: String, literals: [String]) -> [Range<String.Index>] {
+    var allRanges: [Range<String.Index>] = []
+    for literal in literals {
+        var searchStart = lowerText.startIndex
+        while searchStart < lowerText.endIndex,
+              let range = lowerText.range(of: literal, range: searchStart..<lowerText.endIndex) {
+            allRanges.append(range)
+            searchStart = range.upperBound
+        }
+    }
+    guard !allRanges.isEmpty else { return [] }
+
+    // Sort by start position, then merge overlapping/adjacent ranges
+    allRanges.sort { $0.lowerBound < $1.lowerBound }
+    var merged: [Range<String.Index>] = [allRanges[0]]
+    for range in allRanges.dropFirst() {
+        if range.lowerBound <= merged[merged.count - 1].upperBound {
+            let last = merged[merged.count - 1]
+            merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+        } else {
+            merged.append(range)
+        }
+    }
+    return merged
 }
 
 /// Helper: build a SwiftUI Text with specified ranges highlighted.

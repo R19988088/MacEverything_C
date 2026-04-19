@@ -38,9 +38,54 @@ public:
             for (char c : arg) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             node.filterArg = lower;
         }
+        // Phase 4: Modifiers — convert FILTER → TERM
+        else if (name == "case") {
+            node.type = QueryNodeType::TERM;
+            node.text = arg;
+            node.mode = MatchMode::SUBSTRING;
+            node.caseSensitive = true;
+        } else if (name == "nocase") {
+            node.type = QueryNodeType::TERM;
+            node.text = arg;
+            node.mode = MatchMode::SUBSTRING;
+            node.caseSensitive = false;
+        } else if (name == "regex") {
+            node.type = QueryNodeType::TERM;
+            node.text = arg;
+            node.mode = MatchMode::REGEX;
+        } else if (name == "ww" || name == "wholeword") {
+            node.type = QueryNodeType::TERM;
+            node.text = arg;
+            node.mode = MatchMode::WHOLEWORD;
+        } else if (name == "wfn" || name == "wholefilename") {
+            node.type = QueryNodeType::TERM;
+            node.text = arg;
+            node.mode = MatchMode::WHOLEFILENAME;
+        }
+        // Phase 4: Macros — convert to ext: filter
+        else if (name == "audio") {
+            expandMacro(node, "mp3;wav;flac;aac;ogg;m4a;wma;alac");
+        } else if (name == "video") {
+            expandMacro(node, "mp4;avi;mkv;mov;wmv;flv;webm;m4v");
+        } else if (name == "pic") {
+            expandMacro(node, "jpg;jpeg;png;gif;bmp;tiff;tif;webp;svg;ico;heic;heif;raw");
+        } else if (name == "doc") {
+            expandMacro(node, "pdf;doc;docx;xls;xlsx;ppt;pptx;txt;rtf;odt;ods;odp;csv;md");
+        } else if (name == "exe") {
+            expandMacro(node, "app;dmg;pkg;sh;command;csh;action");
+        } else if (name == "zip") {
+            expandMacro(node, "zip;rar;7z;tar;gz;bz2;xz;tgz;zst;lz4");
+        }
     }
 
 private:
+    /// Expand a macro (audio:, video:, etc.) into an ext: filter.
+    static void expandMacro(QueryNode& node, const std::string& extString) {
+        node.filterName = "ext";
+        node.filterArg = extString;
+        parseExt(node, extString);
+    }
+
     /// Parse ext:cpp or ext:cpp;h;hpp into extList
     static void parseExt(QueryNode& node, const std::string& arg) {
         node.op = CompareOp::EQ;

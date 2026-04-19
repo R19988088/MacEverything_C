@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <cstring>
 #include <unordered_set>
+#include <unordered_map>
 #include <chrono>
+#include <regex>
 
 // ---------------------------------------------------------------------------
 // queryAdvanced: evaluate a parsed AST against the record set.
@@ -58,6 +60,61 @@ static uint64_t computeDepth(const char* pathData, uint16_t pathLen) {
         if (pathData[i] == '/') depth++;
     }
     return depth;
+}
+
+/// Glob matching (copied from SearchEngineQuery.cpp anonymous namespace).
+static bool globMatchImpl(const std::string& pattern, const std::string& text) {
+    size_t px = 0, tx = 0;
+    size_t starPx = std::string::npos, starTx = 0;
+
+    while (tx < text.size()) {
+        if (px < pattern.size() && (pattern[px] == '?' || pattern[px] == text[tx])) {
+            px++;
+            tx++;
+        } else if (px < pattern.size() && pattern[px] == '*') {
+            starPx = px++;
+            starTx = tx;
+        } else if (starPx != std::string::npos) {
+            px = starPx + 1;
+            tx = ++starTx;
+        } else {
+            return false;
+        }
+    }
+
+    while (px < pattern.size() && pattern[px] == '*') px++;
+    return px == pattern.size();
+}
+
+/// Check if a character is a word boundary character (not alphanumeric).
+/// Note: underscore '_' IS a boundary (consistent with Everything behavior).
+static bool isWordBoundaryChar(char c) {
+    return !std::isalnum(static_cast<unsigned char>(c));
+}
+
+/// Check if a substring match at position `pos` of length `len` within `text`
+/// (total length `textLen`) is a whole-word match.
+static bool isWholeWordMatch(const char* text, size_t textLen,
+                             size_t pos, size_t len) {
+    // Check left boundary: must be start of string or preceded by non-word char
+    if (pos > 0 && !isWordBoundaryChar(text[pos - 1])) return false;
+    // Check right boundary: must be end of string or followed by non-word char
+    size_t end = pos + len;
+    if (end < textLen && !isWordBoundaryChar(text[end])) return false;
+    return true;
+}
+
+/// Pre-compiled regex cache, keyed by QueryNode pointer.
+using RegexCache = std::unordered_map<const QueryNode*, std::regex>;
+
+/// Collect all REGEX TERM nodes from the AST for pre-compilation.
+static void collectRegexNodes(const QueryNode& node, std::vector<const QueryNode*>& out) {
+    if (node.type == QueryNodeType::TERM && node.mode == MatchMode::REGEX) {
+        out.push_back(&node);
+    }
+    for (auto& child : node.children) {
+        collectRegexNodes(*child, out);
+    }
 }
 
 /// Evaluate a FILTER node against a single record.
@@ -167,22 +224,89 @@ static bool evalFilter(const QueryNode& node,
 
 /// Evaluate a TERM node against a single record.
 /// Returns true if the record's name or full path matches the term text.
+/// nameData is lowercase (from namePool_), rec.name has original case.
 static bool evalTerm(const QueryNode& node,
+                     const FileRecord& rec,
                      const char* nameData, uint16_t nameLen,
                      const char* pathData, uint16_t pathLen,
-                     std::vector<char>& pathBuf) {
-    std::string lower = me::toLower(node.text);
-    // Check name match
-    if (me::simdContains(nameData, nameLen, lower.data(), lower.size())) {
-        return true;
+                     std::vector<char>& pathBuf,
+                     const RegexCache& regexCache) {
+    switch (node.mode) {
+
+    case MatchMode::SUBSTRING: {
+        if (node.caseSensitive) {
+            // Case-sensitive: compare against original-case name (rec.name)
+            const auto& origName = rec.name;
+            const auto& term = node.text;
+            // Check name
+            if (origName.size() >= term.size()) {
+                for (size_t i = 0; i + term.size() <= origName.size(); ++i) {
+                    if (memcmp(origName.data() + i, term.data(), term.size()) == 0)
+                        return true;
+                }
+            }
+            // Check full path (original case: rec.path + "/" + rec.name)
+            std::string fullPath = rec.path + "/" + rec.name;
+            if (fullPath.size() >= term.size()) {
+                for (size_t i = 0; i + term.size() <= fullPath.size(); ++i) {
+                    if (memcmp(fullPath.data() + i, term.data(), term.size()) == 0)
+                        return true;
+                }
+            }
+            return false;
+        }
+        // Case-insensitive (default): use lowercase nameData
+        std::string lower = me::toLower(node.text);
+        if (me::simdContains(nameData, nameLen, lower.data(), lower.size())) {
+            return true;
+        }
+        // Check full path match
+        size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
+        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+        memcpy(pathBuf.data(), pathData, pathLen);
+        pathBuf[pathLen] = '/';
+        memcpy(pathBuf.data() + pathLen + 1, nameData, nameLen);
+        return me::simdContains(pathBuf.data(), fullLen, lower.data(), lower.size());
     }
-    // Check full path match
-    size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
-    if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
-    memcpy(pathBuf.data(), pathData, pathLen);
-    pathBuf[pathLen] = '/';
-    memcpy(pathBuf.data() + pathLen + 1, nameData, nameLen);
-    return me::simdContains(pathBuf.data(), fullLen, lower.data(), lower.size());
+
+    case MatchMode::GLOB: {
+        std::string pattern = me::toLower(node.text);
+        std::string name(nameData, nameLen);
+        return globMatchImpl(pattern, name);
+    }
+
+    case MatchMode::REGEX: {
+        auto it = regexCache.find(&node);
+        if (it == regexCache.end()) return false;
+        // Match against lowercase name by default
+        std::string name(nameData, nameLen);
+        return std::regex_search(name, it->second);
+    }
+
+    case MatchMode::WHOLEWORD: {
+        std::string lower = me::toLower(node.text);
+        // Check in lowercase name
+        std::string name(nameData, nameLen);
+        for (size_t i = 0; i + lower.size() <= name.size(); ++i) {
+            if (memcmp(name.data() + i, lower.data(), lower.size()) == 0) {
+                if (isWholeWordMatch(name.data(), name.size(), i, lower.size()))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    case MatchMode::WHOLEFILENAME: {
+        std::string lower = me::toLower(node.text);
+        // Entire filename must match
+        if (nameLen == lower.size() &&
+            memcmp(nameData, lower.data(), nameLen) == 0)
+            return true;
+        return false;
+    }
+
+    } // switch
+    return false;
 }
 
 /// Recursively evaluate AST node against a single record.
@@ -190,28 +314,29 @@ static bool evalNode(const QueryNode& node,
                      const FileRecord& rec,
                      const char* nameData, uint16_t nameLen,
                      const char* pathData, uint16_t pathLen,
-                     std::vector<char>& pathBuf) {
+                     std::vector<char>& pathBuf,
+                     const RegexCache& regexCache) {
     switch (node.type) {
         case QueryNodeType::TERM:
-            return evalTerm(node, nameData, nameLen, pathData, pathLen, pathBuf);
+            return evalTerm(node, rec, nameData, nameLen, pathData, pathLen, pathBuf, regexCache);
 
         case QueryNodeType::AND:
             for (auto& child : node.children) {
-                if (!evalNode(*child, rec, nameData, nameLen, pathData, pathLen, pathBuf))
+                if (!evalNode(*child, rec, nameData, nameLen, pathData, pathLen, pathBuf, regexCache))
                     return false;
             }
             return true;
 
         case QueryNodeType::OR:
             for (auto& child : node.children) {
-                if (evalNode(*child, rec, nameData, nameLen, pathData, pathLen, pathBuf))
+                if (evalNode(*child, rec, nameData, nameLen, pathData, pathLen, pathBuf, regexCache))
                     return true;
             }
             return false;
 
         case QueryNodeType::NOT:
             if (node.children.empty()) return true;
-            return !evalNode(*node.children[0], rec, nameData, nameLen, pathData, pathLen, pathBuf);
+            return !evalNode(*node.children[0], rec, nameData, nameLen, pathData, pathLen, pathBuf, regexCache);
 
         case QueryNodeType::FILTER:
             return evalFilter(node, rec, nameData, nameLen, pathData, pathLen, pathBuf);
@@ -241,13 +366,15 @@ static void collectTerms(const QueryNode& node, std::vector<std::string>& terms)
 /// For OR queries we can't pre-filter (any branch might match), so return empty.
 static std::string bestTrigramTerm(const QueryNode& node) {
     if (node.type == QueryNodeType::TERM) {
+        // Only SUBSTRING mode can use trigram pre-filtering
+        if (node.mode != MatchMode::SUBSTRING) return {};
         return me::toLower(node.text);
     }
     if (node.type == QueryNodeType::AND) {
-        // Pick the longest TERM child (more trigrams = better selectivity)
+        // Pick the longest SUBSTRING TERM child (more trigrams = better selectivity)
         std::string best;
         for (auto& child : node.children) {
-            if (child->type == QueryNodeType::TERM) {
+            if (child->type == QueryNodeType::TERM && child->mode == MatchMode::SUBSTRING) {
                 std::string t = me::toLower(child->text);
                 if (t.size() > best.size()) best = t;
             }
@@ -269,6 +396,21 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     // Parse the AST
     auto ast = QueryParser::parse(input);
     if (!ast) return {};
+
+    // Pre-compile all regex patterns before acquiring lock
+    RegexCache regexCache;
+    {
+        std::vector<const QueryNode*> regexNodes;
+        collectRegexNodes(*ast, regexNodes);
+        for (auto* rn : regexNodes) {
+            try {
+                regexCache.emplace(rn, std::regex(rn->text,
+                    std::regex::ECMAScript | std::regex::icase | std::regex::optimize));
+            } catch (const std::regex_error&) {
+                // Invalid regex — evalTerm will return false for this node
+            }
+        }
+    }
 
     auto beforeLock = std::chrono::steady_clock::now();
     std::shared_lock lock(mutex_);
@@ -311,7 +453,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         const char* pd = lowerPathPool_.data(pi);
         uint16_t pl = lowerPathPool_.length(pi);
 
-        if (!evalNode(*ast, records_[idx], nd, nl, pd, pl, pathBuf)) return;
+        if (!evalNode(*ast, records_[idx], nd, nl, pd, pl, pathBuf, regexCache)) return;
 
         // Compute priority: 0=exact, 1=starts-with, 2=contains name, 3=path-only
         std::string lowerInput = me::toLower(input);

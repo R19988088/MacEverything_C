@@ -5,10 +5,10 @@
 #include "IndexWAL.h"
 #include "PagedIndexWriter.h"
 #include "FileSystemWatcher.h"
-#include "CompactionTimer.h"
 #include <string>
 #include <memory>
 #include <mutex>
+#include <dispatch/dispatch.h>
 
 /// Orchestrates index persistence: paged base files + WAL + auto-compaction.
 class IndexPersistence {
@@ -77,9 +77,17 @@ private:
     std::unique_ptr<PagedIndexWriter> pagedWriter_;
     std::string basePath_;   // legacy v3 path (index.bin)
     std::string walPath_;
-    CompactionTimer timer_;
+    dispatch_source_t timer_ = nullptr;
+    dispatch_queue_t  timerQueue_ = nullptr;
+    double currentIntervalSec_ = 0;
     mutable std::mutex walMutex_;
 
     /// Compute the next auto-compaction interval based on dirty ratio and WAL size.
     double computeAdaptiveInterval() const;
+
+    /// Stop the timer and synchronously wait for any in-flight callback to finish.
+    void stopTimer();
+
+    /// Change the fire interval. No-op if the change is < 1 second.
+    void rescheduleTimer(double intervalSec);
 };

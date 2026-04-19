@@ -256,7 +256,12 @@ if $PUSH; then
     echo "==> Pushing to $PUBLIC_REMOTE/$BRANCH..."
     git push "$REPO_ROOT" HEAD:refs/heads/__publish_staging --force --quiet
     cd "$REPO_ROOT"
-    git push "$PUBLIC_REMOTE" __publish_staging:"$BRANCH" --force
+    # Use SOCKS5 proxy if available (corporate network requires it for github.com)
+    if lsof -i :13659 &>/dev/null; then
+        ALL_PROXY=socks5://127.0.0.1:13659 git push "$PUBLIC_REMOTE" __publish_staging:"$BRANCH" --force
+    else
+        git push "$PUBLIC_REMOTE" __publish_staging:"$BRANCH" --force
+    fi
     git branch -D __publish_staging --quiet 2>/dev/null || true
     echo ""
     echo "Done! Pushed sanitized code to $PUBLIC_REMOTE/$BRANCH"

@@ -12,6 +12,13 @@ void ServiceEngine::applyFSEvents(
     const std::vector<FileSystemWatcher::Event>& events,
     std::shared_ptr<SearchEngine> engine)
 {
+    // Collect all mutation ops first, then apply in a single batch lock
+    std::vector<SearchEngine::MutationOp> ops;
+    ops.reserve(events.size());
+
+    // Content index updates are collected separately (they use their own lock)
+    std::vector<std::pair<std::string, bool>> contentUpdates; // path, isRemove
+
     for (const auto& event : events) {
         const std::string& path = event.path;
         FSEventStreamEventFlags flags = event.flags;
@@ -25,8 +32,8 @@ void ServiceEngine::applyFSEvents(
         bool exists = (lstat(path.c_str(), &st) == 0);
 
         if (itemRemoved || (itemRenamed && !exists)) {
-            updateContentForPath(path, true, engine);
-            engine->removeByPath(path);
+            contentUpdates.push_back({path, true});
+            ops.push_back({SearchEngine::MutationOp::REMOVE, path, {}});
         } else if (exists) {
             std::string dirPath, fileName;
             size_t lastSlash = path.rfind('/');
@@ -53,13 +60,21 @@ void ServiceEngine::applyFSEvents(
             record.inode = st.st_ino;
             record.devId = static_cast<int32_t>(st.st_dev);
 
-            engine->updateByPath(path, std::move(record));
+            ops.push_back({SearchEngine::MutationOp::UPDATE, path, std::move(record)});
 
             if (type == 1) {
-                updateContentForPath(path, false, engine);
+                contentUpdates.push_back({path, false});
             }
         }
     }
+
+    // Apply content index updates (uses its own lock)
+    for (const auto& [path, isRemove] : contentUpdates) {
+        updateContentForPath(path, isRemove, engine);
+    }
+
+    // Apply all search engine mutations in a single lock acquisition
+    engine->batchMutate(std::move(ops));
 }
 
 // ═══════════════════════════════════════════════════════
@@ -88,6 +103,9 @@ void ServiceEngine::startMonitoring() {
         if (!engine) return;
 
         std::vector<std::string> rescanDirs;
+        std::vector<SearchEngine::MutationOp> ops;
+        ops.reserve(events.size());
+        std::vector<std::pair<std::string, bool>> contentUpdates;
         bool changed = false;
 
         for (const auto& event : events) {
@@ -108,10 +126,9 @@ void ServiceEngine::startMonitoring() {
             bool exists = (lstat(path.c_str(), &st) == 0);
 
             if (itemRemoved || (itemRenamed && !exists)) {
-                updateContentForPath(path, true, engine);
-                if (engine->removeByPath(path)) {
-                    changed = true;
-                }
+                contentUpdates.push_back({path, true});
+                ops.push_back({SearchEngine::MutationOp::REMOVE, path, {}});
+                changed = true;
             } else if (exists) {
                 std::string dirPath, fileName;
                 size_t lastSlash = path.rfind('/');
@@ -138,14 +155,22 @@ void ServiceEngine::startMonitoring() {
                 record.inode = st.st_ino;
                 record.devId = static_cast<int32_t>(st.st_dev);
 
-                engine->updateByPath(path, std::move(record));
+                ops.push_back({SearchEngine::MutationOp::UPDATE, path, std::move(record)});
                 changed = true;
 
                 if (type == 1) {
-                    updateContentForPath(path, false, engine);
+                    contentUpdates.push_back({path, false});
                 }
             }
         }
+
+        // Apply content index updates (uses its own lock)
+        for (const auto& [path, isRemove] : contentUpdates) {
+            updateContentForPath(path, isRemove, engine);
+        }
+
+        // Apply all search engine mutations in a single lock acquisition
+        engine->batchMutate(std::move(ops));
 
         if (!rescanDirs.empty()) {
             scheduleRescanForPaths(rescanDirs);

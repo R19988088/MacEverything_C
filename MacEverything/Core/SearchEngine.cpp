@@ -295,9 +295,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     return idx;
 }
 
-bool SearchEngine::removeByPath(const std::string& fullPath) {
-    std::unique_lock lock(mutex_);
-
+bool SearchEngine::removeByPathUnlocked(const std::string& fullPath) {
     auto it = pathIndex_.find(me::toLower(fullPath));
     if (it == pathIndex_.end()) return false;
 
@@ -319,6 +317,11 @@ bool SearchEngine::removeByPath(const std::string& fullPath) {
     removeFromRecentCache(idx, oldModTime);
 
     return true;
+}
+
+bool SearchEngine::removeByPath(const std::string& fullPath) {
+    std::unique_lock lock(mutex_);
+    return removeByPathUnlocked(fullPath);
 }
 
 uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
@@ -432,9 +435,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
     return removed;
 }
 
-void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& updated) {
-    std::unique_lock lock(mutex_);
-
+void SearchEngine::updateByPathUnlocked(const std::string& fullPath, FileRecord&& updated) {
     if (wal_) wal_->append(WALOp::Update, fullPath, updated);
 
     // Remove old record if exists (case-insensitive lookup)
@@ -481,6 +482,23 @@ void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& update
     markPageDirty(newIdx);
     liveCount_.fetch_add(1, std::memory_order_relaxed);
     addToRecentCache(newIdx, records_[newIdx].modTime);
+}
+
+void SearchEngine::updateByPath(const std::string& fullPath, FileRecord&& updated) {
+    std::unique_lock lock(mutex_);
+    updateByPathUnlocked(fullPath, std::move(updated));
+}
+
+void SearchEngine::batchMutate(std::vector<MutationOp>&& ops) {
+    if (ops.empty()) return;
+    std::unique_lock lock(mutex_);
+    for (auto& op : ops) {
+        if (op.type == MutationOp::REMOVE) {
+            removeByPathUnlocked(op.path);
+        } else {
+            updateByPathUnlocked(op.path, std::move(op.record));
+        }
+    }
 }
 
 std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {

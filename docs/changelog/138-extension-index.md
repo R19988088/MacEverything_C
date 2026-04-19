@@ -1,4 +1,4 @@
-# 137 - Extension Index for O(1) ext: Filter Queries
+# 138 - Extension Index for O(1) ext: Filter Queries
 
 ## Problem
 

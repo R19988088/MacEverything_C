@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct MacEverythingApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @ObservedObject private var searchOptions = SearchOptions.shared
 
     var body: some Scene {
         Window("MacEverything", id: "main") {
@@ -11,6 +12,17 @@ struct MacEverythingApp: App {
         .windowStyle(.titleBar)
         .defaultSize(width: 800, height: 600)
         .commands {
+            CommandMenu("Search") {
+                Toggle("Regex", isOn: $searchOptions.isRegex)
+                    .keyboardShortcut("r", modifiers: [.command])
+                Toggle("Case Sensitive", isOn: $searchOptions.isCaseSensitive)
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                Toggle("Whole Word", isOn: $searchOptions.isWholeWord)
+                    .keyboardShortcut("w", modifiers: [.command, .shift])
+                Toggle("Match Filename", isOn: $searchOptions.isMatchFilename)
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+            }
+
             CommandGroup(after: .appSettings) {
                 Button("Rebuild Index") {
                     NotificationCenter.default.post(name: .rebuildIndex, object: nil)

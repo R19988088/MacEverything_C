@@ -640,13 +640,34 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     // Stage 1: Name trigram — stash result, don't commit yet
     std::vector<uint32_t> nameCands;
     bool nameOk = false;
+    bool stage1AllFound = false;
+    size_t stage1RawCandCount = 0;
     if (useTrigram && !trigramKey.empty() && trigramKey.size() >= 3 && !nameTrigramIndex_.empty()) {
         beforeTrigram = std::chrono::steady_clock::now();
-        bool allFound = false;
-        nameCands = intersectPostingLists(nameTrigramIndex_, trigramKey, allFound);
-        nameOk = allFound && nameCands.size() <= totalSize / 10;
+        nameCands = intersectPostingLists(nameTrigramIndex_, trigramKey, stage1AllFound);
+        stage1RawCandCount = nameCands.size();
+        nameOk = stage1AllFound && nameCands.size() <= totalSize / 10;
         if (!nameOk) nameCands.clear();
         afterTrigram = std::chrono::steady_clock::now();
+    }
+
+    // Diagnostic: log why trigram Stage 1 was skipped or failed (for 3+ char queries)
+    if (trigramKey.size() >= 3 && !nameOk) {
+        bool p2 = phase2Pending_.load(std::memory_order_acquire);
+        bool idxEmpty = nameTrigramIndex_.empty();
+        LOG_INFO("SearchEngine", "DIAG-TRIGRAM key=\"" << trigramKey
+            << "\" SKIP reason="
+            << (!useTrigram ? "useTrigram=false" :
+                idxEmpty ? "indexEmpty" :
+                !stage1AllFound ? "allFound=false" :
+                stage1RawCandCount > totalSize / 10 ? "tooManyCands" : "unknown")
+            << " phase2Pending=" << p2
+            << " indexEmpty=" << idxEmpty
+            << " indexBuckets=" << nameTrigramIndex_.size()
+            << " allFound=" << stage1AllFound
+            << " rawCands=" << stage1RawCandCount
+            << " threshold=" << totalSize / 10
+            << " totalSize=" << totalSize);
     }
 
     // Stage 2: Regex trigram (only if name failed)

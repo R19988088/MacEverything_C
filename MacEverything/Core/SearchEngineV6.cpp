@@ -2,7 +2,6 @@
 #include "StringUtils.h"
 #include "Logger.h"
 #include <algorithm>
-#include <unordered_set>
 #include <thread>
 
 // ---------------------------------------------------------------------------
@@ -35,18 +34,6 @@ void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
     inodes_ = std::move(inodes);
     devIds_ = std::move(devIds);
 
-    // Reconstruct records_ from SoA columns + origNamePool
-    records_.resize(n);
-    for (uint32_t i = 0; i < n; i++) {
-        records_[i].name = origNamePool_.str(i);
-        records_[i].type = types_[i];
-        records_[i].size = sizes_[i];
-        records_[i].modTime = static_cast<time_t>(modTimes_[i]);
-        records_[i].inode = inodes_[i];
-        records_[i].devId = devIds_[i];
-        // records_[i].path left empty — resolved via pathPool_[pathIndices_[i]]
-    }
-
     // Rebuild pathLookup_ and lowerPathLookup_ from pathPool_ entries
     pathLookup_.clear();
     lowerPathLookup_.clear();
@@ -60,7 +47,7 @@ void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
     }
 
     // Build pathIndex_ (lowercase full path -> record index)
-    // Parallelize toLower computation of full paths
+    // Parallelize full-path construction using string_view to avoid allocations
     unsigned numThreads = std::thread::hardware_concurrency();
     if (numThreads < 1) numThreads = 1;
     if (numThreads > 32) numThreads = 32;
@@ -75,33 +62,38 @@ void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
             if (start >= end) break;
             pathThreads.emplace_back([this, &loweredPaths, start, end] {
                 for (size_t i = start; i < end; i++) {
-                    loweredPaths[i] = makeFullPath(lowerPathPool_.str(pathIndices_[i]),
-                                                    std::string(namePool_.data(static_cast<uint32_t>(i)),
-                                                                namePool_.length(static_cast<uint32_t>(i))));
+                    uint32_t idx = static_cast<uint32_t>(i);
+                    loweredPaths[i] = makeFullPath(lowerPathPool_.view(pathIndices_[idx]),
+                                                   namePool_.view(idx));
                 }
             });
         }
         for (auto& th : pathThreads) th.join();
     }
+
+    // Insert into pathIndex_ and merge tombstone dedup (last-wins overwrites)
     pathIndex_.clear();
     pathIndex_.reserve(n);
     for (uint32_t i = 0; i < n; i++) {
+        if (types_[i] == 0) continue;
         pathIndex_[std::move(loweredPaths[i])] = i;
     }
 
-    // Tombstone orphaned duplicates
-    std::unordered_set<uint32_t> winnerIndices;
-    winnerIndices.reserve(pathIndex_.size());
-    for (const auto& [_, idx] : pathIndex_) {
-        winnerIndices.insert(idx);
-    }
+    // Tombstone orphaned duplicates: records not in pathIndex_ as winners
     uint32_t actualLive = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        if (records_[i].type == 0) continue;
-        if (winnerIndices.count(i)) {
-            actualLive++;
-        } else {
-            tombstoneAt(i);
+    {
+        // Collect winner indices from pathIndex_ values
+        std::vector<bool> isWinner(n, false);
+        for (const auto& [_, idx] : pathIndex_) {
+            isWinner[idx] = true;
+        }
+        for (uint32_t i = 0; i < n; i++) {
+            if (types_[i] == 0) continue;
+            if (isWinner[i]) {
+                actualLive++;
+            } else {
+                tombstoneAt(i);
+            }
         }
     }
 
@@ -109,7 +101,7 @@ void SearchEngine::loadRecordsV6(StringPool&& origNamePool,
 
     // Phase 2: defer trigram index building to background
     phase2Pending_.store(true, std::memory_order_release);
-    phase2StartRecordCount_ = static_cast<uint32_t>(records_.size());
+    phase2StartRecordCount_ = static_cast<uint32_t>(types_.size());
 
     // Initialize dirty page bitmap
     uint32_t pageCount = (n + kRecordsPerPage - 1) / kRecordsPerPage;
@@ -126,7 +118,10 @@ void SearchEngine::completePhase2() {
     LOG_INFO("SearchEngine", "Phase 2: building trigram indices in background...");
 
     // Snapshot data needed for building indices (under shared lock)
-    std::vector<FileRecord> snapRecords;
+    // Only snapshot types_ (lightweight ~5MB for 5.5M records) instead of
+    // the full SoA data (~440MB if using FileRecord structs).
+    std::vector<uint8_t> snapTypes;
+    std::vector<int64_t> snapModTimes;
     StringPool snapNamePool;
     StringPool snapLowerPathPool;
     std::vector<uint32_t> snapPathIndices;
@@ -134,19 +129,20 @@ void SearchEngine::completePhase2() {
     uint32_t snapSize;
     {
         std::shared_lock lock(mutex_);
-        snapRecords = records_;
+        snapTypes = types_;
+        snapModTimes = modTimes_;
         snapNamePool = namePool_;
         snapLowerPathPool = lowerPathPool_;
         snapPathIndices = pathIndices_;
         snapPathPoolSize = pathPool_.entryCount();
-        snapSize = static_cast<uint32_t>(records_.size());
+        snapSize = static_cast<uint32_t>(types_.size());
     }
 
     // Build all indices without holding any lock (~3s)
-    auto trigramIndex = buildTrigramIndexFromData(snapRecords, snapNamePool);
+    auto trigramIndex = buildTrigramIndexFromData(snapTypes, snapNamePool);
     auto pathTrigramIndex = buildPathTrigramIndexFromData(snapLowerPathPool);
-    auto pathIdxToRecords = buildPathIdxToRecordsFromData(snapRecords, snapPathIndices, snapPathPoolSize);
-    auto recentCache = buildRecentCacheFromData(snapRecords, kRecentCacheSize);
+    auto pathIdxToRecords = buildPathIdxToRecordsFromData(snapTypes, snapPathIndices, snapPathPoolSize);
+    auto recentCache = buildRecentCacheFromData(snapTypes, snapModTimes, kRecentCacheSize);
 
     LOG_INFO("SearchEngine", "Phase 2: indices built, swapping under lock...");
 
@@ -160,21 +156,21 @@ void SearchEngine::completePhase2() {
         recentCache_ = std::move(recentCache);
 
         // Replay records added during Phase 2 build
-        uint32_t currentSize = static_cast<uint32_t>(records_.size());
+        uint32_t currentSize = static_cast<uint32_t>(types_.size());
         uint32_t replayCount = 0;
         for (uint32_t i = snapSize; i < currentSize; i++) {
-            if (records_[i].type == 0) continue;
+            if (types_[i] == 0) continue;
             // Add trigrams for this record
             addTrigramsForRecord(i, namePool_.data(i), namePool_.length(i));
             addPathTrigramsForRecord(i);
-            addToRecentCache(i, records_[i].modTime);
+            addToRecentCache(i, static_cast<time_t>(modTimes_[i]));
             replayCount++;
         }
 
         // Replay tombstones: records that were live in snapshot but deleted during build
         for (uint32_t i = 0; i < snapSize; i++) {
-            if (i >= records_.size()) break;
-            if (snapRecords[i].type != 0 && records_[i].type == 0) {
+            if (i >= types_.size()) break;
+            if (snapTypes[i] != 0 && types_[i] == 0) {
                 // Was live in snapshot, now tombstoned — trigram was built, need to remove
                 // The trigram entry points at index i which is now tombstoned.
                 // Query-time type==0 check will filter it, but we can clean up explicitly.
@@ -192,7 +188,6 @@ void SearchEngine::completePhase2() {
 SearchEngine::V6Snapshot SearchEngine::snapshotForV6() const {
     std::shared_lock lock(mutex_);
     V6Snapshot snap;
-    snap.records = records_;
     snap.origNamePool = origNamePool_;
     snap.namePool = namePool_;
     snap.pathIndices = pathIndices_;

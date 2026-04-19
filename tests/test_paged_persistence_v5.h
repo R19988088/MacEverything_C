@@ -494,7 +494,7 @@ static void testV5TombstonePreservation() {
     PagedIndexWriter reader(pagesPath, ptablePath);
     IndexMetadata loadedMeta;
     check(reader.load(*engine2, &loadedMeta), "P53-7: load succeeds");
-    // After reload, tombstones are preserved in records_ (type=0) but liveCount excludes them
+    // After reload, tombstones are preserved (type=0) but liveCount excludes them
     check(engine2->liveRecordCount() == 97, "P53-7: 97 live after reload (tombstones preserved)");
 
     // Verify removed records are NOT searchable

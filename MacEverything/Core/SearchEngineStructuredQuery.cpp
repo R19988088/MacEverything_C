@@ -96,12 +96,12 @@ void SearchEngine::treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
         // Now match children against namePattern.
         const auto& namePattern = pq.namePattern;
         for (uint32_t childIdx : childRecords) {
-            if (records_[childIdx].type == 0) continue;
+            if (types_[childIdx] == 0) continue;
             const char* nd = namePool_.data(childIdx);
             uint16_t nl = namePool_.length(childIdx);
 
             if (pq.mode == QueryMode::DIR_EXACT) {
-                if (records_[childIdx].type != 2) continue;
+                if (types_[childIdx] != 2) continue;
                 if (nl != namePattern.size()) continue;
                 if (std::memcmp(nd, namePattern.data(), nl) != 0) continue;
             } else {
@@ -120,7 +120,7 @@ void SearchEngine::treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
     const auto& segText = pq.pathSegments[fromSegIdx].text;
     for (uint32_t childIdx : childRecords) {
         if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
-        if (records_[childIdx].type != 2) continue; // must be directory
+        if (types_[childIdx] != 2) continue; // must be directory
         const char* nd = namePool_.data(childIdx);
         uint16_t nl = namePool_.length(childIdx);
         // Segment match: name must contain segment text
@@ -207,13 +207,13 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
             const auto& recIds = pathIdxToRecords_[pi];
             for (uint32_t idx : recIds) {
                 if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
-                if (records_[idx].type == 0) continue;
+                if (types_[idx] == 0) continue;
 
                 const char* nd = namePool_.data(idx);
                 uint16_t nl = namePool_.length(idx);
 
                 if (pq.mode == QueryMode::DIR_EXACT) {
-                    if (records_[idx].type != 2) continue;
+                    if (types_[idx] != 2) continue;
                     if (nl != namePattern.size()) continue;
                     if (std::memcmp(nd, namePattern.data(), nl) != 0) continue;
                 } else {
@@ -285,10 +285,10 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
             if (cursor == lastIdx) continue;
             lastIdx = cursor;
 
-            if (records_[cursor].type == 0) continue;
+            if (types_[cursor] == 0) continue;
 
             if (pq.mode == QueryMode::DIR_EXACT) {
-                if (records_[cursor].type != 2) continue;
+                if (types_[cursor] != 2) continue;
                 if (entries[cursor].length != namePattern.size()) continue;
             }
 
@@ -315,13 +315,13 @@ bool SearchEngine::queryStructuredNameAnchor(const ParsedQuery& pq,
     for (size_t ci = 0; ci < candidates.size(); ci++) {
         if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return true;
         uint32_t idx = candidates[ci];
-        if (records_[idx].type == 0) continue;
+        if (types_[idx] == 0) continue;
 
         const char* nameData = namePool_.data(idx);
         uint16_t nameLen = namePool_.length(idx);
 
         if (pq.mode == QueryMode::DIR_EXACT) {
-            if (records_[idx].type != 2) continue;
+            if (types_[idx] != 2) continue;
             if (nameLen != namePattern.size()) continue;
             if (std::memcmp(nameData, namePattern.data(), nameLen) != 0) continue;
         } else {
@@ -367,8 +367,8 @@ bool SearchEngine::queryStructuredPathAnchor(const ParsedQuery& pq,
     for (size_t ci = 0; ci < candidates.size(); ci++) {
         if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return true;
         uint32_t idx = candidates[ci];
-        if (records_[idx].type == 0) continue;
-        if (records_[idx].type != 2) continue; // anchor must be a directory
+        if (types_[idx] == 0) continue;
+        if (types_[idx] != 2) continue; // anchor must be a directory
 
         const char* nd = namePool_.data(idx);
         uint16_t nl = namePool_.length(idx);

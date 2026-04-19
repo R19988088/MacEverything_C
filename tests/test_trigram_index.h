@@ -312,12 +312,12 @@ static void runTrigramIndexTests() {
     // -- Test 11: Trigram candidate threshold fallback to linear scan --
     std::cout << "\n  --- Trigram candidate threshold fallback ---\n";
     {
-        // Create a dataset where a common keyword produces candidates > 1.5% of total
-        // Total = 10000 records, threshold = 10000/67 ≈ 149
-        // "test" appears in 200 filenames (2% > 1.5%) → should fallback to linear
-        // "unique_xyz" appears in 5 filenames (0.05% < 1.5%) → should stay trigram
+        // Create a dataset where a common keyword produces candidates > 25% of total
+        // Total = 10000 records, threshold = 10000/4 = 2500
+        // "test" appears in 3000 filenames (30% > 25%) → should fallback to linear
+        // "unique_xyz" appears in 5 filenames (0.05% < 25%) → should stay trigram
         const uint32_t totalRecords = 10000;
-        const uint32_t commonCount = 200; // 2% of total
+        const uint32_t commonCount = 3000; // 30% of total
 
         SearchEngine engine;
         std::vector<FileRecord> records;

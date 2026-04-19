@@ -224,8 +224,8 @@ static void runSlashQueryTests() {
         SearchEngine engine;
         std::vector<FileRecord> records;
         // Create enough records with "test" in the name to exceed the trigram threshold.
-        // Threshold is totalSize / 67 (~1.5%).  With 200 records, threshold = 2.
-        // All 200 names contain "test", so trigram candidates > 2 → degrades to linear.
+        // Threshold is totalSize / 4 (25%).  With 200 records, threshold = 50.
+        // All 200 names contain "test", so trigram candidates (200) > 50 → degrades to linear.
         for (int i = 0; i < 200; i++) {
             std::string name = "test_file_" + std::to_string(i) + ".cpp";
             records.push_back({name.c_str(), "/some/path", 1, (uint64_t)i, (time_t)(i * 100)});

@@ -158,7 +158,7 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
         }
     }
 
-    size_t trigramThreshold = totalSize / 67;
+    size_t trigramThreshold = totalSize / 4;
 
     // ------------------------------------------------------------------
     // Step 2: Try anchor-based strategies before falling back to linear

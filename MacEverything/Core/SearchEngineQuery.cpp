@@ -66,7 +66,7 @@ void SearchEngine::queryDirList(const ParsedQuery& pq,
     if (dirName.size() >= 3 && !nameTrigramIndex_.empty()) {
         bool allFound = false;
         auto candidates = intersectPostingLists(nameTrigramIndex_, dirName, allFound);
-        if (allFound && candidates.size() <= totalSize / 67) {
+        if (allFound && candidates.size() <= totalSize / 4) {
             for (uint32_t idx : candidates) {
                 if (records_[idx].type != 2) continue; // must be directory
                 const char* nd = namePool_.data(idx);

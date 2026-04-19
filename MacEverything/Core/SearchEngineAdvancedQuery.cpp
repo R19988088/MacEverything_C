@@ -627,7 +627,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         beforeTrigram = std::chrono::steady_clock::now();
         bool allFound = false;
         candidates = intersectPostingLists(nameTrigramIndex_, trigramKey, allFound);
-        if (allFound && candidates.size() <= totalSize / 67) {
+        if (allFound && candidates.size() <= totalSize / 4) {
             useTrigramIndex = true;
         } else {
             candidates.clear();
@@ -642,7 +642,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             beforeTrigram = std::chrono::steady_clock::now();
             bool allFound = false;
             candidates = intersectPostingListsMulti(nameTrigramIndex_, regexLiterals, allFound);
-            if (allFound && candidates.size() <= totalSize / 67) {
+            if (allFound && candidates.size() <= totalSize / 4) {
                 useTrigramIndex = true;
             } else {
                 candidates.clear();

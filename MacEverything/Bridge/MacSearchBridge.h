@@ -30,6 +30,18 @@ NS_ASSUME_NONNULL_BEGIN
                         fileType:(uint8_t)fileType;
 @end
 
+/// Highlight hint extracted from the query AST.
+@interface MEHighlightHint : NSObject
+@property (nonatomic, readonly) NSString *text;
+@property (nonatomic, readonly) uint8_t field;       // 0=NAME, 1=PATH, 2=ANY
+@property (nonatomic, readonly) uint8_t matchMode;   // 0=SUBSTRING, 1=GLOB, 2=REGEX, 3=WHOLEWORD, 4=WHOLEFILENAME
+@property (nonatomic, readonly) BOOL caseSensitive;
+- (instancetype)initWithText:(NSString *)text
+                       field:(uint8_t)field
+                   matchMode:(uint8_t)matchMode
+               caseSensitive:(BOOL)caseSensitive;
+@end
+
 /// Bridge between the C++ search engine and Swift/SwiftUI.
 @interface MacSearchBridge : NSObject
 
@@ -67,6 +79,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// P-4: Return most recently modified files as results directly.
 - (NSArray<MEFileResult *> *)recentResults:(uint32_t)count;
+
+/// Parse a query string and return highlight hints extracted from the AST.
+- (NSArray<MEHighlightHint *> *)parseHighlightHints:(NSString *)query;
 
 /// Total number of indexed records (including tombstones).
 - (uint32_t)recordCount;

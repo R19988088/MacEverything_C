@@ -655,6 +655,30 @@ void SearchEngine::queryLinearScan(const std::string& lowerKey,
 }
 
 // ---------------------------------------------------------------------------
+// Query preprocessing — normalise raw user input before routing.
+// All transformations that should apply to every query path go here.
+// ---------------------------------------------------------------------------
+
+static std::string preprocessQuery(const std::string& raw) {
+    std::string result = raw;
+
+    // 1) Expand leading ~ to the user's home directory so that patterns like
+    //    ~/*/*.txt match absolute indexed paths (e.g. /Users/wujian/Downloads/f1.txt).
+    if (!result.empty() && result[0] == '~') {
+        const char* home = std::getenv("HOME");
+        if (home) {
+            if (result.size() == 1) {
+                result = home;
+            } else if (result[1] == '/') {
+                result = std::string(home) + result.substr(1);
+            }
+        }
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Main query() entry points
 // ---------------------------------------------------------------------------
 
@@ -672,29 +696,17 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (keyword.empty()) return {};
 
-    // Expand leading ~ to the user's home directory so that patterns like
-    // ~/*/*.txt match absolute indexed paths (e.g. /Users/wujian/Downloads/f1.txt).
-    std::string expandedKw = keyword;
-    if (!expandedKw.empty() && expandedKw[0] == '~') {
-        const char* home = std::getenv("HOME");
-        if (home) {
-            if (expandedKw.size() == 1) {
-                expandedKw = home;
-            } else if (expandedKw[1] == '/') {
-                expandedKw = std::string(home) + expandedKw.substr(1);
-            }
-        }
-    }
+    std::string processed = preprocessQuery(keyword);
 
     // Route to advanced query path if the input contains boolean operators,
     // grouping, quoted phrases, or known filter functions.
-    if (QueryTokenizer::hasAdvancedSyntax(expandedKw)) {
-        return queryAdvanced(expandedKw, maxResults, useTrigram, timing);
+    if (QueryTokenizer::hasAdvancedSyntax(processed)) {
+        return queryAdvanced(processed, maxResults, useTrigram, timing);
     }
 
     auto queryStart = std::chrono::steady_clock::now();
-    std::string lowerKey = me::toLower(expandedKw);
-    auto parsedQuery = parseQuery(expandedKw);
+    std::string lowerKey = me::toLower(processed);
+    auto parsedQuery = parseQuery(processed);
     bool isStructured = (parsedQuery.mode != QueryMode::PLAIN);
     bool useGlob = !isStructured && isGlobPattern(lowerKey);
     bool hasSlash = lowerKey.find('/') != std::string::npos;

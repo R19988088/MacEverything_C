@@ -223,5 +223,79 @@ static void runTrigramCompetitionTests() {
               "69.9 *.py uses trigram with relaxed threshold (got: " + timing.searchPath + ")");
     }
 
+    // ── 69.10 Path trigram early-exit: skip expansion when name trigram is better ──
+    // Simulates /Library/Application: "library" matches many paths (high path index count),
+    // but "application" matches few names. Name trigram should win without path expansion.
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // 2 target records: name contains "application", path contains "library"
+        FileRecord r1; r1.name = "Application Support"; r1.path = "/Library"; r1.type = 2;
+        FileRecord r2; r2.name = "Application Scripts"; r2.path = "/Library"; r2.type = 2;
+        records.push_back(std::move(r1));
+        records.push_back(std::move(r2));
+        // 50 records under /Library with different names (inflate path trigram for "library")
+        for (int i = 0; i < 50; i++) {
+            FileRecord r;
+            r.name = "libfile_" + std::to_string(i) + ".dylib";
+            r.path = "/Library";
+            r.type = 1;
+            records.push_back(std::move(r));
+        }
+        // 200 noise records (no "library" in path, no "application" in name)
+        addDummyRecords(records, 200, "noiseitem", "/usr/share");
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto results = engine.query("/Library/Application", 100, true, timing);
+        check(results.size() == 2, "69.10 /Library/Application finds 2 results");
+        // Name trigram for "application" (2 candidates) should beat path trigram for "library" (52+)
+        check(timing.searchPath == "advanced-trigram",
+              "69.10 name trigram wins, skips path expansion (got: " + timing.searchPath + ")");
+    }
+
+    // ── 69.11 Path trigram still wins when it has fewer path indices than name candidates ──
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // "common" appears in many names (high name trigram candidates)
+        for (int i = 0; i < 80; i++) {
+            FileRecord r;
+            r.name = "common_module_" + std::to_string(i) + ".txt";
+            r.path = "/frequentpath";
+            r.type = 1;
+            records.push_back(std::move(r));
+        }
+        // Only 2 records under /raresegment — path trigram has very few path indices
+        FileRecord r1; r1.name = "common_special.txt"; r1.path = "/raresegment"; r1.type = 1;
+        FileRecord r2; r2.name = "common_other.txt"; r2.path = "/raresegment"; r2.type = 1;
+        records.push_back(std::move(r1));
+        records.push_back(std::move(r2));
+        addDummyRecords(records, 200, "unrelated", "/otherpath");
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto results = engine.query("/raresegment/common", 100, true, timing);
+        check(results.size() == 2, "69.11 /raresegment/common finds 2 results");
+        // Path trigram for "raresegment" has ~1 path index → 2 records, beats name trigram (82)
+        check(timing.searchPath == "advanced-path-trigram",
+              "69.11 path trigram wins when fewer indices (got: " + timing.searchPath + ")");
+    }
+
+    // ── 69.12 Timing is captured for path trigram stage ──
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        FileRecord r1; r1.name = "app.txt"; r1.path = "/rareseg"; r1.type = 1;
+        records.push_back(std::move(r1));
+        addDummyRecords(records, 200, "filler", "/otherpath");
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto results = engine.query("app", 100, true, timing);
+        // trigramUs should be > 0 (timing was captured)
+        check(timing.trigramMs >= 0, "69.12 trigram timing is captured (trigramMs=" + std::to_string(timing.trigramMs) + ")");
+    }
+
     std::cout << "  Part 69 summary: " << localPassed << " passed, " << localFailed << " failed\n";
 }

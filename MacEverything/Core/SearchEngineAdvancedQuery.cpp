@@ -619,18 +619,24 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             bool allFound = false;
             auto pathIdxCands = intersectPostingLists(pathTrigramIndex_, pathSegKey, allFound);
             if (allFound) {
-                for (uint32_t pi : pathIdxCands) {
-                    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-                    if (pi >= pathIdxToRecords_.size()) continue;
-                    const auto& recIds = pathIdxToRecords_[pi];
-                    pathCands.insert(pathCands.end(), recIds.begin(), recIds.end());
+                // Early-exit: if name trigram already succeeded and path index count
+                // is >= nameCands (each path index expands to >=1 record), expansion
+                // cannot produce fewer candidates — skip the expensive expansion.
+                bool skipExpansion = nameOk && pathIdxCands.size() >= nameCands.size();
+                if (!skipExpansion) {
+                    for (uint32_t pi : pathIdxCands) {
+                        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                        if (pi >= pathIdxToRecords_.size()) continue;
+                        const auto& recIds = pathIdxToRecords_[pi];
+                        pathCands.insert(pathCands.end(), recIds.begin(), recIds.end());
+                    }
+                    std::sort(pathCands.begin(), pathCands.end());
+                    pathCands.erase(std::unique(pathCands.begin(), pathCands.end()), pathCands.end());
+                    pathOk = pathCands.size() <= totalSize / 4;
+                    if (!pathOk) pathCands.clear();
                 }
-                std::sort(pathCands.begin(), pathCands.end());
-                pathCands.erase(std::unique(pathCands.begin(), pathCands.end()), pathCands.end());
-                pathOk = pathCands.size() <= totalSize / 4;
-                if (!pathOk) pathCands.clear();
             }
-            if (!nameOk) afterTrigram = std::chrono::steady_clock::now();
+            afterTrigram = std::chrono::steady_clock::now();
         }
     }
 

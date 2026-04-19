@@ -1,7 +1,7 @@
 // tests/test_highlight_hints.h — Unit tests for HighlightHintExtractor
 // Part 70
 
-#include "HighlightHintExtractor.h"
+#include "../MacEverything/Core/HighlightHintExtractor.h"
 #include <cstdlib>
 
 inline void runHighlightHintTests() {

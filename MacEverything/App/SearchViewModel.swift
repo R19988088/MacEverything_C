@@ -43,9 +43,11 @@ class SearchViewModel: ObservableObject {
 
     private let bridge = MacSearchBridge.shared()
     private let historyStore = SearchHistoryStore()
+    private let searchOptions = SearchOptions.shared
     private var searchTask: Task<Void, Never>?
     private var recentTask: Task<Void, Never>?
     private var settledTask: Task<Void, Never>?
+    private var optionsSink: AnyCancellable?
     private var cachedResults: [MEFileResult] = []
     private var loadedCount: Int = 0
     private var searchGeneration: UInt64 = 0
@@ -85,7 +87,19 @@ class SearchViewModel: ObservableObject {
     }
 
     init() {
+        optionsSink = searchOptions.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.onSearchOptionsChanged()
+            }
+        }
         startIncremental()
+    }
+
+    private func onSearchOptionsChanged() {
+        guard scanComplete, !searchText.isEmpty, !isContentSearch else { return }
+        searchTask?.cancel()
+        searchGeneration &+= 1
+        performSearch(searchText)
     }
 
     func startIncremental() {
@@ -248,10 +262,11 @@ class SearchViewModel: ObservableObject {
         let maxResults = Self.maxResults
         let pageSize = Self.pageSize
         let gen = searchGeneration
+        let query = searchOptions.buildQuery(keyword)
         Task.detached { [weak self] in
             let start = CFAbsoluteTimeGetCurrent()
             // P-4: Use batch method — single engine lock, no NSNumber boxing
-            let results = bridge.queryResults(keyword, maxResults: maxResults)
+            let results = bridge.queryResults(query, maxResults: maxResults)
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let totalCount = results.count
 

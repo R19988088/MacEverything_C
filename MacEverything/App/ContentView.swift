@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = SearchViewModel()
+    @ObservedObject private var searchOptions = SearchOptions.shared
     @State private var scrollViewID = 0
     @FocusState private var isSearchFieldFocused: Bool
 
@@ -41,6 +42,7 @@ struct ContentView: View {
                             return .ignored
                         }
                 }
+                SearchOptionBadges(options: searchOptions)
                 if !viewModel.searchText.isEmpty {
                     Button {
                         viewModel.searchText = ""

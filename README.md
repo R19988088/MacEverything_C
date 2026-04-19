@@ -16,8 +16,8 @@
 <p align="center">
   <a href="#安装"><img src="https://img.shields.io/badge/macOS-13%2B-blue?logo=apple" alt="macOS 13+" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" /></a>
-  <a href="#测试"><img src="https://img.shields.io/badge/tests-77%20modules-brightgreen" alt="77 test modules" /></a>
-  <a href="#mcp-集成"><img src="https://img.shields.io/badge/MCP-compatible-blueviolet" alt="MCP Compatible" /></a>
+  <a href="#测试体系"><img src="https://img.shields.io/badge/tests-79%20modules-brightgreen" alt="79 test modules" /></a>
+  <a href="#ai-工具集成-mcp"><img src="https://img.shields.io/badge/MCP-compatible-blueviolet" alt="MCP Compatible" /></a>
 </p>
 
 ---
@@ -26,56 +26,95 @@
   <img src="assets/screen-shot.jpg" alt="MacEverything Screenshot" width="720" />
 </p>
 
-## 为什么选择 MacEverything？
+## 功能亮点
 
-Spotlight 太慢，`find` 更慢，`mdfind` 会漏文件。MacEverything 能在数秒内索引 **整块磁盘 500 万+ 文件**，然后以 **不到 5ms** 的延迟响应每一次搜索。
+### 极速搜索
+
+索引整块磁盘 **500 万+ 文件只需 14 秒**，之后每次搜索 **不到 5ms** 返回结果。比 Spotlight 快两个数量级。
 
 | 对比项 | MacEverything | Spotlight | `find` |
 |--------|:---:|:---:|:---:|
 | 索引 500 万文件 | ~14 秒 | 数分钟以上 | 无索引 |
-| 搜索延迟（典型值） | **< 5ms** | 200ms–2s | 5–30s |
-| 实时文件系统监控 | FSEvents | FSEvents | 无 |
+| 搜索延迟 | **< 5ms** | 200ms–2s | 5–30s |
+| 实时文件监控 | FSEvents | FSEvents | 无 |
 | 内容搜索 | Trigram 索引 | 侧重元数据 | `grep` |
-| AI 工具集成 (MCP) | 内置支持 | 不支持 | 不支持 |
+| AI 工具集成 | 内置 MCP | 不支持 | 不支持 |
 
-## 核心特性
+### 随叫随到
 
-### 极致搜索性能
+按 **`Option+Space`** 随时唤出搜索窗口（快捷键可自定义），搜索栏自动获得焦点 — 唤起即输入，搜完即走。支持开机自启（最小化后台运行），不打扰你的工作流。
 
-- **Trigram 倒排索引** — 亚线性搜索，比暴力线性扫描快 33x–300x
-- **ARM NEON SIMD** 字符串匹配 — 单线程 11.5 GB/s，多线程 74 GB/s（M3 Pro 上达到 60% 内存带宽利用率）
-- **GCD 多核并行查询** — 线性扫描回退路径充分利用所有 CPU 核心
-- Trigram 加速查询在 540 万文件上 **平均 < 5ms** 返回结果（[查看基准测试 →](#基准测试)）
+### 智能输入体验
+
+- **Ghost 文本自动补全** — 输入时自动显示半透明建议文字，来自搜索历史（按频率排序）或系统关键词（如输入 `ex` 提示 `ext:`）。按 **Tab** 一键接受
+- **搜索栏语法高亮** — 实时彩色标注：过滤器名紫色、参数蓝色、引号字符串橙色、运算符红色
+- **搜索选项徽章** — 搜索栏旁的彩色徽章，一键切换 Regex / Case Sensitive / Whole Word / Match Filename
+
+### Everything 风格查询语法
+
+完整的 AST 解析器，支持 15+ 过滤器、布尔运算、glob 通配符、正则表达式。内置语法帮助窗口（**Cmd+?**）。
+
+| 查询 | 说明 |
+|------|------|
+| `readme` | 文件名包含 "readme" |
+| `*.swift` | 所有 Swift 源文件 |
+| `ext:py size:>1mb` | 大于 1MB 的 Python 文件 |
+| `dm:today` | 今天修改过的文件 |
+| `config path:/usr` | `/usr` 下包含 "config" 的文件 |
+| `"exact phrase"` | 精确短语匹配 |
+| `foo OR bar` | 布尔 OR 运算 |
+| `case:Makefile` | 区分大小写搜索 |
+| `regex:^test_.*\.py$` | 正则表达式搜索 |
+| `type:folder node_modules` | 仅搜索目录 |
+| `~/Documents/*.pdf` | Tilde 展开 + glob |
+| `infile:TODO ext:cpp` | C++ 文件中搜索 "TODO" |
+
+<details>
+<summary><b>全部过滤器列表</b></summary>
+
+| 过滤器 | 说明 | 示例 |
+|--------|------|------|
+| `ext:` | 文件扩展名 | `ext:swift,h` |
+| `size:` | 文件大小 | `size:>1mb`, `size:100kb-5mb` |
+| `type:` | 文件/目录 | `type:folder` |
+| `path:` | 路径包含 | `path:Downloads` |
+| `nopath:` | 路径排除 | `nopath:node_modules` |
+| `parent:` | 直接父目录 | `parent:src` |
+| `depth:` | 目录深度 | `depth:<3` |
+| `dm:` | 修改日期 | `dm:today`, `dm:>2024-01-01` |
+| `dc:` | 创建日期 | `dc:thisweek` |
+| `da:` | 访问日期 | `da:last7days` |
+| `len:` | 文件名长度 | `len:>50` |
+| `case:` | 区分大小写 | `case:README` |
+| `regex:` | 正则表达式 | `regex:^test_` |
+| `ww:` | 全词匹配 | `ww:test` |
+| `wfn:` | 全文件名匹配 | `wfn:Makefile` |
+| `content:` / `infile:` | 内容搜索 | `infile:TODO` |
+| `audio:` `video:` `pic:` `doc:` `zip:` | 文件类型宏 | `audio:` = 所有音频文件 |
+
+</details>
 
 ### 全文内容搜索
 
-- `infile:关键词` — 基于 Trigram 的全文检索，搜索结果附带关键词高亮上下文
-- FNV-1a 内容哈希增量更新 — 仅重新索引变更文件
-- 可配置索引的文件类型和最大文件大小
+输入 `infile:关键词` 搜索文件内容，结果附带关键词高亮上下文片段。基于 Trigram 索引加速，仅重新索引变更文件。可在「内容设置」中配置索引的文件类型和最大文件大小。
 
-### 丰富的查询语法
+### 实时同步，永不过时
 
-兼容 Everything 风格的查询语法，内置完整 AST 解析器：
+- **文件监控** — 基于 FSEvents 实时监听文件系统变更，新建、重命名、删除的文件立即出现在搜索结果中
+- **两阶段即时启动** — 启动时先加载磁盘缓存（立即可搜），后台通过 FSEvents 增量追赶变更，搜索零等待
+- **焦点感知省电** — 窗口不在前台时暂停刷新，回到前台时批量追赶，几乎零后台 CPU 占用
 
-```
-*.swift                      # glob 模式
-ext:py size:>1mb             # 过滤器
-readme path:/usr             # 路径限定搜索
-"exact phrase" OR alternative   # 布尔运算符
-dm:today type:folder         # 日期 & 类型过滤
-case:Makefile                # 区分大小写模式
-infile:TODO                  # 内容搜索
-```
+### 交互细节
 
-### 实时文件系统监控
+- **智能高亮** — 搜索结果中匹配部分高亮标记，基于 AST 感知：正确处理 glob 通配符、正则、大小写、NOT 排除等复杂场景
+- **拖放** — 直接从搜索结果拖放文件到 Finder、VS Code、Xcode 等任意应用
+- **右键菜单** — 打开 / 在 Finder 中显示 / 复制路径
+- **Cmd+Click** — 快速在 Finder 中定位文件
+- **最近文件** — 搜索栏为空时自动展示最近修改的文件
 
-- **FSEvents** 文件级事件监听 — 索引自动保持最新，无需轮询
-- **WAL (Write-Ahead Log)** + CRC32 校验 — 崩溃安全持久化
-- 启动时从上次 `eventId` 增量追赶 — 无需重建索引
+### AI 工具集成 (MCP)
 
-### MCP 集成
-
-内置 [Model Context Protocol](https://modelcontextprotocol.io/) 服务器 — 让 AI 编程工具即时搜索你的文件系统。
+内置 [Model Context Protocol](https://modelcontextprotocol.io/) 服务器，让 AI 编程工具即时搜索你的文件系统。在菜单栏一键开启，支持 **Claude Code**、**Cursor**、**Claude Desktop**。
 
 ```
 Claude Code / Cursor / Claude Desktop
@@ -87,8 +126,6 @@ Claude Code / Cursor / Claude Desktop
   MacEverything.app
 ```
 
-**4 个 MCP 工具：**
-
 | 工具 | 说明 |
 |------|------|
 | `search_files` | 文件名搜索（Trigram 加速） |
@@ -96,59 +133,60 @@ Claude Code / Cursor / Claude Desktop
 | `recent_files` | 最近修改的文件 |
 | `index_status` | 索引统计与健康状态 |
 
-支持 **Claude Code**、**Cursor**、**Claude Desktop** 一键配置 — 在应用菜单栏中切换即可。
-
 ### HTTP API
 
 本地 REST API 监听 `localhost:19860`，方便脚本调用和自动化：
 
 ```bash
-# 搜索文件
-curl "http://localhost:19860/api/search?q=readme&limit=10"
-
-# 内容搜索
-curl "http://localhost:19860/api/search/content?q=TODO"
-
-# 最近修改文件
-curl "http://localhost:19860/api/recent?limit=20"
-
-# 索引状态
-curl "http://localhost:19860/api/status"
+curl "http://localhost:19860/api/search?q=readme&limit=10"       # 搜索文件
+curl "http://localhost:19860/api/search/content?q=TODO"           # 内容搜索
+curl "http://localhost:19860/api/recent?limit=20"                 # 最近文件
+curl "http://localhost:19860/api/status"                          # 索引状态
 ```
 
-每次搜索响应均包含详细的 `timing` 遥测数据（totalMs、trigramMs、candidates、searchPath 等）。
+### 安装
 
-## 基准测试
+#### 下载 DMG（推荐）
 
-测试环境：macOS Darwin 24.3.0，**540 万索引文件**，48 种查询类型，经历 26 轮迭代优化：
+1. 从 [Releases](../../releases) 下载 `MacEverything.dmg`
+2. 将 `MacEverything.app` 拖入「应用程序」文件夹
+3. 启动后按提示授予 **完全磁盘访问权限**
+4. 等待初始扫描完成（约 14 秒）
+5. 按 `Option+Space` 开始搜索
 
-### 搜索延迟
+#### 从源码构建
 
-| 查询类型 | 平均延迟 | 示例 |
-|----------|:---------:|------|
-| 长关键词 (7+ 字符) | **0.1–1ms** | `screenshot` 0.1ms, `dockerfile` 0.1ms |
-| 中等关键词 (4–6 字符) | **1–5ms** | `readme` 1.2ms, `config` 4.7ms |
-| Glob 模式 | **0.7–18ms** | `*.cpp` 0.7ms, `*.swift` 1.5ms |
-| 路径查询 | **3–32ms** | `package.json` 2.9ms |
-| 全部 48 种查询 (均值) | **39.8ms** | 含边界情况和线性扫描回退 |
+**环境要求：** macOS 13+，Xcode 15+
 
-### Trigram vs 线性扫描
+```bash
+git clone https://github.com/user/MacEverything.git && cd MacEverything
 
-| 查询 | Trigram | 线性扫描 | 加速比 |
-|------|:------:|:------:|:------:|
-| `node_modules` | 0.5ms | 154ms | **308x** |
-| `application` | 2.1ms | 175ms | **83x** |
-| `readme` | 1.2ms | 49ms | **41x** |
+xcodebuild -project MacEverything.xcodeproj -scheme MacEverything \
+  -configuration Release build SYMROOT=build
 
-### SIMD 字符串搜索 (Apple M3 Pro)
+hdiutil create -volname MacEverything \
+  -srcfolder build/Release/MacEverything.app \
+  -ov -format UDZO MacEverything.dmg
+```
 
-| 方法 | 吞吐量 | 对比 `std::string::find` |
-|------|:------:|:------------------------:|
-| `std::string::find` | 1.2 GB/s | 基准线 |
-| **NEON 128-bit（单线程）** | **11.5 GB/s** | **9.5x** |
-| **NEON 128-bit（12 线程）** | **74.3 GB/s** | **60.7x** |
+#### CLI 守护进程
 
-## 技术架构
+无头模式，适用于服务器或自动化环境：
+
+```bash
+make daemon
+./maceverything-daemon --port 19860 --root /
+```
+
+---
+
+<h2 align="center">开发者篇：技术深度</h2>
+
+<p align="center">
+  以下内容面向对实现细节感兴趣的开发者。
+</p>
+
+### 架构总览
 
 ```
 ┌─────────────────────────────────────┐
@@ -160,20 +198,7 @@ curl "http://localhost:19860/api/status"
 └─────────────────────────────────────┘
 ```
 
-### 核心引擎亮点
-
-| 组件 | 关键设计 |
-|------|---------|
-| **DirectoryScanner** | 多线程工作窃取 + `getattrlistbulk` — 单次系统调用批量获取文件属性 |
-| **SearchEngine** | Trigram 倒排索引 + SoA 列式布局 + `__builtin_prefetch` 缓存友好访问 |
-| **ContentIndex** | 基于 Trigram 的内容倒排索引，FNV-1a 哈希增量更新 |
-| **SIMDSearch** | ARM NEON 128-bit 向量化字符串匹配，2x 循环展开 |
-| **IndexPersistence** | WAL + CRC32 + 分页脏页刷写 + 原子 rename |
-| **FileSystemWatcher** | FSEvents 监控 + eventId 增量回放 |
-| **PathTable** | 路径字符串 intern 化 — 目录路径仅存 `uint32` 索引 |
-| **QueryParser** | 完整 AST 管线：Tokenizer → FilterParser → Parser → QueryAST |
-
-### 部署模式
+同一套 C++20 核心引擎驱动三种部署模式：
 
 | 模式 | 说明 |
 |------|------|
@@ -181,85 +206,90 @@ curl "http://localhost:19860/api/status"
 | **CLI 守护进程** | 无头 `maceverything-daemon` — 相同引擎，无 UI |
 | **MCP 服务器** | `MacEverythingMCP` — stdio JSON-RPC 代理，供 AI 工具调用 |
 
-## 安装
+### 核心引擎
 
-### 下载 DMG（推荐）
+| 组件 | 关键设计 |
+|------|---------|
+| **DirectoryScanner** | 多线程工作窃取 + `getattrlistbulk` 单次系统调用批量获取文件属性，4–32 线程自适应 |
+| **SearchEngine** | Trigram 倒排索引（name + path 双索引）+ 竞争选择最优候选集 + SoA 列式过滤 |
+| **ContentIndex** | Trigram 全文倒排索引，FNV-1a 哈希增量更新，仅重新索引变更文件 |
+| **SIMDSearch** | ARM NEON 128-bit first-last byte 向量化匹配 + 2x 循环展开，单线程 11.5 GB/s |
+| **IndexPersistence** | WAL + CRC32 + 分页脏页刷写 + 原子 rename，COW 无阻塞压缩（锁持有 < 100ms） |
+| **FileSystemWatcher** | FSEvents + eventId 增量回放 + 日志截断检测自动子树重扫 |
+| **PathTable** | 路径字符串 intern 化 — 目录路径仅存 `uint32` 索引，百万文件节省 ~550MB |
+| **QueryParser** | 完整 AST 管线：Tokenizer → FilterParser → Parser → QueryAST，30+ 过滤器关键词 |
 
-1. 从 [Releases](../../releases) 下载 `MacEverything.dmg`
-2. 将 `MacEverything.app` 拖入「应用程序」文件夹
-3. 启动后按提示授予 **完全磁盘访问权限**
-4. 等待初始扫描完成（典型磁盘约 14 秒）
-5. 按 `Option+Space` 开始搜索
+### 基准测试
 
-### 从源码构建
+测试环境：macOS Darwin 24.3.0，**540 万索引文件**，48 种查询类型：
 
-**环境要求：** macOS 13+，Xcode 15+
+#### 搜索延迟
 
-```bash
-# 克隆
-git clone https://github.com/user/MacEverything.git
-cd MacEverything
+| 查询类型 | 平均延迟 | 示例 |
+|----------|:---------:|------|
+| 长关键词 (7+ 字符) | **0.1–1ms** | `screenshot` 0.1ms, `dockerfile` 0.1ms |
+| 中等关键词 (4–6 字符) | **1–5ms** | `readme` 1.2ms, `config` 4.7ms |
+| Glob 模式 | **0.7–18ms** | `*.cpp` 0.7ms, `*.swift` 1.5ms |
+| 路径查询 | **3–32ms** | `package.json` 2.9ms |
+| 全部 48 种查询 (均值) | **10.5ms** | SoA 优化后最新结果 |
 
-# 构建
-xcodebuild -project MacEverything.xcodeproj -scheme MacEverything \
-  -configuration Release build SYMROOT=build
+#### Trigram vs 线性扫描
 
-# 打包 DMG
-hdiutil create -volname MacEverything \
-  -srcfolder build/Release/MacEverything.app \
-  -ov -format UDZO MacEverything.dmg
-```
+| 查询 | Trigram | 线性扫描 | 加速比 |
+|------|:------:|:------:|:------:|
+| `node_modules` | 0.5ms | 154ms | **308x** |
+| `application` | 2.1ms | 175ms | **83x** |
+| `readme` | 1.2ms | 49ms | **41x** |
 
-### CLI 守护进程
+#### SIMD 字符串搜索 (Apple M3 Pro)
 
-```bash
-make daemon
-./maceverything-daemon --port 19860 --root /
-```
+| 方法 | 吞吐量 | 对比 `std::string::find` |
+|------|:------:|:------------------------:|
+| `std::string::find` | 1.2 GB/s | 基准线 |
+| **NEON 128-bit（单线程）** | **11.5 GB/s** | **9.5x** |
+| **NEON 128-bit（12 线程）** | **74.3 GB/s** | **60.7x** |
 
-## 测试
+### 关键技术
 
-77 个测试模块覆盖完整技术栈 — 从 Trigram 索引正确性到 MCP 协议一致性。
+| 技术 | 效果 |
+|------|------|
+| `getattrlistbulk` | 单次系统调用批量获取文件属性 — 避免逐文件 `stat` |
+| Trigram 倒排索引 | 亚线性搜索：比线性扫描快 33x–308x |
+| SoA 列式布局 | 缓存友好的内存访问模式，纯过滤查询 SIMD 批量判断 16 条记录 |
+| `__builtin_prefetch` | 预取距离 8，隐藏候选验证阶段的随机内存访问延迟 |
+| ARM NEON SIMD | 128-bit 向量化字符串匹配，2x 循环展开，逼近内存带宽上限 |
+| GCD 并行扫描 | Trigram 无法加速时启用多核线性扫描 |
+| StringPool 连续内存 | 文件名紧凑排列在单一 `char` 缓冲区，SIMD 友好 |
+| PathTable intern 化 | 目录路径仅存 `uint32` 索引 — 百万文件节省 ~550MB |
+| Generation 计数器 | 每 1024 次迭代检查，快速输入时零开销取消过时查询 |
+| APFS Firmlink 去重 | inode + devid 检测，正确处理 macOS Data/System 卷合并环路 |
+| Regex Trigram 预过滤 | 从正则中提取字面量生成 trigram 候选，~7s → <100ms |
+| 自适应 Trigram 旁路 | 候选集过大时自动回退并行扫描，避免无效索引查找 |
+| COW 无阻塞压缩 | 写时复制，压缩期间独占锁持有 < 100ms（原 30–60s） |
+| 分页增量持久化 | 仅写入脏页，典型 flush I/O 从 ~112MB 降至 KB 级 |
+
+### 测试体系
+
+79 个测试模块覆盖完整技术栈，支持 AddressSanitizer 和 ThreadSanitizer：
 
 ```bash
 make test          # 快速单元测试 + 桥接层 lint
 make test-slow     # 集成测试（全盘扫描、FSEvents、端到端）
 make test-all      # 全部测试
-make test-asan     # AddressSanitizer 检测
-make test-tsan     # ThreadSanitizer 检测
+make test-asan     # AddressSanitizer
+make test-tsan     # ThreadSanitizer
 ```
 
-测试覆盖范围：
+覆盖范围：
 - **核心引擎**：扫描、查询、变更、压缩、排序、路径搜索
-- **持久化**：WAL CRC 完整性、批量回放、竞态条件、分页持久化
+- **持久化**：WAL CRC 完整性、批量回放、竞态条件、分页持久化 v5
 - **内容索引**：Trigram、压缩、修改时间跟踪、WAL 跟踪
-- **搜索/查询**：分词器、解析器、过滤器、日期过滤、结构化查询、正则 Trigram
-- **性能**：SIMD 搜索、1000 万条记录合成基准、Trigram 竞争测试
-- **集成**：线程安全、端到端、HTTP 引擎热替换、MCP 协议（29 项断言）
-- **内存安全**：ASan + TSan 构建检测内存和线程问题
+- **搜索/查询**：分词器、解析器、过滤器、日期过滤、结构化查询、正则 Trigram、高亮提示
+- **性能**：SIMD 搜索、千万条记录合成基准、Trigram 竞争测试
+- **集成**：线程安全、端到端、HTTP 引擎热替换、MCP 协议
+- **内存安全**：ASan + TSan 构建
 
-## 使用方式
-
-1. **授予完全磁盘访问权限** — 应用首次启动时会引导你完成设置
-2. **等待初始扫描** — 进度在菜单栏显示（典型磁盘约 14 秒）
-3. **`Option+Space`** — 随时随地唤出搜索窗口
-4. **输入关键词搜索** — 搜索结果即时呈现
-5. **`infile:关键词`** — 切换到全文内容搜索
-6. **右键菜单** — 打开、在 Finder 中显示、复制路径、拖放
-
-### 查询示例
-
-| 查询 | 查找结果 |
-|------|---------|
-| `readme` | 所有文件名包含 "readme" 的文件 |
-| `*.swift` | 所有 Swift 源文件 |
-| `ext:py size:>1mb` | 大于 1MB 的 Python 文件 |
-| `dm:today` | 今天修改过的文件 |
-| `config path:/usr` | `/usr` 目录下包含 "config" 的文件 |
-| `infile:TODO ext:cpp` | 内容包含 "TODO" 的 C++ 文件 |
-| `type:folder node_modules` | 名为 "node_modules" 的目录 |
-
-## 项目结构
+### 项目结构
 
 ```
 MacEverything/
@@ -284,25 +314,8 @@ MacEverything/
 ├── CLI/                   # 命令行工具
 │   ├── daemon_main        # 无头守护进程
 │   └── mcp_main           # MCP 服务器（stdio JSON-RPC）
-└── tests/                 # 77 个测试模块
+└── tests/                 # 79 个测试模块
 ```
-
-## 性能设计
-
-| 技术 | 效果 |
-|------|------|
-| `getattrlistbulk` | 单次系统调用批量获取文件属性 — 避免逐文件 `stat` |
-| Trigram 倒排索引 | 亚线性搜索：比线性扫描快 33x–300x |
-| SoA 列式布局 | 缓存友好的内存访问模式，提升过滤效率 |
-| `__builtin_prefetch` | 隐藏候选验证阶段的随机内存访问延迟 |
-| ARM NEON SIMD | 128-bit 向量化字符串匹配，单线程加速 9.5x |
-| GCD 并行扫描 | Trigram 无法加速时启用多核线性扫描 |
-| PathTable intern 化 | 目录路径仅存 `uint32` 索引 — 大幅节省内存 |
-| Generation 计数器 | 快速输入时每 1024 次迭代自动取消过时查询 |
-| APFS Firmlink 去重 | 正确处理 macOS Data/System 卷合并产生的目录环路 |
-| Thread-local 位图 | 内容索引 Trigram 提取 O(1) 去重（2^24 位） |
-| 自适应 Trigram 旁路 | 当 Trigram 选择性差时自动回退并行扫描 |
-| 80ms/300ms 分级防抖 | 平衡 UI 响应速度与资源消耗 |
 
 ## 参与贡献
 

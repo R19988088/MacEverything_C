@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include <cerrno>
 #include <cstring>
+#include <cmath>
 
 IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
                                    const std::string& basePath,
@@ -15,7 +16,7 @@ IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
 {}
 
 IndexPersistence::~IndexPersistence() {
-    stopAutoCompactionAndWait();
+    stopTimer();
     if (engine_) engine_->detachWAL();
     {
         std::lock_guard<std::mutex> lock(walMutex_);
@@ -279,22 +280,57 @@ double IndexPersistence::computeAdaptiveInterval() const {
     return interval;
 }
 
+void IndexPersistence::stopTimer() {
+    if (timer_) {
+        dispatch_source_cancel(timer_);
+        dispatch_release(timer_);
+        timer_ = nullptr;
+    }
+    if (timerQueue_) {
+        dispatch_sync(timerQueue_, ^{});
+        dispatch_release(timerQueue_);
+        timerQueue_ = nullptr;
+    }
+    currentIntervalSec_ = 0;
+}
+
+void IndexPersistence::rescheduleTimer(double intervalSec) {
+    if (!timer_) return;
+    if (std::abs(intervalSec - currentIntervalSec_) < 1.0) return;
+
+    uint64_t intervalNs = static_cast<uint64_t>(intervalSec * NSEC_PER_SEC);
+    dispatch_source_set_timer(timer_,
+                              dispatch_time(DISPATCH_TIME_NOW, intervalNs),
+                              intervalNs,
+                              30 * NSEC_PER_SEC);
+    currentIntervalSec_ = intervalSec;
+}
+
 void IndexPersistence::startAutoCompaction(double intervalSec, std::shared_ptr<FileSystemWatcher> watcher) {
-    timer_.stopAndWait();
+    stopTimer();
+
+    currentIntervalSec_ = intervalSec;
+    timerQueue_ = dispatch_queue_create("com.maceverything.index.compaction", DISPATCH_QUEUE_SERIAL);
+    timer_ = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, timerQueue_);
+
+    uint64_t intervalNs = static_cast<uint64_t>(intervalSec * NSEC_PER_SEC);
+    dispatch_source_set_timer(timer_,
+                              dispatch_time(DISPATCH_TIME_NOW, intervalNs),
+                              intervalNs,
+                              30 * NSEC_PER_SEC);
 
     auto* self = this;
-    timer_.start(intervalSec, [self, watcher]() {
+    dispatch_source_set_event_handler(timer_, ^{
         uint64_t eventId = watcher ? watcher->getLastEventId() : 0;
         self->flush(eventId);
-
-        // Adjust interval based on current state
         double newInterval = self->computeAdaptiveInterval();
-        self->timer_.reschedule(newInterval);
-    }, "com.maceverything.index.compaction");
+        self->rescheduleTimer(newInterval);
+    });
 
+    dispatch_resume(timer_);
     LOG_INFO("IndexPersistence", "Auto-compaction started (initial interval " << intervalSec << "s)");
 }
 
 void IndexPersistence::stopAutoCompactionAndWait() {
-    timer_.stopAndWait();
+    stopTimer();
 }

@@ -15,36 +15,6 @@ static bool writeString(FILE* f, const std::string& s) {
     return true;
 }
 
-static bool readString(const uint8_t*& p, const uint8_t* end, std::string& s) {
-    if (p + 4 > end) return false;
-    uint32_t len;
-    memcpy(&len, p, 4); p += 4;
-    if (len > 65536) return false;
-    if (p + len > end) return false;
-    s.assign(reinterpret_cast<const char*>(p), len);
-    p += len;
-    return true;
-}
-
-// ─── v4 record deserialization from buffer ───
-
-static bool readRecordFromBuf(const uint8_t*& p, const uint8_t* end, FileRecord& r) {
-    if (!readString(p, end, r.name)) return false;
-    if (!readString(p, end, r.path)) return false;
-    if (p + 1 > end) return false;
-    r.type = *p++;
-    if (p + 8 > end) return false;
-    memcpy(&r.size, p, 8); p += 8;
-    if (p + 8 > end) return false;
-    int64_t mod;
-    memcpy(&mod, p, 8); p += 8;
-    r.modTime = static_cast<time_t>(mod);
-    if (p + 8 > end) return false;
-    memcpy(&r.inode, p, 8); p += 8;
-    if (p + 4 > end) return false;
-    memcpy(&r.devId, p, 4); p += 4;
-    return true;
-}
 
 // ─── Serialization to in-memory buffer ───
 
@@ -62,23 +32,6 @@ static void appendString(std::vector<uint8_t>& buf, const std::string& s) {
     uint32_t len = static_cast<uint32_t>(s.size());
     appendU32(buf, len);
     buf.insert(buf.end(), s.begin(), s.end());
-}
-
-// v4 record serializer
-static void appendRecordV4(std::vector<uint8_t>& buf, const FileRecord& r,
-                            const std::string& resolvedPath) {
-    appendString(buf, r.name);
-    appendString(buf, resolvedPath);
-    buf.push_back(r.type);
-    buf.insert(buf.end(), reinterpret_cast<const uint8_t*>(&r.size),
-               reinterpret_cast<const uint8_t*>(&r.size) + 8);
-    int64_t mod = static_cast<int64_t>(r.modTime);
-    buf.insert(buf.end(), reinterpret_cast<const uint8_t*>(&mod),
-               reinterpret_cast<const uint8_t*>(&mod) + 8);
-    buf.insert(buf.end(), reinterpret_cast<const uint8_t*>(&r.inode),
-               reinterpret_cast<const uint8_t*>(&r.inode) + 8);
-    buf.insert(buf.end(), reinterpret_cast<const uint8_t*>(&r.devId),
-               reinterpret_cast<const uint8_t*>(&r.devId) + 4);
 }
 
 // v5 record serializer: pathIndex + origName + lowerName + fixed fields
@@ -182,24 +135,6 @@ PagedIndexWriter::PagedIndexWriter(const std::string& pagesPath, const std::stri
 bool PagedIndexWriter::exists() const {
     return access(ptablePath_.c_str(), R_OK) == 0 &&
            access(pagesPath_.c_str(), R_OK) == 0;
-}
-
-// ─── deserializePage (v4) ───
-
-bool PagedIndexWriter::deserializePage(
-    const uint8_t* data, size_t len,
-    uint16_t expectedCount,
-    std::vector<FileRecord>& out)
-{
-    const uint8_t* p = data;
-    const uint8_t* end = data + len;
-    out.reserve(expectedCount);
-    for (uint16_t i = 0; i < expectedCount; i++) {
-        FileRecord r;
-        if (!readRecordFromBuf(p, end, r)) return false;
-        out.push_back(std::move(r));
-    }
-    return true;
 }
 
 // ─── deserializePageV5 ───
@@ -334,7 +269,12 @@ bool PagedIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
     uint32_t magic;
     if (fread(&magic, 4, 1, ptf) != 1 || magic != kPtableMagic) { fclose(ptf); return false; }
     uint32_t ver;
-    if (fread(&ver, 4, 1, ptf) != 1 || (ver != kVersionV4 && ver != kVersionV5)) { fclose(ptf); return false; }
+    if (fread(&ver, 4, 1, ptf) != 1 || ver != kVersionV5) {
+        if (ver == kVersionV4)
+            std::cerr << "[PagedIndexWriter] v4 format no longer supported; will rebuild index\n";
+        fclose(ptf);
+        return false;
+    }
 
     loadedVersion_ = ver;
 
@@ -375,12 +315,10 @@ bool PagedIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
         if (fread(&pe.crc32, 4, 1, ptf) != 1) { fclose(ptf); return false; }
     }
 
-    // v5: Read path dictionaries from ptable
+    // Read path dictionaries from ptable
     StringPool pathDict, lowerPathDict;
-    if (ver == kVersionV5) {
-        if (!readStringPool(ptf, pathDict)) { fclose(ptf); return false; }
-        if (!readStringPool(ptf, lowerPathDict)) { fclose(ptf); return false; }
-    }
+    if (!readStringPool(ptf, pathDict)) { fclose(ptf); return false; }
+    if (!readStringPool(ptf, lowerPathDict)) { fclose(ptf); return false; }
     fclose(ptf);
 
     // Read pages file
@@ -397,8 +335,8 @@ bool PagedIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
     fseek(pf, 0, SEEK_END);
     uint64_t fileSize = static_cast<uint64_t>(ftell(pf));
 
-    if (ver == kVersionV5) {
-        // v5 path: deserialize pages into separated data, call loadRecordsV5
+    {
+        // Deserialize v5 pages into separated data, call loadRecordsV5
         std::vector<FileRecord> allRecords;
         std::vector<std::string> allLowerNames;
         std::vector<uint32_t> allPathIndices;
@@ -449,44 +387,6 @@ bool PagedIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
                              std::move(allPathIndices), std::move(pathDict), std::move(lowerPathDict));
         return true;
     }
-
-    // v4 path: existing deserializePage → loadRecords
-    std::vector<FileRecord> allRecords;
-    allRecords.reserve(totalRecords);
-
-    for (uint32_t i = 0; i < pageCount; i++) {
-        const auto& pe = entries[i];
-        if (pe.offset + pe.byteLength > fileSize) { fclose(pf); return false; }
-
-        std::vector<uint8_t> buf(pe.byteLength);
-        fseek(pf, static_cast<long>(pe.offset), SEEK_SET);
-        if (fread(buf.data(), 1, pe.byteLength, pf) != pe.byteLength) { fclose(pf); return false; }
-
-        uint32_t crc = IndexWAL::crc32(buf.data(), buf.size());
-        if (crc != pe.crc32) {
-            std::cerr << "[PagedIndexWriter] CRC mismatch on page " << i
-                      << " (expected " << pe.crc32 << ", got " << crc << ")\n";
-            fclose(pf);
-            return false;
-        }
-
-        std::vector<FileRecord> pageRecords;
-        if (!deserializePage(buf.data(), buf.size(), pe.recordCount, pageRecords)) {
-            fclose(pf);
-            return false;
-        }
-        allRecords.insert(allRecords.end(),
-                          std::make_move_iterator(pageRecords.begin()),
-                          std::make_move_iterator(pageRecords.end()));
-    }
-    fclose(pf);
-
-    pageEntries_ = std::move(entries);
-    pagesFileSize_ = fileSize;
-
-    if (outMeta) *outMeta = std::move(meta);
-    engine.loadRecords(std::move(allRecords));
-    return true;
 }
 
 // ─── flushDirtyPages ───

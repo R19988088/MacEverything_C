@@ -41,7 +41,6 @@
 		A100001D /* InstanceLock.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200002D; };
 		A100001E /* SearchHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002E; };
 		A100001F /* PagedIndexWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000030; };
-		A1000020 /* CompactionTimer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000031; };
 		A1000021 /* HttpServer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000034; };
 		A1000022 /* ServiceEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000036; };
 		A1000023 /* ServiceEngine+FSEvents.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000037; };
@@ -127,8 +126,6 @@
 		D2000001 /* MCPConfigManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPConfigManager.swift; sourceTree = "<group>"; };
 		A200002F /* PagedIndexWriter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PagedIndexWriter.h; sourceTree = "<group>"; };
 		A2000030 /* PagedIndexWriter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PagedIndexWriter.cpp; sourceTree = "<group>"; };
-		A2000031 /* CompactionTimer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompactionTimer.cpp; sourceTree = "<group>"; };
-		A2000032 /* CompactionTimer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompactionTimer.h; sourceTree = "<group>"; };
 		A2000033 /* HttpServer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HttpServer.h; sourceTree = "<group>"; };
 		A2000034 /* HttpServer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HttpServer.cpp; sourceTree = "<group>"; };
 		A2000035 /* ServiceEngine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ServiceEngine.h; sourceTree = "<group>"; };
@@ -310,8 +307,6 @@
 				A200002D /* InstanceLock.cpp */,
 				A200002F /* PagedIndexWriter.h */,
 				A2000030 /* PagedIndexWriter.cpp */,
-				A2000032 /* CompactionTimer.h */,
-				A2000031 /* CompactionTimer.cpp */,
 				A2000033 /* HttpServer.h */,
 				A2000034 /* HttpServer.cpp */,
 				A2000035 /* ServiceEngine.h */,
@@ -471,7 +466,6 @@
 				A100001D /* InstanceLock.cpp in Sources */,
 				A100001E /* SearchHistoryStore.swift in Sources */,
 				A100001F /* PagedIndexWriter.cpp in Sources */,
-				A1000020 /* CompactionTimer.cpp in Sources */,
 				A1000021 /* HttpServer.cpp in Sources */,
 				A1000022 /* ServiceEngine.cpp in Sources */,
 				A1000023 /* ServiceEngine+FSEvents.cpp in Sources */,

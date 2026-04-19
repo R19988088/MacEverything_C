@@ -447,59 +447,12 @@ static void testV4ToV5Migration() {
         fclose(ptf);
     }
 
-    // Load v4 format
+    // v4 format is no longer supported — load should fail gracefully
     auto engine2 = std::make_shared<SearchEngine>();
     PagedIndexWriter loader(pagesPath, ptablePath);
     IndexMetadata loadedMeta;
-    check(loader.load(*engine2, &loadedMeta), "P53-6: load v4 format succeeds");
-    check(engine2->liveRecordCount() == 500, "P53-6: 500 records loaded from v4");
-    check(loadedMeta.lastEventId == 77, "P53-6: eventId preserved from v4");
-
-    // Verify a record
-    auto results = engine2->query("v4file42.txt", 10);
-    bool found42 = false;
-    for (uint32_t idx : results) {
-        auto rec = engine2->getRecord(idx);
-        if (rec.name == "v4file42.txt" && rec.size == 210) { found42 = true; break; }
-    }
-    check(found42, "P53-6: v4file42.txt loaded correctly");
-
-    // Now trigger v5 write by fullRewrite
-    PagedIndexWriter writer2(pagesPath, ptablePath);
-    IndexMetadata newMeta;
-    newMeta.lastEventId = 78;
-    check(writer2.fullRewrite(*engine2, newMeta), "P53-6: fullRewrite produces v5");
-
-    // Verify ptable is now v5
-    {
-        FILE* f = fopen(ptablePath.c_str(), "rb");
-        uint32_t magic2, ver2;
-        fread(&magic2, 4, 1, f);
-        fread(&ver2, 4, 1, f);
-        fclose(f);
-        check(ver2 == PagedIndexWriter::kVersionV5, "P53-6: migrated ptable is v5");
-    }
-
-    // Reload from v5 and verify
-    auto engine3 = std::make_shared<SearchEngine>();
-    PagedIndexWriter reader3(pagesPath, ptablePath);
-    IndexMetadata meta3;
-    check(reader3.load(*engine3, &meta3), "P53-6: reload v5 format succeeds");
-    check(engine3->liveRecordCount() == 500, "P53-6: 500 records after v4→v5 migration");
-    check(meta3.lastEventId == 78, "P53-6: eventId updated in v5");
-
-    results = engine3->query("v4file42.txt", 10);
-    found42 = false;
-    for (uint32_t idx : results) {
-        auto rec = engine3->getRecord(idx);
-        if (rec.name == "v4file42.txt" && rec.size == 210) {
-            std::string path = engine3->resolveRecordPath(idx);
-            check(path == "/legacy/dir2", "P53-6: path preserved after migration");
-            found42 = true;
-            break;
-        }
-    }
-    check(found42, "P53-6: v4file42.txt found after migration");
+    check(!loader.load(*engine2, &loadedMeta), "P53-6: v4 format correctly rejected");
+    check(engine2->liveRecordCount() == 0, "P53-6: no records loaded from rejected v4");
 
     fs::remove_all(tmpDir);
 }

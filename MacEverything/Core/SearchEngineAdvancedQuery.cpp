@@ -104,6 +104,9 @@ static void collectRegexNodes(const QueryNode& node, std::vector<const QueryNode
 }
 
 /// Evaluate a FILTER node against a single record.
+/// When called from the pure-filter SoA fast path, nameData and pathData are nullptr —
+/// string-based filters short-circuit (return true) since isPureFilter() guarantees
+/// the query contains no string filters.
 static bool evalFilter(const QueryNode& node,
                        const FileRecord& rec,
                        const char* nameData, uint16_t nameLen,
@@ -113,6 +116,7 @@ static bool evalFilter(const QueryNode& node,
 
     // __pathseg: internal filter — structured path segment matching
     if (name == "__pathseg") {
+        if (!nameData || !pathData) return true;
         // Build full path: pathData/nameData for component-level matching
         size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
@@ -123,8 +127,9 @@ static bool evalFilter(const QueryNode& node,
         return SearchEngine::pathSegmentsMatch(fullPath, node.pathSegments);
     }
 
-    // ext: — match file extension
+    // ext: — match file extension (requires name data)
     if (name == "ext") {
+        if (!nameData) return true;
         std::string ext = getExtLower(nameData, nameLen);
         if (ext.empty()) return false;
         for (auto& e : node.extList) {
@@ -155,8 +160,9 @@ static bool evalFilter(const QueryNode& node,
         return false;
     }
 
-    // path: — path must contain substring (case insensitive)
+    // path: — path must contain substring (case insensitive, requires path data)
     if (name == "path") {
+        if (!nameData || !pathData) return true;
         // Build full path: pathData + '/' + nameData
         size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
@@ -167,8 +173,9 @@ static bool evalFilter(const QueryNode& node,
                                 node.filterArg.data(), node.filterArg.size());
     }
 
-    // nopath: — path must NOT contain substring
+    // nopath: — path must NOT contain substring (requires path data)
     if (name == "nopath") {
+        if (!nameData || !pathData) return true;
         size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
         memcpy(pathBuf.data(), pathData, pathLen);
@@ -178,21 +185,24 @@ static bool evalFilter(const QueryNode& node,
                                  node.filterArg.data(), node.filterArg.size());
     }
 
-    // parent: — direct parent path must match exactly
+    // parent: — direct parent path must match exactly (requires path data)
     if (name == "parent") {
+        if (!pathData) return true;
         // filterArg is lowercased; pathData is already lowercased
         std::string pathStr(pathData, pathLen);
         return pathStr == node.filterArg;
     }
 
-    // depth: — directory depth (count of '/' in full path)
+    // depth: — directory depth (count of '/' in full path, requires path data)
     if (name == "depth") {
+        if (!pathData) return true;
         uint64_t depth = computeDepth(pathData, pathLen);
         return compareNumeric(depth, node.op, node.numVal1, node.numVal2);
     }
 
-    // len: — filename length
+    // len: — filename length (requires name data)
     if (name == "len") {
+        if (!nameData) return true;
         return compareNumeric(static_cast<uint64_t>(nameLen), node.op,
                               node.numVal1, node.numVal2);
     }
@@ -223,12 +233,14 @@ static bool evalFilter(const QueryNode& node,
 /// Evaluate a TERM node against a single record.
 /// Returns true if the record's name or full path matches the term text.
 /// nameData is lowercase (from namePool_), rec.name has original case.
+/// Returns false when nameData is nullptr (pure-filter SoA fast path).
 static bool evalTerm(const QueryNode& node,
                      const FileRecord& rec,
                      const char* nameData, uint16_t nameLen,
                      const char* pathData, uint16_t pathLen,
                      std::vector<char>& pathBuf,
                      const RegexCache& regexCache) {
+    if (!nameData) return false; // SoA pure-filter path — no string data available
     switch (node.mode) {
 
     case MatchMode::SUBSTRING: {
@@ -470,65 +482,6 @@ static std::vector<std::string> extractRegexLiteralsFromAST(const QueryNode& nod
     return allLiterals;
 }
 
-/// Evaluate a FILTER node using SoA columnar values (no string access).
-/// Only handles type/size/modTime filters. Other filters return true (pass-through).
-static bool evalFilterSoA(const QueryNode& node,
-                          uint8_t type, uint64_t size, int64_t modTime) {
-    const auto& name = node.filterName;
-
-    if (name == "size") {
-        return compareNumeric(size, node.op, node.numVal1, node.numVal2);
-    }
-    if (name == "file") {
-        return type == 1;
-    }
-    if (name == "folder") {
-        return type == 2;
-    }
-    if (name == "type") {
-        if (node.filterArg == "file") return type == 1;
-        if (node.filterArg == "folder" || node.filterArg == "dir") return type == 2;
-        return false;
-    }
-    if (name == "dm" || name == "datemodified") {
-        return compareNumeric(static_cast<uint64_t>(modTime), node.op,
-                              node.numVal1, node.numVal2);
-    }
-    if (name == "dc" || name == "datecreated") {
-        return compareNumeric(static_cast<uint64_t>(modTime), node.op,
-                              node.numVal1, node.numVal2);
-    }
-    if (name == "da" || name == "dateaccessed") {
-        return compareNumeric(static_cast<uint64_t>(modTime), node.op,
-                              node.numVal1, node.numVal2);
-    }
-    return true;
-}
-
-/// Recursively evaluate AST node using SoA columnar values only (pure-filter fast path).
-static bool evalNodeSoA(const QueryNode& node,
-                        uint8_t type, uint64_t size, int64_t modTime) {
-    switch (node.type) {
-        case QueryNodeType::TERM:
-            return false; // Should never happen in pure-filter path
-        case QueryNodeType::AND:
-            for (auto& child : node.children) {
-                if (!evalNodeSoA(*child, type, size, modTime)) return false;
-            }
-            return true;
-        case QueryNodeType::OR:
-            for (auto& child : node.children) {
-                if (evalNodeSoA(*child, type, size, modTime)) return true;
-            }
-            return false;
-        case QueryNodeType::NOT:
-            if (node.children.empty()) return true;
-            return !evalNodeSoA(*node.children[0], type, size, modTime);
-        case QueryNodeType::FILTER:
-            return evalFilterSoA(node, type, size, modTime);
-    }
-    return false;
-}
 
 /// Extract the first SUBSTRING TERM text from the AST for result scoring.
 /// Returns empty string if no suitable term is found (pure filter queries).
@@ -851,7 +804,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 // Scalar pre-amble (before alignment)
                 for (; idx < alignedStart; idx++) {
                     if (typesPtr[idx] == 0) continue;
-                    if (!evalNodeSoA(*astPtr, typesPtr[idx], sizesPtr[idx], modTimesPtr[idx])) continue;
+                    if (!evalNode(*astPtr, records[idx], nullptr, 0, nullptr, 0, localPathBuf, regCache)) continue;
                     local.push_back({static_cast<uint32_t>(idx), 2, 0});
                 }
 
@@ -867,7 +820,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                     while (liveMask) {
                         int bit = __builtin_ctz(liveMask);
                         size_t ri = idx + bit;
-                        if (evalNodeSoA(*astPtr, typesPtr[ri], sizesPtr[ri], modTimesPtr[ri])) {
+                        if (evalNode(*astPtr, records[ri], nullptr, 0, nullptr, 0, localPathBuf, regCache)) {
                             local.push_back({static_cast<uint32_t>(ri), 2, 0});
                         }
                         liveMask &= liveMask - 1;
@@ -877,7 +830,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 // Scalar tail
                 for (; idx < end; idx++) {
                     if (typesPtr[idx] == 0) continue;
-                    if (!evalNodeSoA(*astPtr, typesPtr[idx], sizesPtr[idx], modTimesPtr[idx])) continue;
+                    if (!evalNode(*astPtr, records[idx], nullptr, 0, nullptr, 0, localPathBuf, regCache)) continue;
                     local.push_back({static_cast<uint32_t>(idx), 2, 0});
                 }
             } else {

@@ -374,6 +374,9 @@ private:
     std::unordered_map<Trigram, std::vector<uint32_t>> pathTrigramIndex_; // trigram -> sorted pathIdx
     std::vector<std::vector<uint32_t>> pathIdxToRecords_; // pathIdx -> sorted record indices
 
+    // Extension index: extension string -> sorted record indices (files only)
+    std::unordered_map<std::string, std::vector<uint32_t>> extensionIndex_;
+
     /// Intern a directory path into pathPool_ and lowerPathPool_. Returns pathPool_ index.
     /// Deduplicates via pathLookup_. Must be called under unique_lock.
     uint32_t internPath(const std::string& path);
@@ -394,6 +397,13 @@ private:
     void addTrigramsForRecord(uint32_t idx, const char* data, uint16_t len);
     /// Remove trigrams for a single record from the index
     void removeTrigramsForRecord(uint32_t idx);
+
+    /// Build extension index from namePool_ (maps extension -> sorted record indices)
+    void buildExtensionIndex();
+    /// Add a record to the extension index (sorted insert)
+    void addExtensionForRecord(uint32_t idx);
+    /// Remove a record from the extension index
+    void removeExtensionForRecord(uint32_t idx);
 
     /// Build path trigram index from pathPool_
     void buildPathTrigramIndex();
@@ -509,6 +519,11 @@ private:
     static std::unordered_map<Trigram, std::vector<uint32_t>>
         buildTrigramIndexFromData(const std::vector<uint8_t>& types,
                                   const StringPool& namePool);
+
+    /// Build extension index from standalone data (no member access, used by COW compaction)
+    static std::unordered_map<std::string, std::vector<uint32_t>>
+        buildExtensionIndexFromData(const std::vector<uint8_t>& types,
+                                    const StringPool& namePool);
 
     /// Build path trigram index from pre-lowered StringPool (used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>

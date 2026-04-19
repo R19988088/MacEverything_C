@@ -143,6 +143,7 @@ void SearchEngine::completePhase2() {
     auto pathTrigramIndex = buildPathTrigramIndexFromData(snapLowerPathPool);
     auto pathIdxToRecords = buildPathIdxToRecordsFromData(snapTypes, snapPathIndices, snapPathPoolSize);
     auto recentCache = buildRecentCacheFromData(snapTypes, snapModTimes, kRecentCacheSize);
+    auto extensionIndex = buildExtensionIndexFromData(snapTypes, snapNamePool);
 
     LOG_INFO("SearchEngine", "Phase 2: indices built, swapping under lock...");
 
@@ -154,6 +155,7 @@ void SearchEngine::completePhase2() {
         pathTrigramIndex_ = std::move(pathTrigramIndex);
         pathIdxToRecords_ = std::move(pathIdxToRecords);
         recentCache_ = std::move(recentCache);
+        extensionIndex_ = std::move(extensionIndex);
 
         // Replay records added during Phase 2 build
         uint32_t currentSize = static_cast<uint32_t>(types_.size());
@@ -163,6 +165,7 @@ void SearchEngine::completePhase2() {
             // Add trigrams for this record
             addTrigramsForRecord(i, namePool_.data(i), namePool_.length(i));
             addPathTrigramsForRecord(i);
+            addExtensionForRecord(i);
             addToRecentCache(i, static_cast<time_t>(modTimes_[i]));
             replayCount++;
         }

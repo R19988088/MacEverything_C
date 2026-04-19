@@ -549,6 +549,23 @@ static std::string bestPathSegTerm(const QueryNode& node) {
     return {};
 }
 
+/// Extract extension filter values from AND-level ext: FILTER nodes in the AST.
+/// Returns the collected extList values for the first ext: filter found at AND level.
+/// For OR queries or deeply nested ext:, returns empty (can't pre-filter safely).
+static std::vector<std::string> extractExtFilterValues(const QueryNode& node) {
+    if (node.type == QueryNodeType::FILTER && node.filterName == "ext") {
+        return node.extList;
+    }
+    if (node.type == QueryNodeType::AND) {
+        for (auto& child : node.children) {
+            if (child->type == QueryNodeType::FILTER && child->filterName == "ext") {
+                return child->extList;
+            }
+        }
+    }
+    return {};
+}
+
 } // anonymous namespace
 
 // Expose extractRegexLiterals for unit testing
@@ -664,21 +681,51 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         }
     }
 
-    // Stage 4: Pick best — fewer candidates wins
-    if (nameOk && pathOk) {
-        if (pathCands.size() < nameCands.size()) {
-            candidates = std::move(pathCands);
-            trigramKey.clear(); // signal path-trigram for searchPath label
-        } else {
-            candidates = std::move(nameCands);
+    // Stage 4: Extension index pre-filtering
+    std::vector<uint32_t> extCands;
+    bool extOk = false;
+    {
+        auto extValues = extractExtFilterValues(*ast);
+        if (!extValues.empty()) {
+            // Union posting lists for all requested extensions
+            for (const auto& ext : extValues) {
+                auto it = extensionIndex_.find(ext);
+                if (it != extensionIndex_.end()) {
+                    extCands.insert(extCands.end(), it->second.begin(), it->second.end());
+                }
+            }
+            if (extValues.size() > 1) {
+                std::sort(extCands.begin(), extCands.end());
+                extCands.erase(std::unique(extCands.begin(), extCands.end()), extCands.end());
+            }
+            extOk = true; // Extension index is precise — empty means no matches
         }
-        useTrigramIndex = true;
-    } else if (nameOk) {
-        candidates = std::move(nameCands);
-        useTrigramIndex = true;
-    } else if (pathOk) {
-        candidates = std::move(pathCands);
-        trigramKey.clear();
+    }
+
+    // Stage 5: Pick best — fewer candidates wins
+    // Collect all viable candidate sets and pick the smallest
+    struct CandidateSet {
+        std::vector<uint32_t>* cands;
+        const char* label;
+    };
+    std::vector<CandidateSet> viable;
+    if (nameOk) viable.push_back({&nameCands, "name"});
+    if (pathOk) viable.push_back({&pathCands, "path"});
+    if (extOk)  viable.push_back({&extCands,  "ext"});
+
+    if (!viable.empty()) {
+        // Find smallest
+        auto best = &viable[0];
+        for (size_t i = 1; i < viable.size(); i++) {
+            if (viable[i].cands->size() < best->cands->size()) {
+                best = &viable[i];
+            }
+        }
+        candidates = std::move(*best->cands);
+        // If the winner is not name trigram, clear trigramKey for label purposes
+        if (std::string(best->label) != "name") {
+            trigramKey.clear();
+        }
         useTrigramIndex = true;
     }
 
@@ -979,6 +1026,8 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     if (useTrigramIndex) {
         if (!trigramKey.empty()) {
             timing.searchPath = "advanced-trigram";
+        } else if (extOk && !extractExtFilterValues(*ast).empty()) {
+            timing.searchPath = "advanced-ext-index";
         } else if (!bestPathSegTerm(*ast).empty()) {
             timing.searchPath = "advanced-path-trigram";
         } else {

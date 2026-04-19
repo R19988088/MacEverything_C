@@ -3,11 +3,12 @@
 
 /// Result of analyzing which data fields a query AST actually needs.
 struct QueryNeeds {
-    bool needsName    = false;  // query contains TERM or ext:/len: filter
+    bool needsName    = false;  // query contains TERM or len: filter
     bool needsPath    = false;  // query contains path:/nopath:/parent:/depth: filter or path-matching TERM
     bool needsType    = false;  // query contains file:/folder:/type: filter
     bool needsSize    = false;  // query contains size: filter
     bool needsModTime = false;  // query contains dm:/dc:/da:/datemodified:/datecreated:/dateaccessed: filter
+    bool hasExtFilter = false;  // query contains ext: filter (can use extension index for pre-filtering)
 
     /// True when the query only uses type/size/modTime — no string access needed.
     bool isPureFilter() const { return !needsName && !needsPath; }
@@ -25,7 +26,10 @@ inline QueryNeeds analyzeQueryNeeds(const QueryNode& node) {
 
     case QueryNodeType::FILTER: {
         const auto& f = node.filterName;
-        if (f == "ext" || f == "len") {
+        if (f == "ext") {
+            needs.needsName = true;     // evalFilter still needs name data to extract extension
+            needs.hasExtFilter = true;  // enable extension index pre-filtering
+        } else if (f == "len") {
             needs.needsName = true;
         } else if (f == "size") {
             needs.needsSize = true;
@@ -54,6 +58,7 @@ inline QueryNeeds analyzeQueryNeeds(const QueryNode& node) {
             needs.needsType    = needs.needsType    || childNeeds.needsType;
             needs.needsSize    = needs.needsSize    || childNeeds.needsSize;
             needs.needsModTime = needs.needsModTime || childNeeds.needsModTime;
+            needs.hasExtFilter = needs.hasExtFilter || childNeeds.hasExtFilter;
         }
         break;
     }

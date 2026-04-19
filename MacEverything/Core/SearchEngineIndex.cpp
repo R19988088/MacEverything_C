@@ -146,6 +146,66 @@ void SearchEngine::removeTrigramsForRecord(uint32_t idx) {
 }
 
 // ---------------------------------------------------------------------------
+// Extension index build / add / remove
+// ---------------------------------------------------------------------------
+
+/// Extract lowercase extension from name data. Returns empty string if no dot.
+static std::string extractExtFromName(const char* data, uint16_t len) {
+    int dotPos = -1;
+    for (int i = static_cast<int>(len) - 1; i >= 0; --i) {
+        if (data[i] == '.') { dotPos = i; break; }
+    }
+    if (dotPos < 0 || dotPos == static_cast<int>(len) - 1) return {};
+    // namePool_ stores lowercase names already
+    return std::string(data + dotPos + 1, len - dotPos - 1);
+}
+
+std::unordered_map<std::string, std::vector<uint32_t>>
+SearchEngine::buildExtensionIndexFromData(const std::vector<uint8_t>& types,
+                                           const StringPool& namePool) {
+    std::unordered_map<std::string, std::vector<uint32_t>> index;
+    for (uint32_t i = 0; i < namePool.entryCount(); i++) {
+        if (types[i] == 0 || !namePool.isLive(i)) continue;
+        std::string ext = extractExtFromName(namePool.data(i), namePool.length(i));
+        if (!ext.empty()) {
+            index[ext].push_back(i);
+        }
+    }
+    // Posting lists are already in order since we iterate i = 0..N
+    return index;
+}
+
+void SearchEngine::buildExtensionIndex() {
+    extensionIndex_ = buildExtensionIndexFromData(types_, namePool_);
+}
+
+void SearchEngine::addExtensionForRecord(uint32_t idx) {
+    if (idx >= namePool_.entryCount() || !namePool_.isLive(idx)) return;
+    std::string ext = extractExtFromName(namePool_.data(idx), namePool_.length(idx));
+    if (ext.empty()) return;
+    auto& list = extensionIndex_[ext];
+    auto pos = std::lower_bound(list.begin(), list.end(), idx);
+    list.insert(pos, idx);
+}
+
+void SearchEngine::removeExtensionForRecord(uint32_t idx) {
+    if (idx >= namePool_.entryCount() || !namePool_.isLive(idx)) return;
+    std::string ext = extractExtFromName(namePool_.data(idx), namePool_.length(idx));
+    if (ext.empty()) return;
+    auto it = extensionIndex_.find(ext);
+    if (it != extensionIndex_.end()) {
+        auto& list = it->second;
+        auto pos = std::lower_bound(list.begin(), list.end(), idx);
+        if (pos != list.end() && *pos == idx) {
+            list.erase(pos);
+        }
+        if (list.empty()) {
+            extensionIndex_.erase(it);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Path trigram index build / add / remove
 // ---------------------------------------------------------------------------
 

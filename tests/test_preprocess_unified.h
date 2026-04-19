@@ -72,9 +72,9 @@ inline void runPreprocessUnifiedTests() {
         }
     }
 
-    // --- case: modifier does NOT set textLower ---
+    // --- case: modifier sets textLower for trigram pre-filtering (P24 fix) ---
     {
-        std::cout << "  68.6 case: modifier skips textLower computation\n";
+        std::cout << "  68.6 case: modifier sets textLower for trigram\n";
         QueryNode node;
         node.type = QueryNodeType::FILTER;
         node.filterName = "case";
@@ -82,7 +82,7 @@ inline void runPreprocessUnifiedTests() {
         QueryFilterParser::parse(node);
         CHECK(node.type == QueryNodeType::TERM);
         CHECK(node.text == "FooBar");
-        CHECK(node.textLower.empty()); // not computed
+        CHECK(node.textLower == "foobar"); // needed for trigram pre-filtering
         CHECK(node.caseSensitive == true);
     }
 

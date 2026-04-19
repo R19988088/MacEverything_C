@@ -40,7 +40,7 @@ public:
         else if (name == "case") {
             node.type = QueryNodeType::TERM;
             node.text = arg;
-            // textLower not needed — caseSensitive uses node.text
+            node.textLower = me::toLower(arg);
             node.mode = MatchMode::SUBSTRING;
             node.caseSensitive = true;
         } else if (name == "nocase") {

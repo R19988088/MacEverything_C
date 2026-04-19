@@ -450,19 +450,50 @@ class SearchViewModel: ObservableObject {
 
     // MARK: - Ghost text autocomplete
 
+    private static let systemKeywords: [String] = [
+        // Basic filters (most common first)
+        "ext:", "size:", "file:", "folder:", "path:", "nopath:", "parent:", "depth:", "len:",
+        // Date filters
+        "dm:", "dc:", "da:", "datemodified:", "datecreated:", "dateaccessed:",
+        // Modifiers
+        "case:", "nocase:", "regex:", "ww:", "wfn:", "wholeword:", "wholefilename:",
+        // Macros
+        "audio:", "video:", "pic:", "doc:", "exe:", "zip:",
+        // Other
+        "content:", "type:",
+    ]
+
+    private static func systemKeywordMatch(for text: String) -> String? {
+        let lower = text.lowercased()
+        // Only match single partial words: no spaces, no colon already present
+        guard !lower.isEmpty, !lower.contains(" "), !lower.contains(":") else { return nil }
+
+        let matches = systemKeywords.filter { $0.hasPrefix(lower) }
+        // Prefer shorter keywords, then alphabetical
+        return matches.min { a, b in
+            if a.count != b.count { return a.count < b.count }
+            return a < b
+        }
+    }
+
     private func updateGhostSuggestion() {
         let text = searchText
         guard !text.isEmpty, !text.lowercased().hasPrefix("infile:") else {
             ghostSuggestion = nil
             return
         }
+        // Priority 1: search history match
         if let match = historyStore.bestMatch(for: text),
            match.lowercased() != text.lowercased() {
-            // User's typed prefix + the rest from the matched history entry
             ghostSuggestion = text + match.dropFirst(text.count)
-        } else {
-            ghostSuggestion = nil
+            return
         }
+        // Priority 2: system keyword match
+        if let keyword = Self.systemKeywordMatch(for: text) {
+            ghostSuggestion = text + keyword.dropFirst(text.count)
+            return
+        }
+        ghostSuggestion = nil
     }
 
     private func scheduleHistoryRecord() {

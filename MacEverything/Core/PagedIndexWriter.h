@@ -57,11 +57,6 @@ private:
     /// Write the .ptable file atomically (tmp + fsync + rename).
     bool writePtable(const IndexMetadata& meta, uint32_t totalRecords) const;
 
-    /// Parse a v4 page blob back into FileRecord vector.
-    static bool deserializePage(const uint8_t* data, size_t len,
-                                uint16_t expectedCount,
-                                std::vector<FileRecord>& out);
-
     /// Parse a v5 page blob. Returns records (original name, path cleared),
     /// lowerNames, and pathIndices for direct installation into SearchEngine.
     struct V5PageResult {

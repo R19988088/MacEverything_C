@@ -88,7 +88,7 @@ IndexMetadata ServiceEngine::buildMetadata() {
     meta.lastEventId = watcher_ ? watcher_->getLastEventId() : 0;
     meta.extra[IndexMetadata::kScanRoot] = config_.scanRoot;
     meta.extra[IndexMetadata::kAppVersion] = kAppVersion;
-    meta.extra[IndexMetadata::kRecordFormat] = "v4_paged";
+    meta.extra[IndexMetadata::kRecordFormat] = "v5_paged";
     meta.extra[IndexMetadata::kOSVersion] = PathUtils::getOSVersionString();
     return meta;
 }

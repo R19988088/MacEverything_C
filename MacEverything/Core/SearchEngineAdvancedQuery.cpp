@@ -446,6 +446,21 @@ static std::vector<std::string> extractRegexLiteralsFromAST(const QueryNode& nod
     return allLiterals;
 }
 
+/// Extract the first SUBSTRING TERM text from the AST for result scoring.
+/// Returns empty string if no suitable term is found (pure filter queries).
+static std::string extractScoringTerm(const QueryNode& node) {
+    if (node.type == QueryNodeType::TERM && node.mode == MatchMode::SUBSTRING) {
+        return me::toLower(node.text);
+    }
+    if (node.type == QueryNodeType::AND || node.type == QueryNodeType::OR) {
+        for (auto& child : node.children) {
+            auto t = extractScoringTerm(*child);
+            if (!t.empty()) return t;
+        }
+    }
+    return {};
+}
+
 } // anonymous namespace
 
 // Expose extractRegexLiterals for unit testing
@@ -529,6 +544,9 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     std::vector<Match> merged;
     std::vector<char> pathBuf;
 
+    // Extract scoring term from AST (not raw input) — hoisted out of per-record loop
+    std::string scoringTerm = extractScoringTerm(*ast);
+
     auto evalRecord = [&](uint32_t idx) {
         if (records_[idx].type == 0) return;
         const char* nd = namePool_.data(idx);
@@ -540,12 +558,13 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         if (!evalNode(*ast, records_[idx], nd, nl, pd, pl, pathBuf, regexCache)) return;
 
         // Compute priority: 0=exact, 1=starts-with, 2=contains name, 3=path-only
-        std::string lowerInput = me::toLower(input);
         uint8_t priority = 2;
-        if (me::simdContains(nd, nl, lowerInput.data(), lowerInput.size())) {
-            priority = namePriority(nd, nl, lowerInput.data(), lowerInput.size());
-        } else {
-            priority = 3;
+        if (!scoringTerm.empty()) {
+            if (me::simdContains(nd, nl, scoringTerm.data(), scoringTerm.size())) {
+                priority = namePriority(nd, nl, scoringTerm.data(), scoringTerm.size());
+            } else {
+                priority = 3;
+            }
         }
         uint32_t pLen = static_cast<uint32_t>(pl + 1 + nl);
         merged.push_back({idx, priority, pLen});

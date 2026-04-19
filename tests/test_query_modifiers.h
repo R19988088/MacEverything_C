@@ -342,6 +342,31 @@ static void runQueryModifierTests() {
         check(containsName(results, "Hello_World.cpp"), "C15: regex:^hello matches Hello_World.cpp (case-insensitive)");
     }
 
+    // C16: ext:cpp Hello — scoring should use "hello" not "ext:cpp hello"
+    // Hello_World.cpp should rank first (starts-with "hello" in name)
+    {
+        // Order-preserving query to verify priority scoring
+        QueryTimingInfo timing;
+        auto indices = engine.query("ext:cpp Hello", 100, false, timing);
+        std::vector<std::string> ordered;
+        engine.forEachRecordWithPath(indices, [&](uint32_t, const FileRecord& r, const std::string&) {
+            ordered.push_back(r.name);
+        });
+        check(!ordered.empty(), "C16: ext:cpp Hello has results");
+        if (!ordered.empty()) {
+            check(ordered[0] == "Hello_World.cpp",
+                  "C16: ext:cpp Hello ranks Hello_World.cpp first (got: " + ordered[0] + ")");
+        }
+    }
+
+    // C17: audio: — pure macro query (no SUBSTRING TERM), should not crash
+    // and should return results with default priority (sorted by path length)
+    {
+        auto results = queryNames("audio:");
+        check(containsName(results, "music.mp3"), "C17: audio: matches music.mp3");
+        check(!containsName(results, "Hello_World.cpp"), "C17: audio: excludes Hello_World.cpp");
+    }
+
     // Cleanup
     std::filesystem::remove_all(tmpDir);
 

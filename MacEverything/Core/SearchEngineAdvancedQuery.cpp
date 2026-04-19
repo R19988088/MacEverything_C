@@ -142,6 +142,25 @@ static bool evalFilter(const QueryNode& node,
                               node.numVal1, node.numVal2);
     }
 
+    // dm: / datemodified: — modification date filter
+    if (name == "dm" || name == "datemodified") {
+        return compareNumeric(static_cast<uint64_t>(rec.modTime), node.op,
+                              node.numVal1, node.numVal2);
+    }
+
+    // dc: / datecreated: — creation date (uses modTime as fallback since
+    // FileRecord doesn't store birthtime yet)
+    if (name == "dc" || name == "datecreated") {
+        return compareNumeric(static_cast<uint64_t>(rec.modTime), node.op,
+                              node.numVal1, node.numVal2);
+    }
+
+    // da: / dateaccessed: — access date (uses modTime as fallback)
+    if (name == "da" || name == "dateaccessed") {
+        return compareNumeric(static_cast<uint64_t>(rec.modTime), node.op,
+                              node.numVal1, node.numVal2);
+    }
+
     // Unknown filter — pass through
     return true;
 }

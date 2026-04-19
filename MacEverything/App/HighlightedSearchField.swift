@@ -160,6 +160,7 @@ enum QueryHighlightTokenizer {
 struct HighlightedSearchField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String = ""
+    var ghostSuggestion: String?
     var isFocused: FocusState<Bool>.Binding
     var onTab: (() -> Bool)?
 
@@ -220,6 +221,11 @@ struct HighlightedSearchField: NSViewRepresentable {
             context.coordinator.applyHighlighting(textView)
             textView.selectedRanges = selectedRanges
             context.coordinator.isUpdatingFromSwiftUI = false
+        }
+
+        // Update ghost suggestion
+        if textView.ghostSuggestion != ghostSuggestion {
+            textView.ghostSuggestion = ghostSuggestion
         }
 
         // Handle focus
@@ -306,6 +312,9 @@ struct HighlightedSearchField: NSViewRepresentable {
 class HighlightedNSTextView: NSTextView {
     var onTabKey: (() -> Bool)?
     var placeholderString: String = ""
+    var ghostSuggestion: String? {
+        didSet { needsDisplay = true }
+    }
 
     override func keyDown(with event: NSEvent) {
         // Handle Tab key for ghost suggestion
@@ -318,6 +327,21 @@ class HighlightedNSTextView: NSTextView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Draw ghost suggestion behind the real text (before super.draw paints the typed text)
+        if let ghost = ghostSuggestion, !ghost.isEmpty, !string.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font ?? NSFont.systemFont(ofSize: 26),
+                .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.4),
+            ]
+            let ghostStr = NSAttributedString(string: ghost, attributes: attrs)
+            let inset = textContainerInset
+            let origin = NSPoint(
+                x: inset.width + (textContainer?.lineFragmentPadding ?? 0),
+                y: inset.height
+            )
+            ghostStr.draw(at: origin)
+        }
+
         super.draw(dirtyRect)
 
         // Draw placeholder when empty

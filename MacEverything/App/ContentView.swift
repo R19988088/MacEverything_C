@@ -16,32 +16,22 @@ struct ContentView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 26, weight: .medium))
                     .foregroundColor(.blue)
-                ZStack(alignment: .leading) {
-                    // Ghost suggestion layer (behind)
-                    if let ghost = viewModel.ghostSuggestion {
-                        Text(ghost)
-                            .font(.system(size: 26))
-                            .foregroundColor(.secondary.opacity(0.4))
-                            .lineLimit(1)
-                            .allowsHitTesting(false)
-                    }
-                    // Syntax-highlighted search field (in front)
-                    HighlightedSearchField(
-                        text: $viewModel.searchText,
-                        placeholder: "Search files... (infile: for content search)",
-                        isFocused: $isSearchFieldFocused,
-                        onTab: {
-                            if viewModel.ghostSuggestion != nil {
-                                viewModel.acceptGhostSuggestion()
-                                return true
-                            }
-                            return false
+                HighlightedSearchField(
+                    text: $viewModel.searchText,
+                    placeholder: "Search files... (infile: for content search)",
+                    ghostSuggestion: viewModel.ghostSuggestion,
+                    isFocused: $isSearchFieldFocused,
+                    onTab: {
+                        if viewModel.ghostSuggestion != nil {
+                            viewModel.acceptGhostSuggestion()
+                            return true
                         }
-                    )
-                    .frame(height: 36)
-                    .onChange(of: viewModel.searchText) {
-                        viewModel.onSearchTextChanged()
+                        return false
                     }
+                )
+                .frame(height: 36)
+                .onChange(of: viewModel.searchText) {
+                    viewModel.onSearchTextChanged()
                 }
                 SearchOptionBadges(options: searchOptions)
                 if !viewModel.searchText.isEmpty {

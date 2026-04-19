@@ -672,15 +672,29 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (keyword.empty()) return {};
 
+    // Expand leading ~ to the user's home directory so that patterns like
+    // ~/*/*.txt match absolute indexed paths (e.g. /Users/wujian/Downloads/f1.txt).
+    std::string expandedKw = keyword;
+    if (!expandedKw.empty() && expandedKw[0] == '~') {
+        const char* home = std::getenv("HOME");
+        if (home) {
+            if (expandedKw.size() == 1) {
+                expandedKw = home;
+            } else if (expandedKw[1] == '/') {
+                expandedKw = std::string(home) + expandedKw.substr(1);
+            }
+        }
+    }
+
     // Route to advanced query path if the input contains boolean operators,
     // grouping, quoted phrases, or known filter functions.
-    if (QueryTokenizer::hasAdvancedSyntax(keyword)) {
-        return queryAdvanced(keyword, maxResults, useTrigram, timing);
+    if (QueryTokenizer::hasAdvancedSyntax(expandedKw)) {
+        return queryAdvanced(expandedKw, maxResults, useTrigram, timing);
     }
 
     auto queryStart = std::chrono::steady_clock::now();
-    std::string lowerKey = me::toLower(keyword);
-    auto parsedQuery = parseQuery(keyword);
+    std::string lowerKey = me::toLower(expandedKw);
+    auto parsedQuery = parseQuery(expandedKw);
     bool isStructured = (parsedQuery.mode != QueryMode::PLAIN);
     bool useGlob = !isStructured && isGlobPattern(lowerKey);
     bool hasSlash = lowerKey.find('/') != std::string::npos;

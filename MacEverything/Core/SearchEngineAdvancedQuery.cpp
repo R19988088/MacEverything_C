@@ -687,6 +687,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             const uint32_t* candidatesData = candidates.data();
             const auto* astPtr = ast.get();
             const auto& records = records_;
+            const auto* typesPtr = types_.data();
             const auto& namePool = namePool_;
             const auto& lowerPathPool = lowerPathPool_;
             const auto& pathPool = pathPool_;
@@ -709,7 +710,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                         __builtin_prefetch(namePool.entries() + futureIdx, 0, 0);
                     }
                     uint32_t idx = candidatesData[ci];
-                    if (records[idx].type == 0) continue;
+                    if (typesPtr[idx] == 0) continue;
                     const char* nd = namePool.data(idx);
                     uint16_t nl = namePool.length(idx);
                     uint32_t pi = pIndices[idx];
@@ -735,6 +736,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         } else {
             // Small candidate set — single-threaded with prefetch
             const uint32_t* candidatesData = candidates.data();
+            const auto* smallTypesPtr = types_.data();
             for (size_t ci = 0; ci < candidateCount; ci++) {
                 if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                 if (ci + PREFETCH_DIST < candidateCount) {
@@ -743,7 +745,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                     __builtin_prefetch(namePool_.entries() + futureIdx, 0, 0);
                 }
                 uint32_t idx = candidatesData[ci];
-                if (records_[idx].type == 0) continue;
+                if (smallTypesPtr[idx] == 0) continue;
                 const char* nd = namePool_.data(idx);
                 uint16_t nl = namePool_.length(idx);
                 uint32_t pi = pathIndices_[idx];
@@ -844,7 +846,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 for (size_t idx = start; idx < end; idx++) {
                     if ((idx & 4095) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
 
-                    if (records[idx].type == 0) continue;
+                    if (typesPtr[idx] == 0) continue;
                     const char* nd = namePool.data(static_cast<uint32_t>(idx));
                     uint16_t nl = namePool.length(static_cast<uint32_t>(idx));
                     uint32_t pi = pIndices[idx];

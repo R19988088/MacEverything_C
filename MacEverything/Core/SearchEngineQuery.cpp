@@ -660,7 +660,11 @@ void SearchEngine::queryLinearScan(const std::string& lowerKey,
 // ---------------------------------------------------------------------------
 
 static std::string preprocessQuery(const std::string& raw) {
-    std::string result = raw;
+    // 0) Strip leading/trailing whitespace
+    auto start = raw.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return {};
+    auto end = raw.find_last_not_of(" \t\r\n");
+    std::string result = raw.substr(start, end - start + 1);
 
     // 1) Expand leading ~ to the user's home directory so that patterns like
     //    ~/*/*.txt match absolute indexed paths (e.g. /Users/wujian/Downloads/f1.txt).
@@ -697,6 +701,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     if (keyword.empty()) return {};
 
     std::string processed = preprocessQuery(keyword);
+    if (processed.empty()) return {};
 
     // Route to advanced query path if the input contains boolean operators,
     // grouping, quoted phrases, or known filter functions.

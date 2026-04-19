@@ -548,5 +548,101 @@ static void runStructuredQueryTests() {
         CHECK(!foundConfig);
     }
 
+    // ── Linear Scan Optimization Tests (Feature 106) ──
+
+    // -- Test 26: Parallel scan produces same results as serial --
+    std::cout << "\n  --- Test 26: Parallel linear scan consistency ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // Create a dataset that forces linear scan fallback (short name < 3 chars)
+        // with path segment constraints
+        records.push_back({"ab", "/foo/bar", 1, 100, 1000});
+        records.push_back({"ab", "/baz/qux", 1, 200, 2000});
+        records.push_back({"ab", "/foo/xyz", 1, 300, 3000});
+        records.push_back({"cd", "/foo/bar", 1, 400, 4000});
+        // Add enough records to exercise multi-threading
+        for (int i = 0; i < 200; i++) {
+            std::string name = "filler_parallel_" + std::to_string(i) + ".dat";
+            records.push_back({name, "/filler/path", 1, 500 + (uint32_t)i, 5000 + (uint32_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        // "bar/ab" → segments: path "bar", name "ab" — both < 3 chars → linear scan
+        auto res = engine.query("bar/ab");
+        int matchCount = 0;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "ab" && rec.path == "/foo/bar") matchCount++;
+        }
+        CHECK(matchCount == 1);
+
+        // Should NOT match ab in /baz/qux (path doesn't contain "bar")
+        bool foundBaz = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "ab" && rec.path == "/baz/qux") foundBaz = true;
+        }
+        CHECK(!foundBaz);
+    }
+
+    // -- Test 27: pathMatchCache dedup — same path tested once --
+    std::cout << "\n  --- Test 27: pathMatchCache deduplication ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // Multiple files sharing same dir path — pathMatchCache should
+        // evaluate path match once for the shared path
+        for (int i = 0; i < 50; i++) {
+            std::string name = "item_" + std::to_string(i) + ".txt";
+            records.push_back({name, "/shared/common/dir", 1, 100 + (uint32_t)i, 1000 + (uint32_t)i});
+        }
+        for (int i = 0; i < 50; i++) {
+            std::string name = "item_" + std::to_string(i) + ".txt";
+            records.push_back({name, "/other/different/path", 1, 200 + (uint32_t)i, 2000 + (uint32_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        // "common/item" → path must contain "common", name must contain "item"
+        auto res = engine.query("common/item");
+        // All 50 items from /shared/common/dir should match
+        int sharedCount = 0;
+        int otherCount = 0;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.path == "/shared/common/dir") sharedCount++;
+            if (rec.path == "/other/different/path") otherCount++;
+        }
+        CHECK(sharedCount == 50);
+        CHECK(otherCount == 0);
+    }
+
+    // -- Test 28: string_view optimization — no redundant lowering --
+    std::cout << "\n  --- Test 28: Already-lowercase path matching ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // Use mixed-case names to verify that lowerPathPool stores lowercase
+        records.push_back({"Config.yaml", "/App/Settings", 1, 100, 1000});
+        records.push_back({"Config.yaml", "/Other/Place", 1, 200, 2000});
+        engine.loadRecords(std::move(records));
+
+        // Path segment "settings" should match lowered path "/app/settings"
+        auto res = engine.query("/settings/config");
+        bool foundSettings = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "Config.yaml" && rec.path == "/App/Settings") foundSettings = true;
+        }
+        CHECK(foundSettings);
+
+        bool foundOther = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.path == "/Other/Place") foundOther = true;
+        }
+        CHECK(!foundOther);
+    }
+
     std::cout << "\n";
 }

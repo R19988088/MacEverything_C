@@ -344,7 +344,7 @@ private:
                       std::vector<Match>& merged) const;
 
     /// Check if a directory path matches the path segment constraints.
-    static bool pathSegmentsMatch(const std::string& dirPath,
+    static bool pathSegmentsMatch(std::string_view dirPath,
                                   const std::vector<PathSegment>& segments);
 
     /// Estimate trigram candidate count for a keyword (min posting list size).

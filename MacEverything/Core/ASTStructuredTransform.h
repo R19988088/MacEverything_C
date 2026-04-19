@@ -29,8 +29,8 @@ inline std::unique_ptr<QueryNode> transformSlashTerms(std::unique_ptr<QueryNode>
     if (node->mode != MatchMode::SUBSTRING) return node;
     if (node->text.find('/') == std::string::npos) return node;
 
-    // Parse the slash-containing text as a structured query
-    ParsedQuery pq = parseQuery(node->text);
+    // Parse the slash-containing text as a structured query (use pre-lowered text)
+    ParsedQuery pq = parseQuery(node->text, node->textLower);
 
     // If parseQuery couldn't extract structure (glob, empty, etc.), keep original
     if (pq.mode == QueryMode::PLAIN) return node;
@@ -57,7 +57,7 @@ inline std::unique_ptr<QueryNode> transformSlashTerms(std::unique_ptr<QueryNode>
         // DIR_EXACT uses WHOLEFILENAME for exact name matching
         auto nameMode = (pq.mode == QueryMode::DIR_EXACT)
                         ? MatchMode::WHOLEFILENAME : MatchMode::SUBSTRING;
-        auto nameTerm = QueryNode::makeTerm(pq.namePattern, nameMode);
+        auto nameTerm = QueryNode::makeTerm(pq.namePattern, pq.namePattern, nameMode);
         nameTerm->caseSensitive = node->caseSensitive;
         nameTerm->nameOnly = true; // match only name, not full path
 

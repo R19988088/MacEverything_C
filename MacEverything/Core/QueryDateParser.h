@@ -86,9 +86,7 @@ public:
 private:
     /// Returns {start_epoch, end_epoch} for a date expression.
     static std::pair<time_t, time_t> parseDateExpr(const std::string& expr) {
-        std::string lower;
-        for (char c : expr)
-            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        std::string lower = me::toLower(expr);
 
         // Keywords
         if (lower == "today")      return todayRange();

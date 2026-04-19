@@ -26,11 +26,12 @@ struct ParsedQuery {
 
 /// Parse a raw query string into a structured query.
 /// Handles slash-separated segments, adjacency via *, glob detection, and DIR modes.
-inline ParsedQuery parseQuery(const std::string& rawQuery) {
+/// Overload accepting pre-lowered text to avoid redundant me::toLower().
+inline ParsedQuery parseQuery(const std::string& rawQuery, const std::string& lowered) {
     ParsedQuery result;
     if (rawQuery.empty()) return result;
 
-    std::string q = me::toLower(rawQuery);
+    std::string q = lowered;
 
     // No slash → plain name search
     if (q.find('/') == std::string::npos) {
@@ -130,4 +131,9 @@ inline ParsedQuery parseQuery(const std::string& rawQuery) {
     }
 
     return result;
+}
+
+/// Backward-compatible overload — computes lowercase internally.
+inline ParsedQuery parseQuery(const std::string& rawQuery) {
+    return parseQuery(rawQuery, me::toLower(rawQuery));
 }

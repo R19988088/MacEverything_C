@@ -1,11 +1,11 @@
 // tests/test_highlight_hints.h — Unit tests for HighlightHintExtractor
-// Part 68
+// Part 70
 
 #include "HighlightHintExtractor.h"
 #include <cstdlib>
 
 inline void runHighlightHintTests() {
-    std::cout << "\n═══ Part 68: Highlight Hint Extraction ═══\n\n";
+    std::cout << "\n═══ Part 70: Highlight Hint Extraction ═══\n\n";
 
     // --- Basic TERM ---
     {

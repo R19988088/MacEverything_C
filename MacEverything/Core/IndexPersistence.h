@@ -4,6 +4,7 @@
 #include "ContentIndexPersistence.h"
 #include "IndexWAL.h"
 #include "PagedIndexWriter.h"
+#include "FlatIndexWriter.h"
 #include "FileSystemWatcher.h"
 #include <string>
 #include <memory>
@@ -17,7 +18,8 @@ public:
                      const std::string& basePath,
                      const std::string& walPath,
                      const std::string& pagesPath,
-                     const std::string& ptablePath);
+                     const std::string& ptablePath,
+                     const std::string& v6Path);
     ~IndexPersistence();
 
     IndexPersistence(const IndexPersistence&) = delete;
@@ -75,7 +77,9 @@ private:
     std::shared_ptr<ContentIndexPersistence> contentPersistence_;
     std::shared_ptr<IndexWAL> wal_;
     std::unique_ptr<PagedIndexWriter> pagedWriter_;
+    std::unique_ptr<FlatIndexWriter> flatWriter_;
     std::string basePath_;   // legacy v3 path (index.bin)
+    std::string v6Path_;
     std::string walPath_;
     dispatch_source_t timer_ = nullptr;
     dispatch_queue_t  timerQueue_ = nullptr;

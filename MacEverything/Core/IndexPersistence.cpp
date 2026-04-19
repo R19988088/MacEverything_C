@@ -8,11 +8,14 @@ IndexPersistence::IndexPersistence(std::shared_ptr<SearchEngine> engine,
                                    const std::string& basePath,
                                    const std::string& walPath,
                                    const std::string& pagesPath,
-                                   const std::string& ptablePath)
+                                   const std::string& ptablePath,
+                                   const std::string& v6Path)
     : engine_(std::move(engine))
     , basePath_(basePath)
     , walPath_(walPath)
     , pagedWriter_(std::make_unique<PagedIndexWriter>(pagesPath, ptablePath))
+    , flatWriter_(std::make_unique<FlatIndexWriter>(v6Path))
+    , v6Path_(v6Path)
 {}
 
 IndexPersistence::~IndexPersistence() {
@@ -27,31 +30,50 @@ IndexPersistence::~IndexPersistence() {
 uint64_t IndexPersistence::load() {
     uint64_t lastEventId = 0;
 
-    // 1. Try paged format first (v4)
+    // 1. Try v6 flat SoA format first (fast path)
     bool loaded = false;
-    if (pagedWriter_->exists()) {
+    if (flatWriter_->exists()) {
+        IndexMetadata meta;
+        loaded = flatWriter_->load(*engine_, &meta);
+        if (loaded) {
+            lastEventId = meta.lastEventId;
+            LOG_INFO("IndexPersistence", "Loaded v6 flat index, lastEventId=" << lastEventId
+                      << ", liveRecords=" << engine_->liveRecordCount());
+        } else {
+            LOG_ERROR("IndexPersistence", "v6 flat index corrupt, trying paged format");
+        }
+    }
+
+    // 2. Fallback to paged format (v5)
+    if (!loaded && pagedWriter_->exists()) {
         IndexMetadata meta;
         loaded = pagedWriter_->load(*engine_, &meta);
         if (loaded) {
             lastEventId = meta.lastEventId;
             LOG_INFO("IndexPersistence", "Loaded paged index, lastEventId=" << lastEventId
                       << ", liveRecords=" << engine_->liveRecordCount());
+            // Auto-migrate to v6 flat format
+            IndexMetadata migrateMeta;
+            migrateMeta.lastEventId = lastEventId;
+            if (flatWriter_->fullRewrite(*engine_, migrateMeta)) {
+                LOG_INFO("IndexPersistence", "Migrated paged index to v6 flat format");
+            }
         } else {
             LOG_ERROR("IndexPersistence", "Paged index corrupt, trying legacy format");
         }
     }
 
-    // 2. Fallback to legacy v3 format
+    // 3. Fallback to legacy v3 format
     if (!loaded) {
         loaded = engine_->loadFromFile(basePath_, &lastEventId);
         if (loaded) {
             LOG_INFO("IndexPersistence", "Loaded legacy index, lastEventId=" << lastEventId
                       << ", liveRecords=" << engine_->liveRecordCount());
-            // Migrate: write out paged format for next time
+            // Auto-migrate to v6 flat format
             IndexMetadata migrateMeta;
             migrateMeta.lastEventId = lastEventId;
-            if (pagedWriter_->fullRewrite(*engine_, migrateMeta)) {
-                LOG_INFO("IndexPersistence", "Migrated legacy index to paged format");
+            if (flatWriter_->fullRewrite(*engine_, migrateMeta)) {
+                LOG_INFO("IndexPersistence", "Migrated legacy index to v6 flat format");
             }
         } else {
             LOG_INFO("IndexPersistence", "No base index found at " << basePath_);
@@ -134,12 +156,6 @@ void IndexPersistence::flush(const IndexMetadata& metadata, bool force) {
         return;
     }
 
-    // Check if dead space rewrite is needed
-    if (pagedWriter_->deadSpaceRatio() > kDeadSpaceRewriteRatio) {
-        LOG_INFO("IndexPersistence", "Dead space ratio " << (pagedWriter_->deadSpaceRatio() * 100)
-                  << "% — triggering full rewrite to reclaim space");
-    }
-
     // 1. Open a fresh WAL before detaching the old one
     auto newWal = std::make_shared<IndexWAL>();
     std::string newWalPath = walPath_ + ".new";
@@ -157,16 +173,11 @@ void IndexPersistence::flush(const IndexMetadata& metadata, bool force) {
     }
     engine_->attachWAL(newWal);
 
-    // 3. Flush dirty pages (or full rewrite if dead space is high)
-    bool writeOk;
-    if (engine_->needsFullRewrite() || pagedWriter_->deadSpaceRatio() > kDeadSpaceRewriteRatio) {
-        writeOk = pagedWriter_->fullRewrite(*engine_, metadata);
-    } else {
-        writeOk = pagedWriter_->flushDirtyPages(*engine_, metadata);
-    }
+    // 3. Full rewrite v6 flat format
+    bool writeOk = flatWriter_->fullRewrite(*engine_, metadata);
 
     if (writeOk) {
-        LOG_INFO("IndexPersistence", "Flushed paged index, lastEventId=" << metadata.lastEventId
+        LOG_INFO("IndexPersistence", "Flushed v6 flat index, lastEventId=" << metadata.lastEventId
                   << ", liveRecords=" << engine_->liveRecordCount());
     } else {
         LOG_ERROR("IndexPersistence", "Failed to flush paged index — keeping old WAL for recovery");
@@ -224,8 +235,8 @@ void IndexPersistence::fullCompact(const IndexMetadata& metadata) {
         }
     }
 
-    // 4. Full rewrite paged files
-    if (pagedWriter_->fullRewrite(*engine_, metadata)) {
+    // 4. Full rewrite v6 flat format
+    if (flatWriter_->fullRewrite(*engine_, metadata)) {
         LOG_INFO("IndexPersistence", "Full compaction done, lastEventId=" << metadata.lastEventId
                   << ", liveRecords=" << engine_->liveRecordCount());
     } else {

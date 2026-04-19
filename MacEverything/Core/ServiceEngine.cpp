@@ -88,7 +88,7 @@ IndexMetadata ServiceEngine::buildMetadata() {
     meta.lastEventId = watcher_ ? watcher_->getLastEventId() : 0;
     meta.extra[IndexMetadata::kScanRoot] = config_.scanRoot;
     meta.extra[IndexMetadata::kAppVersion] = kAppVersion;
-    meta.extra[IndexMetadata::kRecordFormat] = "v5_paged";
+    meta.extra[IndexMetadata::kRecordFormat] = "v6_flat";
     meta.extra[IndexMetadata::kOSVersion] = PathUtils::getOSVersionString();
     return meta;
 }
@@ -182,9 +182,10 @@ void ServiceEngine::startIncremental(StartupCallback completion) {
         std::string walStr   = config_.cachePath + "/index.wal";
         std::string pagesStr = config_.cachePath + "/index.pages";
         std::string ptableStr = config_.cachePath + "/index.ptable";
+        std::string v6Str    = config_.cachePath + "/index.v6";
 
         auto persistence = std::make_unique<IndexPersistence>(
-            engine, cacheStr, walStr, pagesStr, ptableStr);
+            engine, cacheStr, walStr, pagesStr, ptableStr, v6Str);
 
         uint64_t lastEventId = persistence->load();
         auto indexLoadDone = std::chrono::steady_clock::now();
@@ -216,6 +217,15 @@ void ServiceEngine::startIncremental(StartupCallback completion) {
             uint32_t count = engine->liveRecordCount();
             if (completion) completion(count, false);
 
+            // Dispatch Phase 2: build trigram indices in background
+            if (engine->isPhase2Pending()) {
+                dispatch_group_async(this->backgroundGroup_, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                    if (this->shuttingDown_.load(std::memory_order_acquire)) return;
+                    auto eng = this->safeEngine();
+                    if (eng) eng->completePhase2();
+                });
+            }
+
             this->backgroundSyncEngine(engine, sharedPersistence, lastEventId, incrementalStart, indexLoadDone);
             return;
         }
@@ -232,9 +242,10 @@ void ServiceEngine::startIncremental(StartupCallback completion) {
             std::string walStr   = config_.cachePath + "/index.wal";
             std::string pagesStr = config_.cachePath + "/index.pages";
             std::string ptableStr = config_.cachePath + "/index.ptable";
+            std::string v6Str    = config_.cachePath + "/index.v6";
 
             auto newPersistence = std::make_shared<IndexPersistence>(
-                this->safeEngine(), cacheStr, walStr, pagesStr, ptableStr);
+                this->safeEngine(), cacheStr, walStr, pagesStr, ptableStr, v6Str);
             this->setPersistence(newPersistence);
             newPersistence->attachWAL();
             newPersistence->setContentIndex(this->safeContentIndex());
@@ -362,9 +373,10 @@ void ServiceEngine::backgroundSyncEngine(
         std::string walStr   = config_.cachePath + "/index.wal";
         std::string pagesStr = config_.cachePath + "/index.pages";
         std::string ptableStr = config_.cachePath + "/index.ptable";
+        std::string v6Str    = config_.cachePath + "/index.v6";
 
         auto newPersistence = std::make_shared<IndexPersistence>(
-            engine, cacheStr, walStr, pagesStr, ptableStr);
+            engine, cacheStr, walStr, pagesStr, ptableStr, v6Str);
         this->setPersistence(newPersistence);
         newPersistence->attachWAL();
         newPersistence->setContentIndex(this->safeContentIndex());

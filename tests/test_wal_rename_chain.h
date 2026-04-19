@@ -65,7 +65,7 @@ static void runWalRenameChainTest() {
         std::string basePath = tmpDir + "/index.bin";
         std::string walPath = tmpDir + "/index.wal";
 
-        IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath));
+        IndexPersistence persistence(engine, basePath, walPath, pagesPathFor(basePath), ptablePathFor(basePath), basePath + ".v6");
         persistence.attachWAL();
 
         // Add record AFTER attachWAL so the WAL sees the mutation (sets dirty flag)

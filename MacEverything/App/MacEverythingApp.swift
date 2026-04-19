@@ -23,6 +23,13 @@ struct MacEverythingApp: App {
                     .keyboardShortcut("f", modifiers: [.command, .shift])
             }
 
+            CommandGroup(replacing: .help) {
+                Button("Search Syntax Help") {
+                    SearchSyntaxHelpWindowController.shared.showWindow()
+                }
+                .keyboardShortcut("/", modifiers: [.command, .shift])
+            }
+
             CommandGroup(after: .appSettings) {
                 Button("Rebuild Index") {
                     NotificationCenter.default.post(name: .rebuildIndex, object: nil)
@@ -93,6 +100,29 @@ class ShortcutSettingsWindowController {
         let win = NSWindow(contentViewController: hostingController)
         win.title = "Shortcut Settings"
         win.styleMask = [.titled, .closable]
+        win.center()
+        win.makeKeyAndOrderFront(nil)
+        window = win
+    }
+}
+
+class SearchSyntaxHelpWindowController {
+    static let shared = SearchSyntaxHelpWindowController()
+    private var window: NSWindow?
+
+    func showWindow() {
+        if let existing = window, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let helpView = SearchSyntaxHelpView()
+        let hostingController = NSHostingController(rootView: helpView)
+        let win = NSWindow(contentViewController: hostingController)
+        win.title = "Search Syntax Help"
+        win.styleMask = [.titled, .closable, .resizable]
+        win.setContentSize(NSSize(width: 580, height: 720))
+        win.minSize = NSSize(width: 450, height: 400)
         win.center()
         win.makeKeyAndOrderFront(nil)
         window = win

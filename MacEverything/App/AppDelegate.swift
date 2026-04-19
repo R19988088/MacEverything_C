@@ -60,6 +60,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Rebuild Index", action: #selector(rebuildIndex), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Shortcut Settings...", action: #selector(openShortcutSettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Content Settings...", action: #selector(openContentSettings), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Search Syntax Help...", action: #selector(openSearchSyntaxHelp), keyEquivalent: ""))
 
         let mcpSubmenu = NSMenu(title: "MCP Integration")
         for client in MCPClient.allCases {
@@ -119,6 +120,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openContentSettings() {
         NSApp.activate(ignoringOtherApps: true)
         ContentSettingsWindowController.shared.showWindow()
+    }
+
+    @objc private func openSearchSyntaxHelp() {
+        NSApp.activate(ignoringOtherApps: true)
+        SearchSyntaxHelpWindowController.shared.showWindow()
     }
 
     @objc private func toggleMCPClient(_ sender: NSMenuItem) {

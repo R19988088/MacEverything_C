@@ -34,6 +34,7 @@
 		A1000018 /* IndexRefreshThrottle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025; };
 		A1000019 /* TextHighlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026; };
 		A1000030 /* HighlightedSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000044; };
+		A1000031 /* SearchSyntaxHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000045; };
 		A100001A /* StringUtils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000028; };
 		A100001B /* Logger.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200002A; };
 		A100001C /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002B; };
@@ -114,6 +115,7 @@
 		A2000025 /* IndexRefreshThrottle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexRefreshThrottle.swift; sourceTree = "<group>"; };
 		A2000026 /* TextHighlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextHighlight.swift; sourceTree = "<group>"; };
 		A2000044 /* HighlightedSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightedSearchField.swift; sourceTree = "<group>"; };
+		A2000045 /* SearchSyntaxHelpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchSyntaxHelpView.swift; sourceTree = "<group>"; };
 		A2000027 /* StringUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = StringUtils.h; sourceTree = "<group>"; };
 		A2000028 /* StringUtils.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = StringUtils.cpp; sourceTree = "<group>"; };
 		A2000029 /* Logger.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Logger.h; sourceTree = "<group>"; };
@@ -263,6 +265,7 @@
 				A200002E /* SearchHistoryStore.swift */,
 				D2000001 /* MCPConfigManager.swift */,
 				A2000043 /* SearchOptions.swift */,
+				A2000045 /* SearchSyntaxHelpView.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -461,6 +464,7 @@
 				A1000018 /* IndexRefreshThrottle.swift in Sources */,
 				A1000019 /* TextHighlight.swift in Sources */,
 				A1000030 /* HighlightedSearchField.swift in Sources */,
+				A1000031 /* SearchSyntaxHelpView.swift in Sources */,
 				A100001A /* StringUtils.cpp in Sources */,
 				A100001B /* Logger.cpp in Sources */,
 				A100001C /* AppLogger.swift in Sources */,

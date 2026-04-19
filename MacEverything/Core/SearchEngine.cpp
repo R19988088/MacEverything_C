@@ -166,6 +166,8 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     // Build path trigram index for fast path-only search
     buildPathTrigramIndex();
     rebuildPathIdxToRecords();
+    // Build extension index for fast ext: filter queries
+    buildExtensionIndex();
     rebuildRecentCache();
 
     liveCount_.store(actualLive, std::memory_order_relaxed);
@@ -277,6 +279,7 @@ void SearchEngine::loadRecordsV5(std::vector<FileRecord>&& records,
     buildTrigramIndex();
     buildPathTrigramIndex();
     rebuildPathIdxToRecords();
+    buildExtensionIndex();
     rebuildRecentCache();
 
     liveCount_.store(actualLive, std::memory_order_relaxed);
@@ -348,6 +351,7 @@ uint32_t SearchEngine::addRecord(FileRecord&& record) {
     // Update trigram index
     addTrigramsForRecord(idx, namePool_.data(idx), namePool_.length(idx));
     addPathTrigramsForRecord(idx);
+    addExtensionForRecord(idx);
 
     // Dirty page tracking
     if (idx / kRecordsPerPage >= dirtyPages_.size()) {
@@ -371,6 +375,7 @@ bool SearchEngine::removeByPathUnlocked(const std::string& fullPath) {
     time_t oldModTime = static_cast<time_t>(modTimes_[idx]);
     removeTrigramsForRecord(idx);
     removePathTrigramsForRecord(idx);
+    removeExtensionForRecord(idx);
     tombstoneAt(idx);
     pathIndex_.erase(it);
 
@@ -407,6 +412,7 @@ uint32_t SearchEngine::removeByPathPrefix(const std::string& pathPrefix) {
             // Clean up trigram index (must happen before clearing namePool_)
             removeTrigramsForRecord(idx);
             removePathTrigramsForRecord(idx);
+            removeExtensionForRecord(idx);
             tombstoneAt(idx);
             liveCount_.fetch_sub(1, std::memory_order_relaxed);
             removeFromRecentCache(idx, oldModTime);
@@ -443,6 +449,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
 
             removeTrigramsForRecord(idx);
             removePathTrigramsForRecord(idx);
+            removeExtensionForRecord(idx);
             tombstoneAt(idx);
             liveCount_.fetch_sub(1, std::memory_order_relaxed);
             it = pathIndex_.erase(it);
@@ -474,6 +481,7 @@ uint32_t SearchEngine::batchRescanPrefix(const std::string& pathPrefix,
         pathIndex_[me::toLower(fullPath)] = newIdx;
         addTrigramsForRecord(newIdx, namePool_.data(newIdx), namePool_.length(newIdx));
         addPathTrigramsForRecord(newIdx);
+        addExtensionForRecord(newIdx);
         if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
             dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
         }
@@ -498,6 +506,7 @@ void SearchEngine::updateByPathUnlocked(const std::string& fullPath, FileRecord&
         // Clean up trigram index (must happen before tombstoning namePool_)
         removeTrigramsForRecord(idx);
         removePathTrigramsForRecord(idx);
+        removeExtensionForRecord(idx);
         tombstoneAt(idx);
         pathIndex_.erase(it);
         liveCount_.fetch_sub(1, std::memory_order_relaxed);
@@ -524,6 +533,7 @@ void SearchEngine::updateByPathUnlocked(const std::string& fullPath, FileRecord&
     pathIndex_[me::toLower(newFullPath)] = newIdx;
     addTrigramsForRecord(newIdx, namePool_.data(newIdx), namePool_.length(newIdx));
     addPathTrigramsForRecord(newIdx);
+    addExtensionForRecord(newIdx);
     if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
         dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
     }
@@ -644,10 +654,11 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     }
     uint32_t cdLiveCount = static_cast<uint32_t>(cdTypes.size());
 
-    // Build trigram index, path trigram index, and recent cache outside any lock
+    // Build trigram index, path trigram index, extension index, and recent cache outside any lock
     auto cdTrigramIndex = buildTrigramIndexFromData(cdTypes, cdNamePool);
     auto cdPathTrigramIndex = buildPathTrigramIndexFromData(cdLowerPathPool);
     auto cdPathIdxToRecords = buildPathIdxToRecordsFromData(cdTypes, cdPathIndices, cdPathPool.entryCount());
+    auto cdExtensionIndex = buildExtensionIndexFromData(cdTypes, cdNamePool);
     auto cdRecentCache = buildRecentCacheFromData(cdTypes, cdModTimes, kRecentCacheSize);
 
     LOG_INFO("SearchEngine", "COW compaction Phase 3: swapping data, compacted "
@@ -690,6 +701,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         nameTrigramIndex_ = std::move(cdTrigramIndex);
         pathTrigramIndex_ = std::move(cdPathTrigramIndex);
         pathIdxToRecords_ = std::move(cdPathIdxToRecords);
+        extensionIndex_ = std::move(cdExtensionIndex);
         recentCache_ = std::move(cdRecentCache);
 
         // Replay new records appended during Phase 2
@@ -718,6 +730,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
             inodes_.push_back(oldInodes[i]);
             devIds_.push_back(oldDevIds[i]);
             addPathTrigramsForRecord(newIdx);
+            addExtensionForRecord(newIdx);
             cdLiveCount++;
             replayedAdds++;
         }
@@ -733,6 +746,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
             if (newIdx < types_.size() && types_[newIdx] != 0) {
                 removeTrigramsForRecord(newIdx);
                 removePathTrigramsForRecord(newIdx);
+                removeExtensionForRecord(newIdx);
                 time_t oldMod = static_cast<time_t>(modTimes_[newIdx]);
                 tombstoneAt(newIdx);
                 pathIndex_.erase(path);
@@ -856,6 +870,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
                 uint32_t oldIdx = existIt->second;
                 removeTrigramsForRecord(oldIdx);
                 removePathTrigramsForRecord(oldIdx);
+                removeExtensionForRecord(oldIdx);
                 tombstoneAt(oldIdx);
                 pathIndex_.erase(existIt);
                 liveCount_.fetch_sub(1, std::memory_order_relaxed);
@@ -877,6 +892,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             pathIndex_[lowerFull] = idx;
             addTrigramsForRecord(idx, namePool_.data(idx), namePool_.length(idx));
             addPathTrigramsForRecord(idx);
+            addExtensionForRecord(idx);
             if (idx / kRecordsPerPage >= dirtyPages_.size()) {
                 dirtyPages_.resize(idx / kRecordsPerPage + 1, false);
             }
@@ -890,6 +906,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             uint32_t idx = it->second;
             removeTrigramsForRecord(idx);
             removePathTrigramsForRecord(idx);
+            removeExtensionForRecord(idx);
             tombstoneAt(idx);
             pathIndex_.erase(it);
             liveCount_.fetch_sub(1, std::memory_order_relaxed);
@@ -902,6 +919,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
                 uint32_t oldIdx = it->second;
                 removeTrigramsForRecord(oldIdx);
                 removePathTrigramsForRecord(oldIdx);
+                removeExtensionForRecord(oldIdx);
                 tombstoneAt(oldIdx);
                 pathIndex_.erase(it);
                 liveCount_.fetch_sub(1, std::memory_order_relaxed);
@@ -923,6 +941,7 @@ void SearchEngine::replayWALEntries(std::vector<WALEntry>&& entries) {
             pathIndex_[lowerFull] = newIdx;
             addTrigramsForRecord(newIdx, namePool_.data(newIdx), namePool_.length(newIdx));
             addPathTrigramsForRecord(newIdx);
+            addExtensionForRecord(newIdx);
             if (newIdx / kRecordsPerPage >= dirtyPages_.size()) {
                 dirtyPages_.resize(newIdx / kRecordsPerPage + 1, false);
             }

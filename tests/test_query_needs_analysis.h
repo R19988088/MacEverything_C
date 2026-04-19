@@ -52,10 +52,11 @@ inline void runQueryNeedsAnalysisTests() {
         CHECK(needs.isPureFilter() == true);
     }
 
-    // 62f: ext: filter → needsName, NOT a pure filter
+    // 62f: ext: filter → hasExtFilter + needsName (evalFilter still needs name data)
     {
         auto node = QueryNode::makeFilter("ext", "txt");
         QueryNeeds needs = analyzeQueryNeeds(*node);
+        CHECK(needs.hasExtFilter == true);
         CHECK(needs.needsName == true);
         CHECK(needs.isPureFilter() == false);
     }

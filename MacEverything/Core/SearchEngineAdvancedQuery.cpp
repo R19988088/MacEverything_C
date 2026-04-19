@@ -691,26 +691,97 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     auto beforePhase = std::chrono::steady_clock::now();
 
     if (useTrigramIndex) {
-        // Trigram-filtered path: candidates are already small, single-threaded
-        for (size_t ci = 0; ci < candidates.size(); ci++) {
-            if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
-            uint32_t idx = candidates[ci];
-            if (records_[idx].type == 0) continue;
-            const char* nd = namePool_.data(idx);
-            uint16_t nl = namePool_.length(idx);
-            uint32_t pi = pathIndices_[idx];
-            const char* pd = lowerPathPool_.data(pi);
-            uint16_t pl = lowerPathPool_.length(pi);
-            if (!evalNode(*ast, records_[idx], nd, nl, pd, pl, pathBuf, regexCache)) continue;
-            uint8_t priority = 2;
-            if (!scoringTerm.empty()) {
-                if (me::simdContains(nd, nl, scoringTerm.data(), scoringTerm.size())) {
-                    priority = namePriority(nd, nl, scoringTerm.data(), scoringTerm.size());
-                } else {
-                    priority = 3;
+        // Trigram-filtered path with parallel dispatch + software prefetch
+        const size_t candidateCount = candidates.size();
+        constexpr size_t PARALLEL_THRESHOLD = 10000;
+        constexpr size_t PREFETCH_DIST = 8;
+
+        if (candidateCount >= PARALLEL_THRESHOLD) {
+            // Large candidate set — parallel dispatch_apply with prefetch
+            unsigned numThreads = std::thread::hardware_concurrency();
+            if (numThreads < 1) numThreads = 1;
+            if (numThreads > 32) numThreads = 32;
+            size_t chunkSize = (candidateCount + numThreads - 1) / numThreads;
+
+            __block std::vector<std::vector<Match>> threadResults(numThreads);
+            const auto* genPtr = &queryGeneration_;
+            uint64_t capturedGen = myGen;
+            const uint32_t* candidatesData = candidates.data();
+            const auto* astPtr = ast.get();
+            const auto& records = records_;
+            const auto& namePool = namePool_;
+            const auto& lowerPathPool = lowerPathPool_;
+            const auto& pathPool = pathPool_;
+            const auto& pIndices = pathIndices_;
+            const auto& regCache = regexCache;
+            const auto& sTerm = scoringTerm;
+
+            dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+            dispatch_apply(numThreads, queue, ^(size_t t) {
+                size_t start = t * chunkSize;
+                size_t end = std::min(start + chunkSize, candidateCount);
+                if (start >= end) return;
+                auto& local = threadResults[t];
+                std::vector<char> localPathBuf;
+                for (size_t ci = start; ci < end; ci++) {
+                    if ((ci & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
+                    if (ci + PREFETCH_DIST < end) {
+                        uint32_t futureIdx = candidatesData[ci + PREFETCH_DIST];
+                        __builtin_prefetch(&records[futureIdx], 0, 0);
+                        __builtin_prefetch(namePool.entries() + futureIdx, 0, 0);
+                    }
+                    uint32_t idx = candidatesData[ci];
+                    if (records[idx].type == 0) continue;
+                    const char* nd = namePool.data(idx);
+                    uint16_t nl = namePool.length(idx);
+                    uint32_t pi = pIndices[idx];
+                    const char* pd = lowerPathPool.data(pi);
+                    uint16_t pl = lowerPathPool.length(pi);
+                    if (!evalNode(*astPtr, records[idx], nd, nl, pd, pl, localPathBuf, regCache)) continue;
+                    uint8_t priority = 2;
+                    if (!sTerm.empty()) {
+                        if (me::simdContains(nd, nl, sTerm.data(), sTerm.size())) {
+                            priority = namePriority(nd, nl, sTerm.data(), sTerm.size());
+                        } else {
+                            priority = 3;
+                        }
+                    }
+                    local.push_back({idx, priority, static_cast<uint32_t>(pl + 1 + nl)});
                 }
+            });
+
+            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+            for (auto& v : threadResults) {
+                merged.insert(merged.end(), v.begin(), v.end());
             }
-            merged.push_back({idx, priority, static_cast<uint32_t>(pl + 1 + nl)});
+        } else {
+            // Small candidate set — single-threaded with prefetch
+            const uint32_t* candidatesData = candidates.data();
+            for (size_t ci = 0; ci < candidateCount; ci++) {
+                if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                if (ci + PREFETCH_DIST < candidateCount) {
+                    uint32_t futureIdx = candidatesData[ci + PREFETCH_DIST];
+                    __builtin_prefetch(&records_[futureIdx], 0, 0);
+                    __builtin_prefetch(namePool_.entries() + futureIdx, 0, 0);
+                }
+                uint32_t idx = candidatesData[ci];
+                if (records_[idx].type == 0) continue;
+                const char* nd = namePool_.data(idx);
+                uint16_t nl = namePool_.length(idx);
+                uint32_t pi = pathIndices_[idx];
+                const char* pd = lowerPathPool_.data(pi);
+                uint16_t pl = lowerPathPool_.length(pi);
+                if (!evalNode(*ast, records_[idx], nd, nl, pd, pl, pathBuf, regexCache)) continue;
+                uint8_t priority = 2;
+                if (!scoringTerm.empty()) {
+                    if (me::simdContains(nd, nl, scoringTerm.data(), scoringTerm.size())) {
+                        priority = namePriority(nd, nl, scoringTerm.data(), scoringTerm.size());
+                    } else {
+                        priority = 3;
+                    }
+                }
+                merged.push_back({idx, priority, static_cast<uint32_t>(pl + 1 + nl)});
+            }
         }
     } else {
         // Linear scan — parallelize with GCD dispatch_apply

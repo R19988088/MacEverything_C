@@ -8,9 +8,9 @@
 
 #include <vector>
 #include <string>
-#include "MacEverything/Core/CompiledGlob.h"
-#include "MacEverything/Core/QueryAST.h"
-#include "MacEverything/Core/ASTGlobTransform.h"
+#include "CompiledGlob.h"
+#include "QueryAST.h"
+#include "ASTGlobTransform.h"
 
 static void runCompiledGlobEvaltermTests() {
     std::cout << "\n╔══════════════════════════════════════════╗\n";

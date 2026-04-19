@@ -1,51 +1,51 @@
-# 107 — Structured Query Linear Scan Optimizations
+# 107 — 结构化查询线性扫描优化
 
-## Background
+## 背景
 
-Feature 104 benchmark revealed that SEGMENTS queries with short/common name patterns fall back to a linear scan of all ~4.5M records, taking 400-660ms. The linear scan had several inefficiencies:
+Feature 104 基准测试揭示，SEGMENTS 查询在名称模式较短或过于常见时会回退到对全部约 450 万条记录的线性扫描，耗时 400-660ms。该线性扫描存在以下低效问题：
 
-1. Single-threaded — no parallelism on multi-core machines
-2. Per-record path segment matching — `pathSegmentsMatch()` called for every record, even though most records share the same ~100K unique directory paths
-3. Redundant lowering — `pathSegmentsMatch()` manually lowered its input, but input from `lowerPathPool_` was already lowercase
-4. Heap allocation — `lowerPathPool_.str()` returned `std::string` (heap alloc) per record instead of zero-copy `string_view`
+1. 单线程 — 未在多核机器上利用并行
+2. 逐记录路径段匹配 — 每条记录都调用 `pathSegmentsMatch()`，但大多数记录共享相同的约 10 万条唯一目录路径
+3. 冗余小写转换 — `pathSegmentsMatch()` 内部手动做小写转换，但来自 `lowerPathPool_` 的输入已经是小写
+4. 堆分配 — `lowerPathPool_.str()` 每条记录返回 `std::string`（堆分配），而非零拷贝的 `string_view`
 
-## Changes
+## 变更内容
 
-### Optimization 1: `dispatch_apply` (GCD) Parallelism
-- Replaced single-threaded loop with `dispatch_apply` using `hardware_concurrency()` threads (capped at 32)
-- Each thread processes a chunk of records into a local `vector<Match>`, merged after completion
-- Matches the existing pattern in `queryLinearScanPath()` and `queryLinearScan()`
+### 优化 1：`dispatch_apply` (GCD) 并行化
+- 将单线程循环替换为使用 `hardware_concurrency()` 个线程（上限 32）的 `dispatch_apply`
+- 每个线程将一批记录处理到本地 `vector<Match>` 中，完成后合并
+- 与 `queryLinearScanPath()` 和 `queryLinearScan()` 中的现有模式保持一致
 
-### Optimization 2: `pathMatchCache` Pre-computation
-- Pre-compute path segment matching over ~100K unique paths once (O(100K))
-- Store results in `vector<bool> pathMatchCache` indexed by pathIdx
-- Each record lookup becomes O(1) via `pathMatchCache[pathIndices_[i]]` instead of calling `pathSegmentsMatch()` per record
+### 优化 2：`pathMatchCache` 预计算
+- 对约 10 万条唯一路径预先计算路径段匹配（O(100K)）
+- 结果存入按 pathIdx 索引的 `vector<bool> pathMatchCache`
+- 每条记录的查找从调用 `pathSegmentsMatch()` 降为 O(1) 的 `pathMatchCache[pathIndices_[i]]`
 
-### Optimization 3: Remove Redundant Lowering
-- Changed `pathSegmentsMatch()` parameter from `const std::string&` to `std::string_view`
-- Removed the manual lowercase conversion loop inside the function
-- Input from `lowerPathPool_` is already lowercase, so the lowering was pure waste
+### 优化 3：移除冗余小写转换
+- 将 `pathSegmentsMatch()` 参数从 `const std::string&` 改为 `std::string_view`
+- 移除函数内部的手动小写转换循环
+- 来自 `lowerPathPool_` 的输入已经是小写，原先的转换纯属浪费
 
-### Optimization 4: `string_view` Instead of `std::string`
-- `queryStructuredNameAnchor()` and `queryStructuredPathAnchor()` now pass `lowerPathPool_.view()` directly to `pathSegmentsMatch()` instead of constructing temporary `std::string`
-- Eliminates heap allocation per candidate record
+### 优化 4：用 `string_view` 替代 `std::string`
+- `queryStructuredNameAnchor()` 和 `queryStructuredPathAnchor()` 现在直接将 `lowerPathPool_.view()` 传给 `pathSegmentsMatch()`，不再构造临时 `std::string`
+- 消除每条候选记录的堆分配
 
-## Files Modified
+## 修改文件
 
-- `MacEverything/Core/SearchEngine.h` — Updated `pathSegmentsMatch` declaration to accept `string_view`
-- `MacEverything/Core/SearchEngineStructuredQuery.cpp` — All 4 optimizations applied to `queryStructured()`, `queryStructuredNameAnchor()`, `queryStructuredPathAnchor()`, and `pathSegmentsMatch()`
-- `tests/test_structured_query.h` — Added tests 26-28 for parallel scan, pathMatchCache, and lowercase path matching
+- `MacEverything/Core/SearchEngine.h` — 更新 `pathSegmentsMatch` 声明以接受 `string_view`
+- `MacEverything/Core/SearchEngineStructuredQuery.cpp` — 全部 4 项优化应用于 `queryStructured()`、`queryStructuredNameAnchor()`、`queryStructuredPathAnchor()` 和 `pathSegmentsMatch()`
+- `tests/test_structured_query.h` — 新增测试 26-28，覆盖并行扫描、pathMatchCache 和小写路径匹配
 
-## Tests
+## 测试
 
-- Test 26: Parallel linear scan consistency — verifies `dispatch_apply` produces correct results
-- Test 27: pathMatchCache deduplication — 50 files sharing same dir, correct filtering
-- Test 28: Already-lowercase path matching — verifies no redundant lowering needed
-- All 11419 tests pass
+- 测试 26：并行线性扫描一致性 — 验证 `dispatch_apply` 产生正确结果
+- 测试 27：pathMatchCache 去重 — 50 个文件共享同一目录，正确过滤
+- 测试 28：已为小写的路径匹配 — 验证无需冗余小写转换
+- 全部 11419 个测试通过
 
-## Expected Performance Impact
+## 预期性能提升
 
-These optimizations target the linear scan fallback path, which activates when no segment has good trigram selectivity. Combined effect:
-- Multi-threading: ~Nx speedup on N-core machines
-- pathMatchCache: reduces per-record work from O(path_components) to O(1)
-- Eliminated lowering + string_view: removes heap allocation and redundant computation per record
+这些优化针对线性扫描回退路径，该路径在没有任何段具有良好 trigram 选择性时激活。综合效果：
+- 多线程：在 N 核机器上约 Nx 加速
+- pathMatchCache：每条记录的开销从 O(path_components) 降为 O(1)
+- 消除小写转换 + string_view：移除每条记录的堆分配和冗余计算

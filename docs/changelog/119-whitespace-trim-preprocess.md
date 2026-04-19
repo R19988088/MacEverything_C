@@ -1,59 +1,44 @@
-# 119 — Add Whitespace Trim to `preprocessQuery()`
+# 119 — 在 `preprocessQuery()` 中添加空白字符修剪
 
-## Summary
+## 概述
 
-Added leading/trailing whitespace stripping as the first step in
-`preprocessQuery()`, ensuring that queries like `"  hello  "` behave
-identically to `"hello"` regardless of input source.
+在 `preprocessQuery()` 的第一步添加了首尾空白字符去除功能，确保 `"  hello  "` 这样的查询与 `"hello"` 行为完全一致，不受输入来源影响。
 
-## Motivation
+## 动机
 
-User input may contain accidental whitespace — from the search bar,
-HTTP API, or clipboard paste. Without trimming, this whitespace could
-affect tilde expansion (a leading space prevents `~` detection), glob
-pattern matching, and slash-based path detection. Centralising the
-trim in `preprocessQuery()` provides consistent behaviour across all
-query paths.
+用户输入中可能包含意外的空白字符——来自搜索栏、HTTP API 或剪贴板粘贴。如果不进行修剪，这些空白字符可能影响波浪号展开（前导空格会阻止 `~` 检测）、glob 模式匹配以及基于斜杠的路径检测。将修剪逻辑集中在 `preprocessQuery()` 中可以确保所有查询路径的行为一致。
 
-## Changes
+## 变更内容
 
 ### `MacEverything/Core/SearchEngineQuery.cpp`
 
-- **Added** step 0 in `preprocessQuery()`: strip leading/trailing
-  whitespace (`" \t\r\n"`) using `find_first_not_of` /
-  `find_last_not_of`. All-whitespace input returns an empty string.
-- **Added** early-return guard in `query()`: after `preprocessQuery()`
-  returns, check for empty result and return `{}` immediately. This
-  handles the case where the raw input is non-empty but
-  all-whitespace.
+- **新增** `preprocessQuery()` 的第 0 步：使用 `find_first_not_of` / `find_last_not_of` 去除首尾空白字符（`" \t\r\n"`）。全空白输入返回空字符串。
+- **新增** `query()` 中的提前返回判断：`preprocessQuery()` 返回后检查是否为空，如果为空则立即返回 `{}`。用于处理原始输入非空但全为空白字符的情况。
 
-### `tests/test_whitespace_trim.h` (Part 66)
+### `tests/test_whitespace_trim.h`（Part 66）
 
-New test file with 7 test cases:
-1. `"  hello  "` matches same count as `"hello"`
-2. `"\t hello \n"` matches same count as `"hello"`
-3. `"   "` (all-whitespace) returns 0 results
-4. `" "` (single space) returns 0 results
-5. Interior space preserved: `"  hello world  "` same as `"hello world"`
-6. Trim + tilde combined: `"  ~/Downloads/*.txt  "` same as `"~/Downloads/*.txt"`
-7. Trim + tilde result correctness: matches `f1.txt`
+新增测试文件，包含 7 个测试用例：
+1. `"  hello  "` 与 `"hello"` 匹配数量相同
+2. `"\t hello \n"` 与 `"hello"` 匹配数量相同
+3. `"   "`（全空白）返回 0 个结果
+4. `" "`（单个空格）返回 0 个结果
+5. 内部空格保留：`"  hello world  "` 与 `"hello world"` 结果相同
+6. 修剪 + 波浪号组合：`"  ~/Downloads/*.txt  "` 与 `"~/Downloads/*.txt"` 结果相同
+7. 修剪 + 波浪号结果正确性：匹配 `f1.txt`
 
 ### `test_all.cpp`
 
-- Added `#include "tests/test_whitespace_trim.h"`
-- Registered Part 66 in dispatch table and `--fast` suite
-- Updated help text
+- 添加 `#include "tests/test_whitespace_trim.h"`
+- 在调度表和 `--fast` 套件中注册 Part 66
+- 更新帮助文本
 
-## Verification
+## 验证
 
-- **Unit tests**: Parts 65 + 66 (14 tests) — all pass.
-- **Fast suite**: 11,685 tests — all pass, 0 failures.
-- **Build**: `xcodebuild` Release build succeeded.
-- **HTTP**: Verified via `curl` with whitespace-padded queries.
+- **单元测试**：Parts 65 + 66（14 个测试）— 全部通过。
+- **快速套件**：11,685 个测试 — 全部通过，0 个失败。
+- **构建**：`xcodebuild` Release 构建成功。
+- **HTTP**：通过 `curl` 使用包含空白字符的查询进行验证。
 
-## Risk
+## 风险
 
-Minimal — pure input normalisation. All existing tests continue to
-pass. The only behavioural change is that all-whitespace queries now
-return empty results immediately instead of flowing through the full
-query pipeline.
+极低 — 纯输入规范化。所有现有测试继续通过。唯一的行为变更是全空白查询现在会立即返回空结果，而不是流经完整的查询管道。

@@ -1,61 +1,61 @@
-# 093 - Refactor SearchEngine::query() complexity
+# 093 — 重构 SearchEngine::query() 复杂度
 
-## Summary
+## 概述
 
-Refactored `SearchEngine::query()` from a monolithic ~640-line method with 7 levels of nesting into a thin dispatcher (~120 lines) plus 4 focused strategy methods and 3 static helpers. Pure structural refactoring with zero behavior change.
+将 `SearchEngine::query()` 从一个约 640 行、7 层嵌套的巨型方法，重构为一个精简的调度器（约 120 行）加 4 个聚焦的策略方法和 3 个静态辅助函数。纯结构性重构，行为零变更。
 
-## Motivation
+## 动机
 
-The original `query()` method was extremely difficult to understand and modify:
-- ~640 lines in a single function
-- 7 levels of nested control flow
-- Duplicated code patterns (priority calculation x8, posting list intersection x4, path building x6)
-- Mixed concerns: trigram lookup, name matching, path matching, slash-split handling, linear scan, sorting
+原始 `query()` 方法极难理解和修改：
+- 单个函数约 640 行
+- 7 层嵌套控制流
+- 重复代码模式（优先级计算 x8、posting list 交集 x4、路径拼接 x6）
+- 职责混杂：trigram 查找、名称匹配、路径匹配、斜杠分割处理、线性扫描、排序
 
-## Changes
+## 变更内容
 
-### Extracted static helpers
+### 提取静态辅助函数
 
-1. **`namePriority()`** — computes match priority (0=exact, 1=starts-with, 2=contains) from name data, eliminating 8 duplicated priority blocks.
+1. **`namePriority()`** — 根据名称数据计算匹配优先级（0=精确匹配、1=前缀匹配、2=包含匹配），消除 8 处重复的优先级计算代码块。
 
-2. **`intersectPostingLists()`** — intersects trigram posting lists for a keyword, eliminating 4 duplicated intersection blocks across name and path trigram lookups.
+2. **`intersectPostingLists()`** — 对关键词的 trigram posting list 取交集，消除名称和路径 trigram 查找中 4 处重复的交集代码块。
 
-3. **`buildFullPathBuf()`** — assembles `path + '/' + name` into a reusable buffer with 2x growth strategy, eliminating 6 duplicated path-build blocks. Uses pre-lowered path data from `lowerPathPool_` (no runtime `simdToLowerAscii` needed).
+3. **`buildFullPathBuf()`** — 将 `path + '/' + name` 拼接到可复用缓冲区，采用 2 倍增长策略，消除 6 处重复的路径拼接代码块。使用 `lowerPathPool_` 中预转换的小写路径数据（无需运行时调用 `simdToLowerAscii`）。
 
-### Extracted strategy methods
+### 提取策略方法
 
-4. **`querySlashSplit()`** — handles queries containing `/` by splitting into path and name components, using both trigram indices for lookup.
+4. **`querySlashSplit()`** — 处理包含 `/` 的查询，将其拆分为路径和名称两部分，同时使用两个 trigram 索引进行查找。
 
-5. **`queryPathTrigram()`** — handles path-only trigram matching for queries that didn't match via name trigrams, using `pathTrigramIndex_` for lookup.
+5. **`queryPathTrigram()`** — 处理仅路径的 trigram 匹配，用于名称 trigram 未命中的查询，使用 `pathTrigramIndex_` 进行查找。
 
-6. **`queryLinearScanPath()`** — linear scan fallback for path matching when trigrams are unavailable or incomplete. Includes path deduplication optimization from `lowerPathPool_`.
+6. **`queryLinearScanPath()`** — 当 trigram 不可用或不完整时的线性扫描回退方案，用于路径匹配。包含基于 `lowerPathPool_` 的路径去重优化。
 
-7. **`queryLinearScan()`** — full linear scan for glob patterns and short keywords (< 3 chars). Uses GCD `dispatch_apply` for parallel execution with path dedup optimization.
+7. **`queryLinearScan()`** — 用于 glob 模式和短关键词（< 3 字符）的全量线性扫描。使用 GCD `dispatch_apply` 并行执行，并应用路径去重优化。
 
-### query() becomes a thin dispatcher
+### query() 变为精简调度器
 
-The main `query()` method now:
-1. Validates input, acquires lock, bumps generation counter
-2. Phase 1: trigram name matching (inline, ~20 lines)
-3. Phase 2: delegates to one of the 4 strategy methods based on query characteristics
-4. Sorts and truncates results
+重构后的 `query()` 方法：
+1. 验证输入、获取锁、递增 generation 计数器
+2. 第一阶段：trigram 名称匹配（内联，约 20 行）
+3. 第二阶段：根据查询特征委托给 4 个策略方法之一
+4. 排序并截断结果
 
-### Integration with lowerPathPool_
+### 与 lowerPathPool_ 的集成
 
-All strategy methods use `lowerPathPool_` for zero-cost lowercase path comparison, consistent with the optimization introduced in changelog 090. Path deduplication (pre-scan unique paths into a `pathMatchCache` vector for O(1) per-record lookup) is applied in both `queryLinearScanPath` and `queryLinearScan`.
+所有策略方法均使用 `lowerPathPool_` 实现零成本小写路径比较，与 changelog 090 引入的优化保持一致。路径去重（预扫描唯一路径到 `pathMatchCache` 向量，实现 O(1) 的逐记录查找）同时应用于 `queryLinearScanPath` 和 `queryLinearScan`。
 
-## Files changed
+## 变更文件
 
-- `MacEverything/Core/SearchEngine.h` — added `Match` struct, 4 strategy method declarations, 3 static helper declarations
-- `MacEverything/Core/SearchEngine.cpp` — extracted helpers and strategy methods, rewrote `query()` as dispatcher
+- `MacEverything/Core/SearchEngine.h` — 添加 `Match` 结构体、4 个策略方法声明、3 个静态辅助函数声明
+- `MacEverything/Core/SearchEngine.cpp` — 提取辅助函数和策略方法，将 `query()` 重写为调度器
 
-## Testing
+## 测试
 
-- All 10,969 fast unit tests pass (0 failures)
-- Search-specific tests pass: path search, trigram, query cancel, SIMD, lowerPathPool, ranking, path table
-- HTTP API verified: trigram search, slash-split search, linear scan all return correct results
-- Build and package succeed on master
+- 全部 10,969 个快速单元测试通过（0 失败）
+- 搜索相关测试通过：路径搜索、trigram、查询取消、SIMD、lowerPathPool、排名、路径表
+- HTTP API 验证通过：trigram 搜索、斜杠分割搜索、线性扫描均返回正确结果
+- master 分支上构建和打包成功
 
-## Risk
+## 风险
 
-Zero — pure refactoring with no behavior change. All original logic preserved in the extracted methods.
+零 — 纯结构性重构，行为无变更。所有原始逻辑完整保留在提取的方法中。

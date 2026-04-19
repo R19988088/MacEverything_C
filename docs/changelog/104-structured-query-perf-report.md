@@ -1,100 +1,100 @@
-# 104 - Structured Query Performance Report
+# 104 - 结构化查询性能报告
 
-## Summary
+## 概述
 
-Performance benchmark of the node-centric structured query system (Feature 103) against a real 4.45M-record index. Tests cover all four query modes: PLAIN, SEGMENTS, DIR_EXACT, DIR_LIST.
+对以节点为中心的结构化查询系统（Feature 103）在真实 445 万条记录索引上进行的性能基准测试。测试覆盖全部四种查询模式：PLAIN、SEGMENTS、DIR_EXACT、DIR_LIST。
 
-## Test Environment
+## 测试环境
 
-- **Records**: 4,457,162 live / 5,027,055 total
-- **Machine**: macOS (Darwin 24.3.0)
-- **Build**: Release (-O2), clang++/c++20
-- **Date**: 2026-04-19
+- **记录数**：4,457,162 存活 / 5,027,055 总计
+- **机器**：macOS (Darwin 24.3.0)
+- **构建**：Release (-O2), clang++/c++20
+- **日期**：2026-04-19
 
-## Results Summary
+## 结果汇总
 
-### Fast Queries (< 5ms) - Working Well
+### 快速查询（< 5ms）— 表现良好
 
-| Query | Mode | Avg(ms) | Results | Notes |
+| 查询 | 模式 | 平均耗时(ms) | 结果数 | 备注 |
 |---|---|---|---|---|
-| `SearchEngine` | PLAIN/trigram | 0.55 | 100 | Trigram high selectivity |
-| `StructuredQueryParser` | PLAIN/trigram | 0.17 | 1 | Rare keyword, near-instant |
-| `qzxwvuts_nonexist` | PLAIN/trigram | 0.03 | 0 | Trigram early exit |
-| `/brew` | SEGMENTS | 0.24 | 100 | 4-char name, trigram effective |
-| `local/brew` | SEGMENTS | 0.72 | 100 | Name trigram + path constraint |
-| `/usr/bin/zsh` | SEGMENTS | 0.95 | 0 | 3-char name, trigram works (selective) |
-| `Core/SearchEngine` | SEGMENTS | 3.20 | 100 | Long name, trigram + path |
-| `/etc/*` | DIR_LIST | 0.22 | 100 | O(1) children lookup |
-| `/usr/local/*` | DIR_LIST | 1.69 | 31 | O(1) lookup, few children |
-| `/etc/` | DIR_EXACT | 0.21 | 100 | Exact match, fast |
-| `/usr/local/` | DIR_EXACT | 1.79 | 8 | Exact match |
+| `SearchEngine` | PLAIN/trigram | 0.55 | 100 | trigram 高选择性 |
+| `StructuredQueryParser` | PLAIN/trigram | 0.17 | 1 | 稀有关键词，近乎瞬时 |
+| `qzxwvuts_nonexist` | PLAIN/trigram | 0.03 | 0 | trigram 提前退出 |
+| `/brew` | SEGMENTS | 0.24 | 100 | 4 字符名称，trigram 有效 |
+| `local/brew` | SEGMENTS | 0.72 | 100 | 名称 trigram + 路径约束 |
+| `/usr/bin/zsh` | SEGMENTS | 0.95 | 0 | 3 字符名称，trigram 有效（高选择性） |
+| `Core/SearchEngine` | SEGMENTS | 3.20 | 100 | 长名称，trigram + 路径 |
+| `/etc/*` | DIR_LIST | 0.22 | 100 | O(1) 子项查找 |
+| `/usr/local/*` | DIR_LIST | 1.69 | 31 | O(1) 查找，子项较少 |
+| `/etc/` | DIR_EXACT | 0.21 | 100 | 精确匹配，快速 |
+| `/usr/local/` | DIR_EXACT | 1.79 | 8 | 精确匹配 |
 
-### Slow Queries (> 100ms) - Performance Issues Identified
+### 慢查询（> 100ms）— 已识别性能问题
 
-| Query | Mode | Avg(ms) | Results | Root Cause |
+| 查询 | 模式 | 平均耗时(ms) | 结果数 | 根因 |
 |---|---|---|---|---|
-| `test` | PLAIN/linear | 119.77 | 100 | Trigram candidates too many, linear fallback |
-| `ls` | PLAIN/linear | 152.22 | 100 | 2-char, linear scan required |
-| `bin/ls` | SEGMENTS | 457.22 | 100 | Name "ls" 2-char, full linear scan + pathSegmentsMatch per record |
-| `local/python` | SEGMENTS | 413.13 | 100 | Name "python" trigram too many candidates, linear fallback |
-| `/usr/local/bin` | SEGMENTS | 623.55 | 100 | Name "bin" 3-char but too common, linear + path check |
-| `usr/bin` | SEGMENTS | 658.91 | 100 | Same: "bin" too common for trigram |
-| `/usr/bin/*` | DIR_LIST | 66.26 | 100 | "bin" is a common dir name, many matching dirs to check |
+| `test` | PLAIN/linear | 119.77 | 100 | trigram 候选过多，回退到线性扫描 |
+| `ls` | PLAIN/linear | 152.22 | 100 | 2 字符，需线性扫描 |
+| `bin/ls` | SEGMENTS | 457.22 | 100 | 名称 "ls" 仅 2 字符，全量线性扫描 + 逐记录 pathSegmentsMatch |
+| `local/python` | SEGMENTS | 413.13 | 100 | 名称 "python" trigram 候选过多，回退到线性扫描 |
+| `/usr/local/bin` | SEGMENTS | 623.55 | 100 | 名称 "bin" 虽有 3 字符但过于常见，线性扫描 + 路径检查 |
+| `usr/bin` | SEGMENTS | 658.91 | 100 | 同上："bin" 对 trigram 来说过于常见 |
+| `/usr/bin/*` | DIR_LIST | 66.26 | 100 | "bin" 是常见目录名，需检查多个匹配目录 |
 
-## Root Cause Analysis
+## 根因分析
 
-### Primary Issue: Linear Scan Fallback in Structured Queries
+### 主要问题：结构化查询中的线性扫描回退
 
-The structured query path (`queryStructured()`) falls back to linear scan when:
-1. `namePattern` is < 3 characters (cannot use trigram index)
-2. Trigram candidates exceed `totalSize / 67` threshold (~67K for 4.5M records)
+结构化查询路径（`queryStructured()`）在以下情况下回退到线性扫描：
+1. `namePattern` 不足 3 个字符（无法使用 trigram 索引）
+2. trigram 候选数超过 `totalSize / 67` 阈值（445 万条记录时约 ~67K）
 
-**Why structured linear scan is slower than PLAIN linear scan:**
+**为什么结构化线性扫描比 PLAIN 线性扫描更慢：**
 
-In PLAIN linear scan, the per-record cost is primarily `simdContains(name)` (~few ns).
+在 PLAIN 线性扫描中，每条记录的开销主要是 `simdContains(name)`（约数纳秒）。
 
-In structured linear scan, each record additionally requires:
-- `lowerPathPool_.str(pathIndices_[i])` — constructs a `std::string` from the path pool (memory allocation!)
-- `pathSegmentsMatch()` — walks path components right-to-left with string operations
+在结构化线性扫描中，每条记录还额外需要：
+- `lowerPathPool_.str(pathIndices_[i])` — 从路径池构造 `std::string`（堆内存分配！）
+- `pathSegmentsMatch()` — 从右到左遍历路径分量进行字符串操作
 
-This makes structured linear scan **3-4x slower** than PLAIN linear scan for the same dataset:
-- PLAIN `ls` (2-char): ~150ms
-- SEGMENTS `bin/ls` (name "ls"): ~457ms
+这使得结构化线性扫描比相同数据集上的 PLAIN 线性扫描**慢 3-4 倍**：
+- PLAIN `ls`（2 字符）：~150ms
+- SEGMENTS `bin/ls`（名称 "ls"）：~457ms
 
-### Secondary Issue: Negative phase1Ms in PLAIN trigram-split path
+### 次要问题：PLAIN trigram-split 路径中 phase1Ms 为负值
 
-When PLAIN queries fall to `trigram-split` (trigram intersection runs but candidates exceed threshold), `phase1Ms` reports negative values (e.g., -2.84ms). The fix from Feature 103 only covers structured queries, not this PLAIN-mode path.
+当 PLAIN 查询降级到 `trigram-split`（trigram 交集运行但候选数超阈值）时，`phase1Ms` 报告负值（如 -2.84ms）。Feature 103 的修复仅覆盖了结构化查询，未覆盖此 PLAIN 模式路径。
 
-## Performance Characteristics by Mode
+## 各模式性能特征
 
-### PLAIN Mode
-- **Trigram (selective keywords)**: < 1ms — excellent
-- **Linear fallback (common keywords/short queries)**: 100-250ms — acceptable for interactive use
-- **No match**: < 0.1ms — trigram early exit
+### PLAIN 模式
+- **trigram（高选择性关键词）**：< 1ms — 优秀
+- **线性扫描回退（常见关键词/短查询）**：100-250ms — 可接受的交互延迟
+- **无匹配**：< 0.1ms — trigram 提前退出
 
-### SEGMENTS Mode
-- **With trigram**: < 5ms — excellent
-- **Linear fallback**: 400-700ms — **too slow for interactive use**
-- **No match**: < 0.1ms
+### SEGMENTS 模式
+- **使用 trigram**：< 5ms — 优秀
+- **线性扫描回退**：400-700ms — **对交互使用来说过慢**
+- **无匹配**：< 0.1ms
 
-### DIR_LIST Mode
-- **Small directories**: < 2ms — excellent (O(1) pathIdxToRecords_ lookup)
-- **Common dir names (e.g., "bin")**: ~66ms — moderate, multiple dirs to enumerate
-- **No match**: < 0.1ms
+### DIR_LIST 模式
+- **小目录**：< 2ms — 优秀（O(1) pathIdxToRecords_ 查找）
+- **常见目录名（如 "bin"）**：~66ms — 中等，需枚举多个目录
+- **无匹配**：< 0.1ms
 
-### DIR_EXACT Mode
-- **All cases tested**: < 2ms — excellent (exact name match very selective)
+### DIR_EXACT 模式
+- **所有测试场景**：< 2ms — 优秀（精确名称匹配选择性很高）
 
-## Optimization Opportunities
+## 优化方向
 
-1. **Path trigram index for structured queries**: When name trigram fails, use `pathTrigramIndex_` to narrow candidates before linear scan. For `usr/bin`, instead of scanning all 4.5M records, first intersect path trigrams for path segments (e.g., "usr") to get a much smaller candidate set.
+1. **结构化查询的路径 trigram 索引**：当名称 trigram 失效时，使用 `pathTrigramIndex_` 在线性扫描前缩小候选范围。对于 `usr/bin`，无需扫描全部 450 万条记录，而是先对路径段（如 "usr"）求 trigram 交集得到更小的候选集。
 
-2. **Avoid string allocation in pathSegmentsMatch**: Currently `lowerPathPool_.str()` allocates a new `std::string`. Could use a `std::string_view`-based approach or match directly against the pool buffer.
+2. **避免 pathSegmentsMatch 中的字符串分配**：当前 `lowerPathPool_.str()` 会分配新的 `std::string`。可改用基于 `std::string_view` 的方式或直接在池缓冲区上匹配。
 
-3. **Early termination with maxResults**: When enough results are found (e.g., 100), stop scanning. Currently the linear scan continues through all records even after finding enough matches.
+3. **达到 maxResults 时提前终止**：找到足够结果（如 100 条）后停止扫描。当前线性扫描即使已找到足够匹配也会继续遍历所有记录。
 
-4. **Combined name+path trigram intersection**: For queries like `usr/bin`, intersect path trigrams for "usr" with name trigrams for "bin" to get a very small candidate set.
+4. **名称+路径 trigram 联合交集**：对于 `usr/bin` 这类查询，将 "usr" 的路径 trigram 与 "bin" 的名称 trigram 求交集，得到非常小的候选集。
 
-## Conclusion
+## 结论
 
-The node-centric query system performs excellently when trigram acceleration is effective (< 5ms for SEGMENTS, < 2ms for DIR_LIST/DIR_EXACT). The main performance gap is in the linear scan fallback for short or common name patterns, where structured queries are 3-4x slower than PLAIN mode due to per-record path string construction and segment matching. This is a known limitation and potential area for future optimization.
+以节点为中心的查询系统在 trigram 加速有效时表现优异（SEGMENTS < 5ms，DIR_LIST/DIR_EXACT < 2ms）。主要性能差距在于短或常见名称模式的线性扫描回退，此时结构化查询比 PLAIN 模式慢 3-4 倍，原因是逐记录的路径字符串构造和段匹配开销。这是已知的局限性，也是未来优化的潜在方向。

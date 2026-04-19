@@ -22,6 +22,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/screen-shot.jpg" alt="MacEverything Screenshot" width="720" />
+</p>
+
 ## 为什么选择 MacEverything？
 
 Spotlight 太慢，`find` 更慢，`mdfind` 会漏文件。MacEverything 能在数秒内索引 **整块磁盘 500 万+ 文件**，然后以 **不到 5ms** 的延迟响应每一次搜索。

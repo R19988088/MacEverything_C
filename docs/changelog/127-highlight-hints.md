@@ -1,19 +1,19 @@
-# 127 - Highlight Hints: AST-Based Search Result Highlighting
+# 127 - 高亮提示：基于 AST 的搜索结果高亮
 
-## Problem
+## 问题
 
-The existing search result highlighting system had a fundamental architecture flaw: the Swift-side `QueryHighlightTokenizer.extractSearchKeywords()` re-parsed raw search text to extract highlight keywords. It only extracted `.word` and `.quoted` tokens, losing critical information:
+现有的搜索结果高亮系统存在根本性的架构缺陷：Swift 侧的 `QueryHighlightTokenizer.extractSearchKeywords()` 重新解析原始搜索文本来提取高亮关键词。它仅提取 `.word` 和 `.quoted` 类型的 token，丢失了关键信息：
 
-- **Modifier filters** (case:Hello, regex:pattern, ww:test) — arguments classified as filterArg and discarded, causing no highlighting
-- **Tilde queries** (~/Documents) — Swift side didn't expand `~` to `$HOME`
-- **NOT operator** (!term) — negated words were still highlighted
-- **path: filter** — arguments weren't highlighted
+- **修饰符过滤器**（case:Hello, regex:pattern, ww:test）— 参数被归类为 filterArg 而丢弃，导致无法高亮
+- **波浪号查询**（~/Documents）— Swift 侧未将 `~` 展开为 `$HOME`
+- **NOT 运算符**（!term）— 被否定的词仍然被高亮
+- **path: 过滤器** — 参数未被高亮
 
-## Solution
+## 方案
 
-Extract structured highlight hints directly from the C++ query AST, which already contains all the information needed for correct highlighting after `preprocessQuery()` → `QueryParser::parse()` → `transformSlashTerms()` → `transformGlobTerms()`.
+直接从 C++ 查询 AST 中提取结构化的高亮提示，AST 在经过 `preprocessQuery()` → `QueryParser::parse()` → `transformSlashTerms()` → `transformGlobTerms()` 处理后已包含正确高亮所需的全部信息。
 
-### Data Flow
+### 数据流
 
 ```
 searchText → bridge.parseHighlightHints(query)
@@ -23,86 +23,86 @@ searchText → bridge.parseHighlightHints(query)
   → ResultRow → highlightCrossMatches(path:name:hints:...)
 ```
 
-## Implementation
+## 实现
 
-### Step 1: C++ — HighlightHintExtractor.h (new file)
+### 第 1 步：C++ — HighlightHintExtractor.h（新文件）
 
-- `HintField` enum: NAME, PATH, ANY
-- `HighlightHint` struct: text + field + mode + caseSensitive
-- `collectHighlightHints()`: AST walker that skips NOT subtrees, collects TERM nodes, extracts path:/file: FILTER arguments
-- `extractHighlightHints()`: Convenience function replicating the full query pipeline
+- `HintField` 枚举：NAME, PATH, ANY
+- `HighlightHint` 结构体：text + field + mode + caseSensitive
+- `collectHighlightHints()`：AST 遍历器，跳过 NOT 子树，收集 TERM 节点，提取 path:/file: FILTER 参数
+- `extractHighlightHints()`：便捷函数，复用完整的查询管道
 
-### Step 2: Bridge — MEHighlightHint + parseHighlightHints:
+### 第 2 步：Bridge — MEHighlightHint + parseHighlightHints:
 
-- `MEHighlightHint` ObjC class with readonly properties (text, field, matchMode, caseSensitive as uint8_t)
-- `parseHighlightHints:` method on MacSearchBridge calling C++ extractHighlightHints()
+- `MEHighlightHint` ObjC 类，包含只读属性（text, field, matchMode, caseSensitive 均为 uint8_t）
+- MacSearchBridge 上的 `parseHighlightHints:` 方法调用 C++ 的 extractHighlightHints()
 
-### Step 3: Swift — HighlightHint + ViewModel
+### 第 3 步：Swift — HighlightHint + ViewModel
 
-- `HighlightHint` struct with `#if !TESTING` guard for standalone test compilation
-- `highlightHints` computed property replaces old `highlightKeyword` in SearchViewModel
+- `HighlightHint` 结构体，使用 `#if !TESTING` 守卫以支持独立测试编译
+- `highlightHints` 计算属性替换 SearchViewModel 中旧的 `highlightKeyword`
 
-### Step 4: ResultRow + ContentView
+### 第 4 步：ResultRow + ContentView
 
-- ResultRow: `keyword: String` → `hints: [HighlightHint]`
-- ContentView: passes `viewModel.highlightHints` to ResultRow
+- ResultRow：`keyword: String` → `hints: [HighlightHint]`
+- ContentView：将 `viewModel.highlightHints` 传递给 ResultRow
 
-### Step 5: TextHighlight — Hint-Based Highlighting
+### 第 5 步：TextHighlight — 基于提示的高亮
 
-- `computeRangesForHint()`: mode-aware range computation (substring, glob, regex, wholeWord, wholeFilename)
-- `computeHighlightRanges()`: aggregates ranges from multiple hints with merge/dedup
-- `highlightMatches(in:hints:...)`: SwiftUI Text builder using hint-based ranges
-- `highlightCrossMatches(path:name:hints:...)`: field-aware dispatching (NAME→name only, PATH→path only, ANY→both)
-- `mapFullPathRanges()`: maps fullPath ranges back to path/name components
+- `computeRangesForHint()`：模式感知的范围计算（substring、glob、regex、wholeWord、wholeFilename）
+- `computeHighlightRanges()`：聚合多个提示的范围并进行合并去重
+- `highlightMatches(in:hints:...)`：使用基于提示的范围构建 SwiftUI Text
+- `highlightCrossMatches(path:name:hints:...)`：字段感知的分发（NAME→仅名称，PATH→仅路径，ANY→两者）
+- `mapFullPathRanges()`：将 fullPath 范围映射回 path/name 组件
 
-### Step 6: Cleanup
+### 第 6 步：清理
 
-- Removed `highlightKeyword` from SearchViewModel (replaced by `highlightHints`)
-- Kept `QueryHighlightTokenizer.extractSearchKeywords()` (still used by search input syntax coloring)
-- `contentKeyword` unchanged (content search doesn't go through AST pipeline)
+- 从 SearchViewModel 中移除 `highlightKeyword`（由 `highlightHints` 替代）
+- 保留 `QueryHighlightTokenizer.extractSearchKeywords()`（仍用于搜索输入语法着色）
+- `contentKeyword` 不变（内容搜索不经过 AST 管道）
 
-## Testing
+## 测试
 
-### C++ Tests (Part 70 — tests/test_highlight_hints.h)
+### C++ 测试（Part 70 — tests/test_highlight_hints.h）
 
-20+ test cases covering:
-- Basic TERM, case:, regex:, ww:, wfn: modifiers
-- NOT operator exclusion
-- Multi-keyword, tilde expansion, glob patterns
-- path:/file: filters, compound queries, slash queries
-- Empty/whitespace queries, pure filters, quoted phrases, OR operator
-- size: filter, mixed keyword+filters, nopath: exclusion
+20+ 个测试用例，覆盖：
+- 基本 TERM、case:、regex:、ww:、wfn: 修饰符
+- NOT 运算符排除
+- 多关键词、波浪号展开、glob 模式
+- path:/file: 过滤器、复合查询、斜杠查询
+- 空查询/空白查询、纯过滤器、引号短语、OR 运算符
+- size: 过滤器、关键词+过滤器混合、nopath: 排除
 
-### Swift Tests (tests/test_highlight_ranges.swift)
+### Swift 测试（tests/test_highlight_ranges.swift）
 
-22 pure function tests covering:
-- Substring (case-insensitive and case-sensitive)
-- Glob literal extraction and matching
-- Regex pattern matching
-- Whole word boundary matching
-- Whole filename exact matching
-- Multi-hint range merging
-- Empty/no-match edge cases
+22 个纯函数测试，覆盖：
+- 子串匹配（大小写不敏感和大小写敏感）
+- glob 字面量提取与匹配
+- 正则表达式模式匹配
+- 全词边界匹配
+- 完整文件名精确匹配
+- 多提示范围合并
+- 空/无匹配边界情况
 
-### Integration Verification
+### 集成验证
 
-- App built and launched successfully
-- HTTP API verified with basic, case:, regex:, path:, ext:, glob, NOT queries
-- All 11805 C++ tests passed
+- 应用构建并启动成功
+- 通过 HTTP API 验证了基本查询、case:、regex:、path:、ext:、glob、NOT 查询
+- 全部 11805 个 C++ 测试通过
 
-## Files Changed
+## 修改的文件
 
-| File | Change |
-|------|--------|
-| `MacEverything/Core/HighlightHintExtractor.h` | New — C++ hint extraction |
-| `MacEverything/Bridge/MacSearchBridge.h` | Added MEHighlightHint + parseHighlightHints: |
-| `MacEverything/Bridge/MacSearchBridge.mm` | Implemented bridge methods |
-| `MacEverything/App/HighlightHint.swift` | New — Swift HighlightHint struct |
+| 文件 | 变更 |
+|------|------|
+| `MacEverything/Core/HighlightHintExtractor.h` | 新增 — C++ 提示提取 |
+| `MacEverything/Bridge/MacSearchBridge.h` | 新增 MEHighlightHint + parseHighlightHints: |
+| `MacEverything/Bridge/MacSearchBridge.mm` | 实现桥接方法 |
+| `MacEverything/App/HighlightHint.swift` | 新增 — Swift HighlightHint 结构体 |
 | `MacEverything/App/SearchViewModel.swift` | highlightKeyword → highlightHints |
-| `MacEverything/App/ResultRow.swift` | keyword → hints parameter |
-| `MacEverything/App/ContentView.swift` | Pass hints to ResultRow |
-| `MacEverything/App/TextHighlight.swift` | Hint-based highlighting overloads |
-| `tests/test_highlight_hints.h` | C++ unit tests (Part 70) |
-| `tests/test_highlight_ranges.swift` | Swift pure function tests |
-| `test_all.cpp` | Registered Part 70 |
-| `Makefile` | Added -IMacEverything/Core flag |
+| `MacEverything/App/ResultRow.swift` | keyword → hints 参数 |
+| `MacEverything/App/ContentView.swift` | 传递 hints 给 ResultRow |
+| `MacEverything/App/TextHighlight.swift` | 基于提示的高亮重载 |
+| `tests/test_highlight_hints.h` | C++ 单元测试（Part 70） |
+| `tests/test_highlight_ranges.swift` | Swift 纯函数测试 |
+| `test_all.cpp` | 注册 Part 70 |
+| `Makefile` | 添加 -IMacEverything/Core 编译标志 |

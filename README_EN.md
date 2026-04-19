@@ -22,6 +22,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/screen-shot.jpg" alt="MacEverything Screenshot" width="720" />
+</p>
+
 ## Why MacEverything?
 
 Spotlight is slow. `find` is slower. `mdfind` misses files. MacEverything indexes your **entire disk — 5 million+ files — in seconds**, then answers every search in **under 5ms**.

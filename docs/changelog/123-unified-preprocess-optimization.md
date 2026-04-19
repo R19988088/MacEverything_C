@@ -1,83 +1,83 @@
-# 122 - Unified Query Preprocessing Optimization
+# 122 - 统一查询预处理优化
 
-## Summary
+## 概述
 
-Consolidate all `me::toLower()` calls into a single canonical computation in `preprocessQuery()`, eliminate redundant lowering throughout the query pipeline, fix a UB bug in the tokenizer, and remove dead code.
+将所有 `me::toLower()` 调用合并为 `preprocessQuery()` 中的单次规范计算，消除查询管道中的冗余小写转换，修复分词器中的未定义行为 Bug，并移除死代码。
 
-## Motivation
+## 动机
 
-After extracting `preprocessQuery()` (#118), the downstream pipeline still had several inefficiencies:
+在提取 `preprocessQuery()`（#118）之后，下游管道仍存在多处低效问题：
 
-1. **Triple lowering**: `transformSlashTerms()` → `parseQuery()` → `makeTerm()` each called `me::toLower()` on the same text
-2. **Scattered manual loops**: `QueryTokenizer`, `QueryFilterParser`, and `QueryDateParser` used hand-rolled `std::tolower` character loops instead of the SIMD-accelerated `me::toLower()`
-3. **UB bug**: `std::tolower(ch)` without `static_cast<unsigned char>` in `QueryTokenizer.h` is undefined behavior for non-ASCII input
-4. **Wasted lowering**: `case:` and `regex:` modifiers computed `textLower` even though their matching paths don't use it
-5. **Dead code**: `isGlobPattern()` was unused since AST-based glob handling was introduced
+1. **三重小写转换**：`transformSlashTerms()` → `parseQuery()` → `makeTerm()` 各自对相同文本调用 `me::toLower()`
+2. **分散的手写循环**：`QueryTokenizer`、`QueryFilterParser` 和 `QueryDateParser` 使用手写的 `std::tolower` 字符循环，而非 SIMD 加速的 `me::toLower()`
+3. **未定义行为 Bug**：`QueryTokenizer.h` 中 `std::tolower(ch)` 未使用 `static_cast<unsigned char>`，对非 ASCII 输入属于未定义行为
+4. **无用的小写转换**：`case:` 和 `regex:` 修饰符计算了 `textLower`，但其匹配路径并不使用该值
+5. **死代码**：`isGlobPattern()` 自引入基于 AST 的 glob 处理后不再使用
 
-## Changes
+## 变更内容
 
-### PreprocessedQuery struct (`SearchEngineQuery.cpp`)
-- `preprocessQuery()` now returns `PreprocessedQuery{original, lower}` — a single `me::toLower()` at the entry point
-- `query()` passes both fields downstream, eliminating re-computation
+### PreprocessedQuery 结构体（`SearchEngineQuery.cpp`）
+- `preprocessQuery()` 现在返回 `PreprocessedQuery{original, lower}` — 在入口点执行单次 `me::toLower()`
+- `query()` 将两个字段传递给下游，消除重复计算
 
-### parseQuery() overload (`StructuredQueryParser.h`)
-- New two-argument overload `parseQuery(rawQuery, lowered)` accepts pre-computed lowercase
-- Original single-argument overload preserved for backward compatibility
+### parseQuery() 重载（`StructuredQueryParser.h`）
+- 新增双参数重载 `parseQuery(rawQuery, lowered)` 接受预计算的小写文本
+- 保留原有的单参数重载以确保向后兼容
 
-### makeTerm() overload (`QueryAST.h`)
-- New three-argument overload `makeTerm(text, precomputedLower, mode)` skips `me::toLower()`
-- Used in `transformSlashTerms()` where the name pattern is already lowered
+### makeTerm() 重载（`QueryAST.h`）
+- 新增三参数重载 `makeTerm(text, precomputedLower, mode)` 跳过 `me::toLower()`
+- 用于 `transformSlashTerms()` 中名称模式已经是小写的场景
 
-### transformSlashTerms() (`ASTStructuredTransform.h`)
-- Passes `node->textLower` to `parseQuery()` instead of re-lowering `node->text`
-- Uses new `makeTerm` overload for the name term
+### transformSlashTerms()（`ASTStructuredTransform.h`）
+- 将 `node->textLower` 传递给 `parseQuery()` 而非重新对 `node->text` 做小写转换
+- 对名称词项使用新的 `makeTerm` 重载
 
-### UB fix (`QueryTokenizer.h`)
-- Replaced manual `std::tolower` character loop with `me::toLower(name)` for filter name lowering
-- Fixes undefined behavior when query contains non-ASCII characters
+### 未定义行为修复（`QueryTokenizer.h`）
+- 将手写的 `std::tolower` 字符循环替换为 `me::toLower(name)` 进行过滤器名称的小写转换
+- 修复查询包含非 ASCII 字符时的未定义行为
 
-### Consolidated lowering (`QueryFilterParser.h`, `QueryDateParser.h`)
-- `path`/`nopath`/`parent` filter: uses `me::toLower(arg)` (was already correct, verified)
-- `parseExt()`: bulk `me::toLower(arg)` then split by `;`
-- `parseValueWithUnit()`: `me::toLower(s.substr(numEnd))` for unit suffix
-- `parseDateExpr()`: `me::toLower(expr)` for keyword matching
-- `case:` modifier: skips `textLower` computation (caseSensitive matching uses `text`)
-- `regex:` modifier: skips `textLower` computation (regex uses `text` with `icase` flag)
+### 统一小写转换（`QueryFilterParser.h`、`QueryDateParser.h`）
+- `path`/`nopath`/`parent` 过滤器：使用 `me::toLower(arg)`（已验证原逻辑正确）
+- `parseExt()`：先整体 `me::toLower(arg)` 再按 `;` 分割
+- `parseValueWithUnit()`：对单位后缀使用 `me::toLower(s.substr(numEnd))`
+- `parseDateExpr()`：对关键词匹配使用 `me::toLower(expr)`
+- `case:` 修饰符：跳过 `textLower` 计算（大小写敏感匹配使用 `text`）
+- `regex:` 修饰符：跳过 `textLower` 计算（正则使用 `text` 配合 `icase` 标志）
 
-### Dead code removal (`SearchEngineQuery.cpp`, `SearchEngine.h`)
-- Removed `isGlobPattern()` definition and declaration — unused since `ASTGlobTransform.h` has its own inline check
+### 死代码移除（`SearchEngineQuery.cpp`、`SearchEngine.h`）
+- 移除 `isGlobPattern()` 的定义和声明 — 自 `ASTGlobTransform.h` 引入内联检查后不再使用
 
-### Tests (`tests/test_preprocess_unified.h`, Part 68)
-- 16 test cases with 50 CHECK assertions covering all changes:
-  - parseQuery two-arg and single-arg overloads
-  - makeTerm with and without pre-computed lower
-  - transformSlashTerms pipeline verification
-  - case:/regex:/nocase: modifier behavior
-  - ext/path/size filter lowering
-  - tokenizer UB fix with filter names
-  - SearchEngine integration (crash test)
-  - Whitespace-only and tilde expansion
-  - isGlobPattern removal (compile-time verified)
+### 测试（`tests/test_preprocess_unified.h`，Part 68）
+- 16 个测试用例、50 个 CHECK 断言，覆盖所有变更：
+  - parseQuery 双参数和单参数重载
+  - makeTerm 有无预计算小写的两种情况
+  - transformSlashTerms 管道验证
+  - case:/regex:/nocase: 修饰符行为
+  - ext/path/size 过滤器的小写转换
+  - 分词器非 ASCII 未定义行为修复
+  - SearchEngine 集成测试（崩溃测试）
+  - 全空白和波浪号展开
+  - isGlobPattern 移除（编译时验证）
 
-## Files Modified
+## 修改的文件
 
-| File | Change |
-|------|--------|
-| `MacEverything/Core/SearchEngineQuery.cpp` | `PreprocessedQuery` struct, updated `preprocessQuery()` and `query()` |
-| `MacEverything/Core/SearchEngine.h` | Updated `queryAdvanced` decl, removed `isGlobPattern` decl |
-| `MacEverything/Core/SearchEngineAdvancedQuery.cpp` | Updated `queryAdvanced` signature |
-| `MacEverything/Core/StructuredQueryParser.h` | Two-arg `parseQuery` overload |
-| `MacEverything/Core/QueryAST.h` | Three-arg `makeTerm` overload |
-| `MacEverything/Core/ASTStructuredTransform.h` | Pass `textLower` to `parseQuery`, use new `makeTerm` |
-| `MacEverything/Core/QueryTokenizer.h` | Fix UB → `me::toLower()` |
-| `MacEverything/Core/QueryFilterParser.h` | Consolidate loops → `me::toLower()`, skip wasted lowering |
-| `MacEverything/Core/QueryDateParser.h` | Consolidate loop → `me::toLower()` |
-| `tests/test_preprocess_unified.h` | Part 68 tests (16 cases, 50 assertions) |
-| `test_all.cpp` | Register Part 68 |
+| 文件 | 变更 |
+|------|------|
+| `MacEverything/Core/SearchEngineQuery.cpp` | `PreprocessedQuery` 结构体，更新 `preprocessQuery()` 和 `query()` |
+| `MacEverything/Core/SearchEngine.h` | 更新 `queryAdvanced` 声明，移除 `isGlobPattern` 声明 |
+| `MacEverything/Core/SearchEngineAdvancedQuery.cpp` | 更新 `queryAdvanced` 签名 |
+| `MacEverything/Core/StructuredQueryParser.h` | 双参数 `parseQuery` 重载 |
+| `MacEverything/Core/QueryAST.h` | 三参数 `makeTerm` 重载 |
+| `MacEverything/Core/ASTStructuredTransform.h` | 将 `textLower` 传递给 `parseQuery`，使用新 `makeTerm` |
+| `MacEverything/Core/QueryTokenizer.h` | 修复未定义行为 → `me::toLower()` |
+| `MacEverything/Core/QueryFilterParser.h` | 统一循环 → `me::toLower()`，跳过无用的小写转换 |
+| `MacEverything/Core/QueryDateParser.h` | 统一循环 → `me::toLower()` |
+| `tests/test_preprocess_unified.h` | Part 68 测试（16 用例，50 断言） |
+| `test_all.cpp` | 注册 Part 68 |
 
-## Verification
+## 验证
 
-- `./test_all --part 68`: 50/50 passed
-- `./test_all --fast`: 11768 passed, 0 failed
-- Release build + DMG packaging
-- HTTP functional verification
+- `./test_all --part 68`：50/50 通过
+- `./test_all --fast`：11768 通过，0 失败
+- Release 构建 + DMG 打包
+- HTTP 功能验证

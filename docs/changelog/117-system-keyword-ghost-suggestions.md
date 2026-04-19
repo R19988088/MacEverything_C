@@ -1,42 +1,42 @@
-# 117 - Add system keyword ghost suggestions
+# 117 - 系统关键词幽灵文本建议
 
-## Background
+## 背景
 
-The ghost text autocomplete in the search bar previously only showed suggestions from the user's search history. Users who are learning the filter syntax (e.g., `ext:`, `size:`, `path:`) had no discoverability mechanism — they had to know the keywords in advance.
+搜索栏的幽灵文本自动补全此前仅根据用户搜索历史进行推荐。对于正在学习过滤语法（如 `ext:`、`size:`、`path:`）的用户来说，缺乏可发现性机制——必须事先知道关键词才能使用。
 
-## Solution
+## 方案
 
-Added system filter keywords as a fallback ghost suggestion source. When the user types a partial word that matches a known filter keyword prefix, the ghost text now shows the full keyword.
+将系统过滤关键词作为幽灵文本建议的备选来源。当用户输入的部分文字与某个已知过滤关键词前缀匹配时，幽灵文本会显示完整的关键词。
 
-### Priority order:
-1. **Search history match** — highest priority (existing behavior preserved)
-2. **System keyword match** — fallback when no history match exists
+### 优先级顺序：
+1. **搜索历史匹配** — 最高优先级（保留已有行为）
+2. **系统关键词匹配** — 在没有历史匹配时作为备选
 
-### Matching rules:
-- Only triggers on single partial words (no spaces, no colon already present)
-- When multiple keywords match, the shortest is preferred (e.g., "d" → "dc:" not "datemodified:")
-- Alphabetical tiebreaker for same-length matches
+### 匹配规则：
+- 仅在输入单个不完整单词时触发（不含空格、不含冒号）
+- 当多个关键词匹配时，优先选择最短的（例如输入 "d" → 显示 "dc:" 而非 "datemodified:"）
+- 长度相同时按字母顺序排序
 
-### Examples:
-- Type "ex" → ghost shows "ext:"
-- Type "si" → ghost shows "size:"
-- Type "au" → ghost shows "audio:"
-- Type "dat" → ghost shows "datemodified:" (shortest date filter after "da:" and "dc:")
-- Type "ext:" → no keyword ghost (colon already present)
-- Type "ext:cpp" from history → history match wins over keyword
+### 示例：
+- 输入 "ex" → 幽灵文本显示 "ext:"
+- 输入 "si" → 幽灵文本显示 "size:"
+- 输入 "au" → 幽灵文本显示 "audio:"
+- 输入 "dat" → 幽灵文本显示 "datemodified:"（在 "da:" 和 "dc:" 之后最短的日期过滤器）
+- 输入 "ext:" → 不显示关键词幽灵文本（冒号已存在）
+- 输入历史中的 "ext:cpp" → 历史匹配优先于关键词
 
-### Supported keywords (28 total):
+### 支持的关键词（共 28 个）：
 `ext:`, `size:`, `file:`, `folder:`, `path:`, `nopath:`, `parent:`, `depth:`, `len:`, `dm:`, `dc:`, `da:`, `datemodified:`, `datecreated:`, `dateaccessed:`, `case:`, `nocase:`, `regex:`, `ww:`, `wfn:`, `wholeword:`, `wholefilename:`, `audio:`, `video:`, `pic:`, `doc:`, `exe:`, `zip:`, `content:`, `type:`
 
-## Changes
+## 变更内容
 
 - **`MacEverything/App/SearchViewModel.swift`**
-  - Added `systemKeywords` static array with all known filter keywords
-  - Added `systemKeywordMatch(for:)` static method for prefix matching with shortest-first ranking
-  - Updated `updateGhostSuggestion()` to fall back to system keyword match when no history match exists
+  - 新增 `systemKeywords` 静态数组，包含所有已知的过滤关键词
+  - 新增 `systemKeywordMatch(for:)` 静态方法，实现前缀匹配并按最短优先排序
+  - 更新 `updateGhostSuggestion()`，在没有历史匹配时回退到系统关键词匹配
 
-## Verification
+## 验证
 
-- Build succeeded on master
-- App launches and responds to search queries via HTTP API
-- Ghost text suggestions now include system keywords as fallback
+- 在 master 分支上构建成功
+- 应用正常启动并通过 HTTP API 响应搜索请求
+- 幽灵文本建议现已包含系统关键词作为备选

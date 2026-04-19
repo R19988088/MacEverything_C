@@ -200,7 +200,7 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
 
     // ------------------------------------------------------------------
     // Buffer-scan: SIMD scan the contiguous namePool_ buffer, then
-    // binary-search entries_ to resolve byte offsets → record indices.
+    // resolve byte offsets → record indices via forward cursor walk.
     // Much faster than per-record iteration (1 stream vs 4 streams).
     // ------------------------------------------------------------------
     std::vector<size_t> hitOffsets;
@@ -212,44 +212,45 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
     const auto* entries = namePool_.entries();
     uint32_t entryCount = namePool_.entryCount();
 
-    std::unordered_set<uint32_t> seen;
-    seen.reserve(std::min(hitOffsets.size(), size_t(4096)));
+    // hitOffsets are in ascending order (simdFindAll scans left to right).
+    // Walk a cursor through entries_ in sync — O(hits + entries) total,
+    // avoids O(hits * log(entries)) binary search overhead.
+    uint32_t cursor = 0;
+    uint32_t lastIdx = UINT32_MAX; // dedup: skip if same entry hit again
 
     for (size_t hitOff : hitOffsets) {
-        // Binary search: find largest idx where entries[idx].offset <= hitOff
-        uint32_t lo = 0, hi = entryCount;
-        while (lo < hi) {
-            uint32_t mid = lo + (hi - lo) / 2;
-            if (entries[mid].offset <= static_cast<uint32_t>(hitOff)) lo = mid + 1;
-            else hi = mid;
+        // Advance cursor until entries[cursor+1].offset > hitOff
+        while (cursor + 1 < entryCount &&
+               entries[cursor + 1].offset <= static_cast<uint32_t>(hitOff)) {
+            cursor++;
         }
-        if (lo == 0) continue;
-        uint32_t idx = lo - 1;
 
         // Boundary check: hit must be fully within this entry
-        uint32_t entryEnd = entries[idx].offset + entries[idx].length;
-        if (hitOff + namePattern.size() > entryEnd)
+        uint32_t entryEnd = entries[cursor].offset + entries[cursor].length;
+        if (hitOff < entries[cursor].offset ||
+            hitOff + namePattern.size() > entryEnd)
             continue;
 
         // Dedup: same entry may be hit multiple times
-        if (!seen.insert(idx).second) continue;
+        if (cursor == lastIdx) continue;
+        lastIdx = cursor;
 
         // Tombstone check
-        if (records_[idx].type == 0) continue;
+        if (records_[cursor].type == 0) continue;
 
         // DIR_EXACT: must be directory + exact name match
         if (pq.mode == QueryMode::DIR_EXACT) {
-            if (records_[idx].type != 2) continue;
-            if (entries[idx].length != namePattern.size()) continue;
+            if (records_[cursor].type != 2) continue;
+            if (entries[cursor].length != namePattern.size()) continue;
         }
 
         // Path constraint
-        if (hasPathSegs && !pathMatchCache[pathIndices_[idx]]) continue;
+        if (hasPathSegs && !pathMatchCache[pathIndices_[cursor]]) continue;
 
-        uint8_t priority = namePriority(namePool_.data(idx), namePool_.length(idx),
+        uint8_t priority = namePriority(namePool_.data(cursor), namePool_.length(cursor),
                                          namePattern.data(), namePattern.size());
-        uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[idx]) + 1 + entries[idx].length);
-        merged.push_back({idx, priority, pLen});
+        uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[cursor]) + 1 + entries[cursor].length);
+        merged.push_back({cursor, priority, pLen});
     }
 }
 

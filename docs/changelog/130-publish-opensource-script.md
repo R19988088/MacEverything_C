@@ -3,7 +3,7 @@
 ## 背景
 
 项目计划以 MIT 协议开源发布，但本地开发环境需要保留内部文件（CLAUDE.md、编译产物、
-AI 开发配置等）和个人路径（`/Users/wujian`）。直接从 git 中移除这些文件会影响
+AI 开发配置等）和个人路径。直接从 git 中移除这些文件会影响
 日常开发流程。
 
 ## 方案：双 remote + 发布脚本
@@ -23,11 +23,11 @@ AI 开发配置等）和个人路径（`/Users/wujian`）。直接从 git 中移
    - AI 工具配置：`CLAUDE.md`, `.claude/`
    - 内部文档：`docs/superpowers/`
    - 误入文件：`assets/README.md`（Homebrew 的 README）
-3. **路径脱敏**：将所有 `/Users/wujian` 替换为 `/Users/username`
+3. **路径脱敏**：将所有个人路径替换为 `/Users/username`
 4. **添加 LICENSE**：生成 MIT 协议全文
 5. **更新 README.md**：许可证部分改为 MIT 引用
 6. **更新 .gitignore**：追加编译产物和内部文件的忽略规则
-7. **验证**：`git grep wujian` 确认无残留个人信息
+7. **验证**：`git grep` 确认无残留个人信息
 8. **提交并推送**（或 dry-run 报告）
 
 ### 使用方法
@@ -53,7 +53,7 @@ git remote add public git@github.com:YOUR_USER/MacEverything.git
 ## 验证
 
 - [x] Dry-run 模式正确移除所有内部文件
-- [x] `git grep wujian` 在清理后的仓库中返回空结果
+- [x] `git grep` 个人路径检查在清理后的仓库中返回空结果
 - [x] LICENSE 文件正确生成（MIT 全文）
 - [x] README.md 许可证部分正确更新
 - [x] .gitignore 追加了编译产物和内部文件规则

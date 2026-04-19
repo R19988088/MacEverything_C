@@ -128,6 +128,7 @@ SANITIZE_FILES=(
     "docs/changelog/105-anchor-selection-optimization.md"
     "docs/changelog/117-tilde-expansion-in-query.md"
     "docs/changelog/118-extract-preprocessQuery-function.md"
+    "docs/changelog/130-publish-opensource-script.md"
 )
 
 for f in "${SANITIZE_FILES[@]}"; do

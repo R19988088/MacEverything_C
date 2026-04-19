@@ -125,6 +125,14 @@ public:
 
     // --- Incremental mutation (for FSEvents) ---
 
+    /// Batch mutation operation descriptor.
+    struct MutationOp {
+        enum Type { REMOVE, UPDATE };
+        Type type;
+        std::string path;
+        FileRecord record;  // only used for UPDATE
+    };
+
     /// Append a new record. Returns the new index. Thread-safe.
     uint32_t addRecord(FileRecord&& record);
 
@@ -134,6 +142,10 @@ public:
 
     /// Remove old record at fullPath (if any) and add updated record. Thread-safe.
     void updateByPath(const std::string& fullPath, FileRecord&& updated);
+
+    /// Apply multiple mutations under a single write lock. Thread-safe.
+    /// Reduces lock contention compared to calling removeByPath/updateByPath individually.
+    void batchMutate(std::vector<MutationOp>&& ops);
 
     /// Remove all records whose full path starts with the given prefix. Thread-safe.
     /// Returns the number of records removed.
@@ -299,6 +311,10 @@ private:
     /// Intern a directory path into pathPool_ and lowerPathPool_. Returns pathPool_ index.
     /// Deduplicates via pathLookup_. Must be called under unique_lock.
     uint32_t internPath(const std::string& path);
+
+    /// Unlocked variants — caller must hold unique_lock on mutex_.
+    bool removeByPathUnlocked(const std::string& fullPath);
+    void updateByPathUnlocked(const std::string& fullPath, FileRecord&& updated);
 
     /// Build trigram index from namePool_ (called inside loadRecords/compactRecords under lock)
     void buildTrigramIndex();

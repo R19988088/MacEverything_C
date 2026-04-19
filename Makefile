@@ -2,18 +2,21 @@ CXX = clang++
 CXXFLAGS = -std=c++20 -O2 -Wall -Wextra
 FRAMEWORKS = -framework CoreServices
 CORE_SRCS = $(wildcard MacEverything/Core/*.cpp)
+RE2_PREFIX = /opt/homebrew/opt/re2
+RE2_CFLAGS = -I$(RE2_PREFIX)/include
+RE2_LDFLAGS = -L$(RE2_PREFIX)/lib -lre2
 
 # === Build targets ===
 .PHONY: test test-fast test-slow test-all test-asan test-tsan build clean app dmg daemon help
 
 test_all: test_all.cpp $(CORE_SRCS)
-	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) -IMacEverything/Core $^ -o $@
+	$(CXX) $(CXXFLAGS) $(RE2_CFLAGS) $(FRAMEWORKS) $(RE2_LDFLAGS) -IMacEverything/Core $^ -o $@
 
 benchmark: benchmark.cpp $(CORE_SRCS)
-	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $(RE2_CFLAGS) $(FRAMEWORKS) $(RE2_LDFLAGS) $^ -o $@
 
 maceverything-daemon: MacEverything/CLI/daemon_main.cpp $(CORE_SRCS)
-	$(CXX) $(CXXFLAGS) $(FRAMEWORKS) -IMacEverything/Core $^ -o $@
+	$(CXX) $(CXXFLAGS) $(RE2_CFLAGS) $(FRAMEWORKS) $(RE2_LDFLAGS) -IMacEverything/Core $^ -o $@
 
 daemon: maceverything-daemon
 
@@ -26,11 +29,11 @@ lint-bridge:
 
 # === Sanitizer targets ===
 test-asan: test_all.cpp $(CORE_SRCS)
-	$(CXX) -std=c++20 -O1 -g -fsanitize=address -fno-omit-frame-pointer $(FRAMEWORKS) -IMacEverything/Core $^ -o test_all_asan
+	$(CXX) -std=c++20 -O1 -g -fsanitize=address -fno-omit-frame-pointer $(RE2_CFLAGS) $(FRAMEWORKS) $(RE2_LDFLAGS) -IMacEverything/Core $^ -o test_all_asan
 	./test_all_asan --fast
 
 test-tsan: test_all.cpp $(CORE_SRCS)
-	$(CXX) -std=c++20 -O1 -g -fsanitize=thread $(FRAMEWORKS) -IMacEverything/Core $^ -o test_all_tsan
+	$(CXX) -std=c++20 -O1 -g -fsanitize=thread $(RE2_CFLAGS) $(FRAMEWORKS) $(RE2_LDFLAGS) -IMacEverything/Core $^ -o test_all_tsan
 	./test_all_tsan --fast
 
 # === Test targets ===

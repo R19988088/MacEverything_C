@@ -586,6 +586,15 @@
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/MacEverything/Core",
 					"$(SRCROOT)/MacEverything/Bridge",
+					"/opt/homebrew/opt/re2/include",
+					"/opt/homebrew/opt/abseil/include",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"/opt/homebrew/opt/re2/lib",
+					"/opt/homebrew/opt/abseil/lib",
+				);
+				OTHER_LDFLAGS = (
+					"-lre2",
 				);
 			};
 			name = Debug;
@@ -610,6 +619,15 @@
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/MacEverything/Core",
 					"$(SRCROOT)/MacEverything/Bridge",
+					"/opt/homebrew/opt/re2/include",
+					"/opt/homebrew/opt/abseil/include",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"/opt/homebrew/opt/re2/lib",
+					"/opt/homebrew/opt/abseil/lib",
+				);
+				OTHER_LDFLAGS = (
+					"-lre2",
 				);
 			};
 			name = Release;

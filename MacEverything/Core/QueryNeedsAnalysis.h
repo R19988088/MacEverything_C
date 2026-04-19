@@ -37,6 +37,9 @@ inline QueryNeeds analyzeQueryNeeds(const QueryNode& node) {
             needs.needsModTime = true;
         } else if (f == "path" || f == "nopath" || f == "parent" || f == "depth") {
             needs.needsPath = true;
+        } else if (f == "__pathseg") {
+            needs.needsPath = true;
+            needs.needsName = true; // pathSegmentsMatch uses full path including name
         }
         break;
     }

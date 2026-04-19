@@ -18,3 +18,4 @@ DerivedData/
 .DS_Store
 test_all_master
 .claude/string_search_bench
+.claude/worktrees/

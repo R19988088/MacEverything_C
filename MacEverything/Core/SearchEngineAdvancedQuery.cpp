@@ -296,11 +296,16 @@ static bool evalTerm(const QueryNode& node,
             memcpy(pathBuf.data(), pathData, pathLen);
             pathBuf[pathLen] = '/';
             memcpy(pathBuf.data() + pathLen + 1, nameData, nameLen);
-            std::string fullPath(pathBuf.data(), fullLen);
-            return globMatchImpl(pattern, fullPath);
+            if (node.compiledGlob) {
+                return compiledGlobMatch(*node.compiledGlob, pathBuf.data(), fullLen);
+            }
+            return globMatchImpl(pattern, pathBuf.data(), fullLen);
         }
-        std::string name(nameData, nameLen);
-        return globMatchImpl(pattern, name);
+        // Name-only glob: use pre-compiled fast path (zero-alloc)
+        if (node.compiledGlob) {
+            return compiledGlobMatch(*node.compiledGlob, nameData, nameLen);
+        }
+        return globMatchImpl(pattern, nameData, nameLen);
     }
 
     case MatchMode::REGEX: {

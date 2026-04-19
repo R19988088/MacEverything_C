@@ -5,6 +5,8 @@
 #include <sstream>
 #include "StructuredQueryParser.h"
 #include "StringUtils.h"
+#include "CompiledGlob.h"
+#include <optional>
 
 /// AST node types for the Everything-style query parser.
 enum class QueryNodeType {
@@ -32,6 +34,7 @@ struct QueryNode {
     bool caseSensitive = false;
     bool matchPath = false;  // path: modifier
     bool nameOnly = false;   // match name only (set by transformSlashTerms)
+    std::optional<CompiledGlob> compiledGlob;  // pre-compiled glob for zero-alloc matching
 
     // --- AND / OR / NOT: children ---
     std::vector<std::unique_ptr<QueryNode>> children;

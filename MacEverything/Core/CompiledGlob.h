@@ -28,6 +28,30 @@ inline bool globMatchImpl(const std::string& pattern, const std::string& text) {
     return px == pattern.size();
 }
 
+/// Zero-allocation glob matching overload: operates on raw char* + length.
+inline bool globMatchImpl(const std::string& pattern, const char* text, size_t textLen) {
+    size_t px = 0, tx = 0;
+    size_t starPx = std::string::npos, starTx = 0;
+
+    while (tx < textLen) {
+        if (px < pattern.size() && (pattern[px] == '?' || pattern[px] == text[tx])) {
+            px++;
+            tx++;
+        } else if (px < pattern.size() && pattern[px] == '*') {
+            starPx = px++;
+            starTx = tx;
+        } else if (starPx != std::string::npos) {
+            px = starPx + 1;
+            tx = ++starTx;
+        } else {
+            return false;
+        }
+    }
+
+    while (px < pattern.size() && pattern[px] == '*') px++;
+    return px == pattern.size();
+}
+
 /// Extract all literal (non-wildcard) segments from a glob pattern.
 inline std::vector<std::string> extractLiteralSegments(const std::string& pattern) {
     std::vector<std::string> segments;
@@ -113,10 +137,8 @@ inline bool compiledGlobMatch(const CompiledGlob& cg, const char* text, size_t l
     case CompiledGlob::EXACT:
         return len == cg.fixed.size() &&
                memcmp(text, cg.fixed.data(), len) == 0;
-    case CompiledGlob::GENERIC: {
-        std::string s(text, len);
-        return globMatchImpl(cg.original, s);
-    }
+    case CompiledGlob::GENERIC:
+        return globMatchImpl(cg.original, text, len);
     }
     return false;
 }

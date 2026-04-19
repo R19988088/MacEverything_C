@@ -118,6 +118,7 @@ namespace fs = std::filesystem;
 #include "tests/test_highlight_hints.h"
 #include "tests/test_flat_persistence_v6.h"
 #include "tests/test_case_trigram.h"
+#include "tests/test_compiled_glob_evalterm.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -178,7 +179,9 @@ static void printUsage(const char* prog) {
     std::cout << "  68 (unified preprocessing),\n";
     std::cout << "  69 (trigram competition),\n";
     std::cout << "  70 (highlight hints),\n";
-    std::cout << "  71 (flat persistence v6)\n";
+    std::cout << "  71 (flat persistence v6),\n";
+    std::cout << "  72 (case trigram),\n";
+    std::cout << "  73 (compiled glob evalTerm)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -193,7 +196,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "72"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "72", "73"});
         } else if (arg == "--bench") {
             explicitSelection = true;
             selectedParts.insert({"44", "46"});
@@ -219,7 +222,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "66", "67", "68", "69", "70", "71", "73"};
     }
 
     // Validate root path if scan test is selected
@@ -322,6 +325,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("70")) runHighlightHintTests();
     if (selectedParts.count("71")) runFlatPersistenceV6Tests();
     if (selectedParts.count("72")) runCaseTrigramTests();
+    if (selectedParts.count("73")) runCompiledGlobEvaltermTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

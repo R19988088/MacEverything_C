@@ -23,7 +23,8 @@ inline std::unique_ptr<QueryNode> transformGlobTerms(std::unique_ptr<QueryNode> 
     if (node->text.find('*') == std::string::npos &&
         node->text.find('?') == std::string::npos) return node;
 
-    // Change mode to GLOB
+    // Change mode to GLOB and pre-compile for zero-alloc matching
     node->mode = MatchMode::GLOB;
+    node->compiledGlob = compileGlob(node->textLower);
     return node;
 }

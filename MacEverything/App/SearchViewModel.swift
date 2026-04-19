@@ -41,9 +41,12 @@ class SearchViewModel: ObservableObject {
     @Published var isSyncing: Bool = false
     @Published var ghostSuggestion: String? = nil
 
-    /// Extracted search keywords (excluding filter tokens and operators) for result highlighting
-    var highlightKeyword: String {
-        QueryHighlightTokenizer.extractSearchKeywords(searchText).joined(separator: " ")
+    /// Structured highlight hints extracted from the C++ query AST.
+    /// Replaces the old keyword-based approach with field-aware, mode-aware hints.
+    var highlightHints: [HighlightHint] {
+        let query = searchOptions.buildQuery(searchText)
+        guard !query.isEmpty else { return [] }
+        return bridge.parseHighlightHints(query).map { HighlightHint(from: $0) }
     }
 
     private let bridge = MacSearchBridge.shared()

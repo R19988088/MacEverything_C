@@ -2,6 +2,7 @@
 #import "MacSearchBridge+Content.h"
 #include "PathUtils.h"
 #include "Logger.h"
+#include "HighlightHintExtractor.h"
 
 @implementation MEFileResult
 
@@ -37,6 +38,24 @@
         _snippet = [snippet copy];
         _matchOffset = matchOffset;
         _fileType = fileType;
+    }
+    return self;
+}
+
+@end
+
+@implementation MEHighlightHint
+
+- (instancetype)initWithText:(NSString *)text
+                       field:(uint8_t)field
+                   matchMode:(uint8_t)matchMode
+               caseSensitive:(BOOL)caseSensitive {
+    self = [super init];
+    if (self) {
+        _text = [text copy];
+        _field = field;
+        _matchMode = matchMode;
+        _caseSensitive = caseSensitive;
     }
     return self;
 }
@@ -349,6 +368,22 @@
                                                      modTime:r.modTime]];
     });
     return results;
+}
+
+- (NSArray<MEHighlightHint *> *)parseHighlightHints:(NSString *)query {
+    std::string q([query UTF8String]);
+    auto hints = extractHighlightHints(q);
+
+    NSMutableArray<MEHighlightHint *> *result = [NSMutableArray arrayWithCapacity:hints.size()];
+    for (auto& h : hints) {
+        NSString *text = [NSString stringWithUTF8String:h.text.c_str()];
+        if (!text) continue;
+        [result addObject:[[MEHighlightHint alloc] initWithText:text
+                                                         field:static_cast<uint8_t>(h.field)
+                                                     matchMode:static_cast<uint8_t>(h.mode)
+                                                 caseSensitive:h.caseSensitive ? YES : NO]];
+    }
+    return result;
 }
 
 - (uint32_t)recordCount {

@@ -57,7 +57,7 @@ final class FileIconCache {
 
 struct ResultRow: View {
     let item: FileItem
-    let keyword: String
+    let hints: [HighlightHint]
     @State private var isHovered = false
 
     var body: some View {
@@ -69,7 +69,7 @@ struct ResultRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 let highlighted = highlightCrossMatches(
-                    path: item.path, name: item.name, keyword: keyword,
+                    path: item.path, name: item.name, hints: hints,
                     nameFont: .title3, nameColor: .primary,
                     pathFont: .subheadline, pathColor: .secondary)
                 highlighted.nameText.lineLimit(1)

@@ -173,14 +173,14 @@ func highlightCrossMatches(path: String, name: String, keyword: String,
 
 /// Extract literal (non-wildcard) segments from a glob pattern.
 /// Splits by `*` and `?`, returns non-empty segments.
-private func extractGlobLiterals(_ pattern: String) -> [String] {
+func extractGlobLiterals(_ pattern: String) -> [String] {
     pattern.components(separatedBy: CharacterSet(charactersIn: "*?"))
            .filter { !$0.isEmpty }
 }
 
 /// Find all case-insensitive occurrences of any literal in `text`,
 /// merge overlapping ranges, and return sorted non-overlapping ranges.
-private func findAllLiteralRanges(in lowerText: String, literals: [String]) -> [Range<String.Index>] {
+func findAllLiteralRanges(in lowerText: String, literals: [String]) -> [Range<String.Index>] {
     var allRanges: [Range<String.Index>] = []
     for literal in literals {
         var searchStart = lowerText.startIndex
@@ -207,7 +207,7 @@ private func findAllLiteralRanges(in lowerText: String, literals: [String]) -> [
 }
 
 /// Helper: build a SwiftUI Text with specified ranges highlighted.
-private func buildHighlightedText(text: String, ranges: [Range<String.Index>],
+func buildHighlightedText(text: String, ranges: [Range<String.Index>],
                                   font: Font, color: Color,
                                   highlightColor: Color) -> Text {
     if ranges.isEmpty {
@@ -233,4 +233,186 @@ private func buildHighlightedText(text: String, ranges: [Range<String.Index>],
     }
 
     return result
+}
+
+// MARK: - Hint-based highlighting
+
+/// Compute matching ranges for a single HighlightHint in the given text.
+func computeRangesForHint(in text: String, hint: HighlightHint) -> [Range<String.Index>] {
+    guard !hint.text.isEmpty else { return [] }
+
+    let searchText: String
+    let searchKey: String
+    if hint.caseSensitive {
+        searchText = text
+        searchKey = hint.text
+    } else {
+        searchText = text.lowercased()
+        searchKey = hint.text.lowercased()
+    }
+
+    switch hint.matchMode {
+    case .substring:
+        var ranges: [Range<String.Index>] = []
+        var start = searchText.startIndex
+        while start < searchText.endIndex,
+              let range = searchText.range(of: searchKey, range: start..<searchText.endIndex) {
+            ranges.append(range)
+            start = range.upperBound
+        }
+        return ranges
+
+    case .glob:
+        let literals = extractGlobLiterals(searchKey)
+        if literals.isEmpty { return [] }
+        return findAllLiteralRanges(in: searchText, literals: literals)
+
+    case .regex:
+        var options: NSRegularExpression.Options = []
+        if !hint.caseSensitive { options.insert(.caseInsensitive) }
+        guard let regex = try? NSRegularExpression(pattern: hint.text, options: options) else {
+            return []
+        }
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        let matches = regex.matches(in: text, range: nsRange)
+        return matches.compactMap { Range($0.range, in: text) }
+
+    case .wholeWord:
+        let escaped = NSRegularExpression.escapedPattern(for: hint.text)
+        let pattern = "\\b\(escaped)\\b"
+        var options: NSRegularExpression.Options = []
+        if !hint.caseSensitive { options.insert(.caseInsensitive) }
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+            return []
+        }
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        let matches = regex.matches(in: text, range: nsRange)
+        return matches.compactMap { Range($0.range, in: text) }
+
+    case .wholeFilename:
+        if hint.caseSensitive {
+            return text == hint.text ? [text.startIndex..<text.endIndex] : []
+        } else {
+            return text.lowercased() == hint.text.lowercased()
+                ? [text.startIndex..<text.endIndex] : []
+        }
+    }
+}
+
+/// Compute merged highlight ranges from multiple hints.
+func computeHighlightRanges(in text: String, hints: [HighlightHint]) -> [Range<String.Index>] {
+    guard !hints.isEmpty else { return [] }
+    var allRanges: [Range<String.Index>] = []
+    for hint in hints {
+        allRanges.append(contentsOf: computeRangesForHint(in: text, hint: hint))
+    }
+    return mergeRanges(allRanges, in: text)
+}
+
+/// Merge overlapping/adjacent ranges, sorted by start position.
+private func mergeRanges(_ ranges: [Range<String.Index>], in text: String) -> [Range<String.Index>] {
+    guard !ranges.isEmpty else { return [] }
+    let sorted = ranges.sorted { text.distance(from: text.startIndex, to: $0.lowerBound)
+                                < text.distance(from: text.startIndex, to: $1.lowerBound) }
+    var merged: [Range<String.Index>] = [sorted[0]]
+    for range in sorted.dropFirst() {
+        let last = merged[merged.count - 1]
+        if range.lowerBound <= last.upperBound {
+            merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+        } else {
+            merged.append(range)
+        }
+    }
+    return merged
+}
+
+/// Hint-based highlight: applies all matching hints to render highlighted Text.
+func highlightMatches(in text: String, hints: [HighlightHint],
+                      font: Font, color: Color,
+                      highlightColor: Color = .accentColor) -> Text {
+    let ranges = computeHighlightRanges(in: text, hints: hints)
+    return buildHighlightedText(text: text, ranges: ranges, font: font,
+                                color: color, highlightColor: highlightColor)
+}
+
+/// Hint-based cross-boundary highlight with field-aware dispatching.
+/// NAME hints only highlight in name, PATH hints only in path,
+/// ANY hints highlight across path+"/"+name boundary when text contains "/".
+func highlightCrossMatches(path: String, name: String, hints: [HighlightHint],
+                           nameFont: Font, nameColor: Color,
+                           pathFont: Font, pathColor: Color,
+                           highlightColor: Color = .accentColor) -> (nameText: Text, pathText: Text) {
+    guard !hints.isEmpty else {
+        return (Text(name).font(nameFont).foregroundColor(nameColor),
+                Text(path).font(pathFont).foregroundColor(pathColor))
+    }
+
+    var nameRanges: [Range<String.Index>] = []
+    var pathRanges: [Range<String.Index>] = []
+
+    for hint in hints {
+        switch hint.field {
+        case .name:
+            nameRanges.append(contentsOf: computeRangesForHint(in: name, hint: hint))
+        case .path:
+            pathRanges.append(contentsOf: computeRangesForHint(in: path, hint: hint))
+        case .any:
+            if hint.matchMode == .substring && hint.text.contains("/") {
+                let fullPath = path + "/" + name
+                let fullRanges = computeRangesForHint(in: fullPath, hint: hint)
+                let (pRanges, nRanges) = mapFullPathRanges(fullRanges,
+                    fullPath: fullPath, path: path, name: name)
+                pathRanges.append(contentsOf: pRanges)
+                nameRanges.append(contentsOf: nRanges)
+            } else {
+                nameRanges.append(contentsOf: computeRangesForHint(in: name, hint: hint))
+                pathRanges.append(contentsOf: computeRangesForHint(in: path, hint: hint))
+            }
+        }
+    }
+
+    nameRanges = mergeRanges(nameRanges, in: name)
+    pathRanges = mergeRanges(pathRanges, in: path)
+
+    let nameText = buildHighlightedText(text: name, ranges: nameRanges,
+                                        font: nameFont, color: nameColor,
+                                        highlightColor: highlightColor)
+    let pathText = buildHighlightedText(text: path, ranges: pathRanges,
+                                        font: pathFont, color: pathColor,
+                                        highlightColor: highlightColor)
+    return (nameText, pathText)
+}
+
+/// Map ranges from fullPath (path+"/"+name) back to individual path and name ranges.
+private func mapFullPathRanges(_ fullRanges: [Range<String.Index>],
+                               fullPath: String, path: String,
+                               name: String) -> (pathRanges: [Range<String.Index>],
+                                                 nameRanges: [Range<String.Index>]) {
+    let separatorIndex = fullPath.index(fullPath.startIndex, offsetBy: path.count)
+    let nameStartInFull = fullPath.index(after: separatorIndex)
+
+    var pathRanges: [Range<String.Index>] = []
+    var nameRanges: [Range<String.Index>] = []
+
+    for range in fullRanges {
+        if range.upperBound <= separatorIndex {
+            pathRanges.append(range)
+        } else if range.lowerBound >= nameStartInFull {
+            let offset = fullPath.distance(from: nameStartInFull, to: range.lowerBound)
+            let length = fullPath.distance(from: range.lowerBound, to: range.upperBound)
+            let nStart = name.index(name.startIndex, offsetBy: offset)
+            let nEnd = name.index(nStart, offsetBy: length)
+            nameRanges.append(nStart..<nEnd)
+        } else {
+            if range.lowerBound < separatorIndex {
+                pathRanges.append(range.lowerBound..<separatorIndex)
+            }
+            if range.upperBound > nameStartInFull {
+                let nameLen = fullPath.distance(from: nameStartInFull, to: range.upperBound)
+                let nEnd = name.index(name.startIndex, offsetBy: nameLen)
+                nameRanges.append(name.startIndex..<nEnd)
+            }
+        }
+    }
+    return (pathRanges, nameRanges)
 }

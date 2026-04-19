@@ -20,6 +20,7 @@ uint32_t SearchEngine::internPath(const std::string& path) {
     uint32_t pIdx = pathPool_.append(path);
     lowerPathPool_.append(me::toLower(path));
     pathLookup_[path] = pIdx;
+    lowerPathLookup_[me::toLower(path)] = pIdx;
     return pIdx;
 }
 
@@ -56,6 +57,7 @@ void SearchEngine::loadRecords(std::vector<FileRecord>&& records) {
     pathPool_.clear();
     lowerPathPool_.clear();
     pathLookup_.clear();
+    lowerPathLookup_.clear();
     pathIndices_.resize(records_.size());
     for (size_t i = 0; i < records_.size(); i++) {
         pathIndices_[i] = internPath(records_[i].path);
@@ -144,12 +146,15 @@ void SearchEngine::loadRecordsV5(std::vector<FileRecord>&& records,
     lowerPathPool_ = std::move(lowerPathDict);
     pathIndices_ = std::move(pathIndices);
 
-    // Rebuild pathLookup_ from pathPool_ entries
+    // Rebuild pathLookup_ and lowerPathLookup_ from pathPool_ entries
     pathLookup_.clear();
+    lowerPathLookup_.clear();
     pathLookup_.reserve(pathPool_.entryCount());
+    lowerPathLookup_.reserve(pathPool_.entryCount());
     for (uint32_t i = 0; i < pathPool_.entryCount(); i++) {
         if (pathPool_.isLive(i)) {
             pathLookup_[pathPool_.str(i)] = i;
+            lowerPathLookup_[lowerPathPool_.str(i)] = i;
         }
     }
 
@@ -516,6 +521,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
     StringPool cdPathPool;
     StringPool cdLowerPathPool;
     std::unordered_map<std::string, uint32_t> cdPathLookup;
+    std::unordered_map<std::string, uint32_t> cdLowerPathLookup;
     std::unordered_map<std::string, uint32_t> cdPathIndex;
     cdPathIndex.reserve(snapSize);
 
@@ -537,6 +543,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
             newPIdx = cdPathPool.append(origPath);
             cdLowerPathPool.append(me::toLower(origPath));
             cdPathLookup[origPath] = newPIdx;
+            cdLowerPathLookup[me::toLower(origPath)] = newPIdx;
         }
         cdPathIndex[fullPathLower] = newIdx;
         // Copy name from snapshot pool into compacted pool
@@ -567,6 +574,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         auto oldPathIndices = std::move(pathIndices_);
         auto oldPathPool = std::move(pathPool_);
         auto oldPathLookup = std::move(pathLookup_);
+        auto oldLowerPathLookup = std::move(lowerPathLookup_);
         auto oldPathIndex = std::move(pathIndex_);
 
         // Install compacted data
@@ -576,6 +584,7 @@ std::unordered_map<uint32_t, uint32_t> SearchEngine::compactRecords() {
         pathPool_ = std::move(cdPathPool);
         lowerPathPool_ = std::move(cdLowerPathPool);
         pathLookup_ = std::move(cdPathLookup);
+        lowerPathLookup_ = std::move(cdLowerPathLookup);
         pathIndex_ = std::move(cdPathIndex);
         nameTrigramIndex_ = std::move(cdTrigramIndex);
         pathTrigramIndex_ = std::move(cdPathTrigramIndex);

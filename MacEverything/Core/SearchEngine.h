@@ -284,6 +284,7 @@ private:
     StringPool pathPool_;                  // contiguous directory paths (deduplicated)
     StringPool lowerPathPool_;             // parallel to pathPool_, stores pre-lowered paths
     std::unordered_map<std::string, uint32_t> pathLookup_; // path string -> pathPool_ index
+    std::unordered_map<std::string, uint32_t> lowerPathLookup_; // lowered path -> pathPool_ index
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> record index
     std::atomic<uint32_t> liveCount_{0};
     mutable std::shared_mutex mutex_;
@@ -345,6 +346,27 @@ private:
     /// Check if a directory path matches the path segment constraints.
     static bool pathSegmentsMatch(const std::string& dirPath,
                                   const std::vector<PathSegment>& segments);
+
+    /// Estimate trigram candidate count for a keyword (min posting list size).
+    /// Returns SIZE_MAX if keyword is < 3 chars, 0 if any trigram not in index.
+    size_t estimateTrigramCost(const std::string& keyword) const;
+
+    /// Tree-walk from anchor directory down to target segment, collecting matches.
+    void treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
+                      int fromSegIdx, int toSegIdx,
+                      size_t totalSize, uint64_t myGen,
+                      std::vector<Match>& merged) const;
+
+    /// Anchor on namePattern: trigram intersect + path verify. Returns false to fall back.
+    bool queryStructuredNameAnchor(const ParsedQuery& pq,
+                                   size_t totalSize, uint64_t myGen,
+                                   std::vector<Match>& merged) const;
+
+    /// Anchor on path segment: trigram intersect + tree-walk. Returns false to fall back.
+    bool queryStructuredPathAnchor(const ParsedQuery& pq,
+                                   size_t anchorIdx,
+                                   size_t totalSize, uint64_t myGen,
+                                   std::vector<Match>& merged) const;
 
     /// Path trigram strategy: lookup via pathTrigramIndex_ for non-slash queries.
     void queryPathTrigram(const std::string& lowerKey,

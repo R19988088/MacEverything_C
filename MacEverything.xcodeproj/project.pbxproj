@@ -48,6 +48,7 @@
 		A1000026 /* SearchEngineIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200003A; };
 		A1000027 /* QueryParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200003B; };
 		A1000028 /* SearchEngineAdvancedQuery.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A200003C; };
+		A1000029 /* SearchEngineStructuredQuery.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A2000042; };
 		B1000001 /* MacEverythingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001; };
 		D1000001 /* MCPConfigManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000001; };
 		D1000002 /* MacEverythingMCP in Copy MCP Binary */ = {isa = PBXBuildFile; fileRef = C2000099; };
@@ -138,6 +139,7 @@
 		A200003F /* QueryParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryParser.h; sourceTree = "<group>"; };
 		A2000040 /* QueryFilterParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryFilterParser.h; sourceTree = "<group>"; };
 		A2000041 /* QueryDateParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = QueryDateParser.h; sourceTree = "<group>"; };
+		A2000042 /* SearchEngineStructuredQuery.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SearchEngineStructuredQuery.cpp; sourceTree = "<group>"; };
 		B2000001 /* MacEverythingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEverythingUITests.swift; sourceTree = "<group>"; };
 		B2000002 /* MacEverythingUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacEverythingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000001 /* mcp_main.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = mcp_main.cpp; sourceTree = "<group>"; };
@@ -309,6 +311,7 @@
 				A2000038 /* ServiceEngine+Content.cpp */,
 				A200003B /* QueryParser.cpp */,
 				A200003C /* SearchEngineAdvancedQuery.cpp */,
+				A2000042 /* SearchEngineStructuredQuery.cpp */,
 				A200003D /* QueryAST.h */,
 				A200003E /* QueryTokenizer.h */,
 				A200003F /* QueryParser.h */,
@@ -465,6 +468,7 @@
 				D1000001 /* MCPConfigManager.swift in Sources */,
 				A1000027 /* QueryParser.cpp in Sources */,
 				A1000028 /* SearchEngineAdvancedQuery.cpp in Sources */,
+				A1000029 /* SearchEngineStructuredQuery.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

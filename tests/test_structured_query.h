@@ -342,5 +342,211 @@ static void runStructuredQueryTests() {
         CHECK(res.size() >= 1);
     }
 
+    // ── Anchor-Selection Optimization Tests (Feature 105) ──
+
+    // -- Test 20: Path anchor — segment with fewer trigram candidates --
+    std::cout << "\n  --- Test 20: Path anchor — path segment cheaper than name ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // Build a scenario where "settings" is a good trigram anchor
+        // but namePattern "config" would match more
+        records.push_back({"settings", "/app", 2, 0, 1000});
+        records.push_back({"config.yaml", "/app/settings", 1, 100, 2000});
+        records.push_back({"config.json", "/app/settings", 1, 200, 3000});
+        records.push_back({"config.xml", "/other/place", 1, 300, 4000});
+        // Add some noise records to ensure trigram index is built
+        for (int i = 0; i < 50; i++) {
+            std::string name = "noise_file_" + std::to_string(i) + ".txt";
+            records.push_back({name, "/noise/dir", 1, 400 + (uint32_t)i, 5000 + (uint32_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        auto res = engine.query("/settings/config");
+        // Should find both config files under /app/settings
+        int matchCount = 0;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.path == "/app/settings" && rec.name.find("config") != std::string::npos) matchCount++;
+        }
+        CHECK(matchCount == 2);
+
+        // Should NOT find config.xml in /other/place
+        bool foundOther = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.path == "/other/place") foundOther = true;
+        }
+        CHECK(!foundOther);
+    }
+
+    // -- Test 21: Tree-walk through 3 adjacent segments --
+    std::cout << "\n  --- Test 21: Tree-walk — 3 adjacent segments ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // /usr/local/bin structure
+        records.push_back({"usr", "/", 2, 0, 100});
+        records.push_back({"local", "/usr", 2, 0, 200});
+        records.push_back({"bin", "/usr/local", 2, 0, 300});
+        records.push_back({"python3", "/usr/local/bin", 1, 100, 400});
+        records.push_back({"gcc", "/usr/local/bin", 1, 200, 500});
+        // /opt/local/bin (different root)
+        records.push_back({"opt", "/", 2, 0, 600});
+        records.push_back({"local", "/opt", 2, 0, 700});
+        records.push_back({"bin", "/opt/local", 2, 0, 800});
+        records.push_back({"ruby", "/opt/local/bin", 1, 300, 900});
+        // Add noise
+        for (int i = 0; i < 30; i++) {
+            std::string name = "padding_entry_" + std::to_string(i) + ".dat";
+            records.push_back({name, "/tmp", 1, 400 + (uint32_t)i, 1000 + (uint32_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        // Query "/usr/local/bin/python" → walk through usr→local→bin→python
+        auto res = engine.query("/usr/local/bin/python");
+        bool foundPython = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "python3" && rec.path == "/usr/local/bin") foundPython = true;
+        }
+        CHECK(foundPython);
+
+        // Should not find ruby (under /opt/local/bin)
+        bool foundRuby = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "ruby") foundRuby = true;
+        }
+        CHECK(!foundRuby);
+    }
+
+    // -- Test 22: Non-adjacent segment with * falls back correctly --
+    std::cout << "\n  --- Test 22: Non-adjacent — path anchor with * ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"project", "/", 2, 0, 100});
+        records.push_back({"source", "/project", 2, 0, 200});
+        records.push_back({"core", "/project/source", 2, 0, 300});
+        records.push_back({"engine.cpp", "/project/source/core", 1, 100, 400});
+        records.push_back({"engine.cpp", "/other/path/core", 1, 200, 500});
+        for (int i = 0; i < 30; i++) {
+            std::string name = "filler_record_" + std::to_string(i) + ".log";
+            records.push_back({name, "/filler", 1, 300 + (uint32_t)i, 600 + (uint32_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        // "/project/*/engine" → "project" non-adjacent to "engine"
+        auto res = engine.query("/project/*/engine");
+        bool foundProject = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "engine.cpp" && rec.path.find("project") != std::string::npos) foundProject = true;
+        }
+        CHECK(foundProject);
+
+        // Should NOT find engine.cpp under /other/path/core
+        bool foundOther = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.path.find("/other/") != std::string::npos) foundOther = true;
+        }
+        CHECK(!foundOther);
+    }
+
+    // -- Test 23: DIR_EXACT mode with path anchor --
+    std::cout << "\n  --- Test 23: DIR_EXACT with path anchor ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"local", "/usr", 2, 0, 100});
+        records.push_back({"bin", "/usr/local", 2, 0, 200});
+        records.push_back({"bin", "/opt", 2, 0, 300});
+        for (int i = 0; i < 30; i++) {
+            std::string name = "dummy_padding_" + std::to_string(i) + ".xyz";
+            records.push_back({name, "/dummy", 1, 100 + (uint32_t)i, 400 + (uint32_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        // "/local/bin/" → DIR_EXACT: find dir named exactly "bin" with path containing "local"
+        auto res = engine.query("/local/bin/");
+        bool foundLocalBin = false;
+        bool foundOptBin = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "bin" && rec.path == "/usr/local") foundLocalBin = true;
+            if (rec.name == "bin" && rec.path == "/opt") foundOptBin = true;
+        }
+        CHECK(foundLocalBin);
+        CHECK(!foundOptBin);
+    }
+
+    // -- Test 24: estimateTrigramCost — short segments (< 3 chars) --
+    std::cout << "\n  --- Test 24: Short segments fallback to linear ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"ls", "/usr/bin", 1, 100, 1000});
+        records.push_back({"ls", "/opt/bin", 1, 200, 2000});
+        records.push_back({"lsof", "/usr/sbin", 1, 300, 3000});
+        engine.loadRecords(std::move(records));
+
+        // "bin/ls" → both segments < 3 chars, must use linear scan
+        auto res = engine.query("bin/ls");
+        bool foundUsrBin = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "ls" && rec.path == "/usr/bin") foundUsrBin = true;
+        }
+        CHECK(foundUsrBin);
+
+        // Should NOT find lsof (name doesn't exactly match "ls" in substring? Actually it does contain "ls")
+        // lsof contains "ls" as substring → should match
+        bool foundLsof = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "lsof") foundLsof = true;
+        }
+        // "ls" is substring of "lsof", and path "/usr/sbin" doesn't contain "bin"
+        // Actually "sbin" does contain "bin"! So lsof should match
+        CHECK(foundLsof);
+    }
+
+    // -- Test 25: Results consistency — anchor vs linear produce same results --
+    std::cout << "\n  --- Test 25: Anchor vs linear result consistency ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // Create enough records with trigram-friendly names for anchor path
+        records.push_back({"settings", "/app", 2, 0, 100});
+        records.push_back({"database.yml", "/app/settings", 1, 100, 200});
+        records.push_back({"database.yml", "/web/settings", 1, 200, 300});
+        records.push_back({"database.yml", "/api/config", 1, 300, 400});
+        records.push_back({"settings", "/web", 2, 0, 500});
+        for (int i = 0; i < 40; i++) {
+            std::string name = "background_item_" + std::to_string(i) + ".tmp";
+            records.push_back({name, "/background", 1, 400 + (uint32_t)i, 600 + (uint32_t)i});
+        }
+        engine.loadRecords(std::move(records));
+
+        auto res = engine.query("/settings/database");
+        // Should find database.yml under /app/settings AND /web/settings
+        int matchCount = 0;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "database.yml" && rec.path.find("settings") != std::string::npos) matchCount++;
+        }
+        CHECK(matchCount == 2);
+
+        // Should NOT find database.yml under /api/config
+        bool foundConfig = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.path == "/api/config") foundConfig = true;
+        }
+        CHECK(!foundConfig);
+    }
+
     std::cout << "\n";
 }

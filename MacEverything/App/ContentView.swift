@@ -25,22 +25,23 @@ struct ContentView: View {
                             .lineLimit(1)
                             .allowsHitTesting(false)
                     }
-                    // Actual text field (in front)
-                    TextField("Search files... (infile: for content search)", text: $viewModel.searchText)
-                        .focused($isSearchFieldFocused)
-                        .accessibilityIdentifier("searchField")
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 26))
-                        .onChange(of: viewModel.searchText) {
-                            viewModel.onSearchTextChanged()
-                        }
-                        .onKeyPress(.tab) {
+                    // Syntax-highlighted search field (in front)
+                    HighlightedSearchField(
+                        text: $viewModel.searchText,
+                        placeholder: "Search files... (infile: for content search)",
+                        isFocused: $isSearchFieldFocused,
+                        onTab: {
                             if viewModel.ghostSuggestion != nil {
                                 viewModel.acceptGhostSuggestion()
-                                return .handled
+                                return true
                             }
-                            return .ignored
+                            return false
                         }
+                    )
+                    .frame(height: 36)
+                    .onChange(of: viewModel.searchText) {
+                        viewModel.onSearchTextChanged()
+                    }
                 }
                 SearchOptionBadges(options: searchOptions)
                 if !viewModel.searchText.isEmpty {

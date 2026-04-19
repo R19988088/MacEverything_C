@@ -43,10 +43,6 @@ size_t SearchEngine::buildFullPathBuf(std::vector<char>& buf,
 // Glob matching
 // ---------------------------------------------------------------------------
 
-bool SearchEngine::isGlobPattern(const std::string& s) {
-    return s.find('*') != std::string::npos || s.find('?') != std::string::npos;
-}
-
 bool SearchEngine::globMatch(const std::string& pattern, const std::string& text) {
     return globMatchImpl(pattern, text);
 }
@@ -145,9 +141,15 @@ void SearchEngine::queryDirList(const ParsedQuery& pq,
 // ---------------------------------------------------------------------------
 // Query preprocessing — normalise raw user input before routing.
 // All transformations that should apply to every query path go here.
+// Returns both original-case and pre-lowered text to avoid redundant lowering.
 // ---------------------------------------------------------------------------
 
-static std::string preprocessQuery(const std::string& raw) {
+struct PreprocessedQuery {
+    std::string original;  // after trim + tilde expansion (original case)
+    std::string lower;     // me::toLower(original) — single canonical lowering
+};
+
+static PreprocessedQuery preprocessQuery(const std::string& raw) {
     // 0) Strip leading/trailing whitespace
     auto start = raw.find_first_not_of(" \t\r\n");
     if (start == std::string::npos) return {};
@@ -167,7 +169,9 @@ static std::string preprocessQuery(const std::string& raw) {
         }
     }
 
-    return result;
+    // 2) Compute canonical lowercase once — eliminates redundant me::toLower()
+    //    calls in parseQuery(), transformSlashTerms(), and makeTerm().
+    return { result, me::toLower(result) };
 }
 
 // ---------------------------------------------------------------------------
@@ -187,11 +191,11 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
 
     if (keyword.empty()) return {};
 
-    std::string expandedKw = preprocessQuery(keyword);
-    if (expandedKw.empty()) return {};
+    auto pq = preprocessQuery(keyword);
+    if (pq.original.empty()) return {};
 
     // Check for DIR_LIST mode: /path/* queries list directory children directly
-    auto parsedQuery = parseQuery(expandedKw);
+    auto parsedQuery = parseQuery(pq.original, pq.lower);
     if (parsedQuery.mode == QueryMode::DIR_LIST) {
         auto queryStart = std::chrono::steady_clock::now();
         auto beforeLock = std::chrono::steady_clock::now();
@@ -243,5 +247,5 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     }
 
     // All non-DIR_LIST queries go through the unified Advanced path
-    return queryAdvanced(expandedKw, maxResults, useTrigram, timing);
+    return queryAdvanced(pq.original, maxResults, useTrigram, timing);
 }

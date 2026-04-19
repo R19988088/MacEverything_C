@@ -4,6 +4,7 @@
 #include <cctype>
 #include <string_view>
 #include <unordered_set>
+#include "StringUtils.h"
 
 /// Token types produced by the query tokenizer.
 enum class TokenType {
@@ -97,8 +98,7 @@ public:
                 auto colonPos = word.find(':');
                 if (colonPos != std::string::npos && colonPos > 0) {
                     std::string name = word.substr(0, colonPos);
-                    std::string lowerName;
-                    for (char ch : name) lowerName += static_cast<char>(std::tolower(ch));
+                    std::string lowerName = me::toLower(name);
 
                     if (isKnownFilter(lowerName)) {
                         // For filters, re-collect arg allowing < > chars

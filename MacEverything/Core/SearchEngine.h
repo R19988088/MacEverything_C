@@ -348,7 +348,6 @@ private:
     /// Ensure pathTrigramIndex_ has entries for a given pathIdx (called when PathTable grows)
     void ensurePathTrigramsForPathIdx(uint32_t pathIdx);
 
-    static bool isGlobPattern(const std::string& s);
     static bool globMatch(const std::string& pattern, const std::string& text);
 
     /// Match result from search: (record index, priority, full path length).

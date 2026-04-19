@@ -33,17 +33,14 @@ public:
                    name == "da" || name == "dateaccessed") {
             QueryDateParser::parse(node, arg);
         } else if (name == "path" || name == "nopath" || name == "parent") {
-            // Argument is a substring to match — stored as-is in filterArg
-            // Lowercase it for case-insensitive matching
-            std::string lower;
-            for (char c : arg) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            node.filterArg = lower;
+            // Argument is a substring to match — lowercase for case-insensitive matching
+            node.filterArg = me::toLower(arg);
         }
         // Phase 4: Modifiers — convert FILTER → TERM
         else if (name == "case") {
             node.type = QueryNodeType::TERM;
             node.text = arg;
-            node.textLower = me::toLower(arg);
+            // textLower not needed — caseSensitive uses node.text
             node.mode = MatchMode::SUBSTRING;
             node.caseSensitive = true;
         } else if (name == "nocase") {
@@ -55,7 +52,7 @@ public:
         } else if (name == "regex") {
             node.type = QueryNodeType::TERM;
             node.text = arg;
-            node.textLower = me::toLower(arg);
+            // textLower not needed — regex uses node.text with icase flag
             node.mode = MatchMode::REGEX;
         } else if (name == "ww" || name == "wholeword") {
             node.type = QueryNodeType::TERM;
@@ -95,16 +92,14 @@ private:
     /// Parse ext:cpp or ext:cpp;h;hpp into extList
     static void parseExt(QueryNode& node, const std::string& arg) {
         node.op = CompareOp::EQ;
-        std::string lower;
-        for (char c : arg) {
-            if (c == ';') {
-                if (!lower.empty()) node.extList.push_back(lower);
-                lower.clear();
-            } else {
-                lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        std::string lowered = me::toLower(arg);
+        size_t start = 0;
+        for (size_t i = 0; i <= lowered.size(); i++) {
+            if (i == lowered.size() || lowered[i] == ';') {
+                if (i > start) node.extList.push_back(lowered.substr(start, i - start));
+                start = i + 1;
             }
         }
-        if (!lower.empty()) node.extList.push_back(lower);
     }
 
     /// Parse size:>1mb, size:<500kb, size:>=1gb, size:100kb..1mb, size:1024
@@ -168,10 +163,7 @@ private:
         double value = std::stod(s.substr(0, numEnd));
 
         // Parse unit suffix
-        std::string unit;
-        for (size_t i = numEnd; i < s.size(); i++) {
-            unit += static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
-        }
+        std::string unit = me::toLower(s.substr(numEnd));
 
         uint64_t multiplier = 1;
         if (unit == "kb" || unit == "k") {

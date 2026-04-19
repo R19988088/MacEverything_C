@@ -59,6 +59,18 @@ struct QueryNode {
         return n;
     }
 
+    /// Overload with pre-computed lowercase to avoid redundant me::toLower().
+    static std::unique_ptr<QueryNode> makeTerm(const std::string& text,
+                                                const std::string& precomputedLower,
+                                                MatchMode mode) {
+        auto n = std::make_unique<QueryNode>();
+        n->type = QueryNodeType::TERM;
+        n->text = text;
+        n->textLower = precomputedLower;
+        n->mode = mode;
+        return n;
+    }
+
     static std::unique_ptr<QueryNode> makeAnd(std::vector<std::unique_ptr<QueryNode>>&& kids) {
         auto n = std::make_unique<QueryNode>();
         n->type = QueryNodeType::AND;

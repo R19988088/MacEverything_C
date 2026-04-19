@@ -717,6 +717,9 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
             useTrigramIndex = false;
         }
         afterTrigram = std::chrono::steady_clock::now();
+        if (!useTrigramIndex) {
+            afterPhase1 = afterTrigram;  // Trigram degraded: no Phase 1, zero out phase1Ms
+        }
     }
 
     std::vector<Match> merged;
@@ -784,6 +787,7 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
                     ? intersectPostingListsMulti(nameTrigramIndex_, cg.segments, allFound)
                     : intersectPostingLists(nameTrigramIndex_, cg.fixed, allFound);
                 afterTrigram = std::chrono::steady_clock::now();
+                afterPhase1 = afterTrigram;  // Glob-trigram: no Phase 1, zero out phase1Ms
                 if (allFound && candidates.size() <= totalSize / 67) {
                     globUsedTrigram = true;
                     std::vector<char> pathBuf;

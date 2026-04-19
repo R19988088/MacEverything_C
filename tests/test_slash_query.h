@@ -216,4 +216,56 @@ static void runSlashQueryTests() {
         check(names.count("ls") == 1, "DIR_LIST: ls found under /usr/local/bin");
         check(names.count("cat") == 0, "DIR_LIST: cat not under /usr/local/bin");
     }
+
+    // -- Test 13: Trigram-degrade path phase1Ms non-negative --
+    std::cout << "\n  --- Test 13: Trigram-degrade phase1Ms non-negative ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // Create enough records with "test" in the name to exceed the trigram threshold.
+        // Threshold is totalSize / 67 (~1.5%).  With 200 records, threshold = 2.
+        // All 200 names contain "test", so trigram candidates > 2 → degrades to linear.
+        for (int i = 0; i < 200; i++) {
+            std::string name = "test_file_" + std::to_string(i) + ".cpp";
+            records.push_back({name.c_str(), "/some/path", 1, (uint64_t)i, (time_t)(i * 100)});
+        }
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto res = engine.query("test", 0, true, timing);
+        check(res.size() > 0, "Trigram-degrade query 'test' finds results");
+        check(timing.searchPath == "linear",
+              ("Trigram-degrade query uses linear path (got: " + timing.searchPath + ")").c_str());
+        check(timing.phase1Ms >= 0.0,
+              ("phase1Ms must be non-negative after trigram degrade (got: " + std::to_string(timing.phase1Ms) + ")").c_str());
+        check(timing.trigramMs >= 0.0,
+              ("trigramMs must be non-negative after trigram degrade (got: " + std::to_string(timing.trigramMs) + ")").c_str());
+
+        std::cout << "    timing: trigram=" << timing.trigramMs
+                  << "ms phase1=" << timing.phase1Ms << "ms\n";
+    }
+
+    // -- Test 14: Glob-trigram path phase1Ms non-negative --
+    std::cout << "\n  --- Test 14: Glob-trigram phase1Ms non-negative ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"main.cpp", "/project/src", 1, 100, 1000});
+        records.push_back({"util.cpp", "/project/src", 1, 200, 2000});
+        records.push_back({"test.h", "/project/tests", 1, 300, 3000});
+        records.push_back({"readme.md", "/project", 1, 400, 4000});
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto res = engine.query("*.cpp", 0, true, timing);
+        check(res.size() == 2, "Glob query '*.cpp' finds 2 results");
+        check(timing.phase1Ms >= 0.0,
+              ("phase1Ms must be non-negative for glob-trigram (got: " + std::to_string(timing.phase1Ms) + ")").c_str());
+        check(timing.trigramMs >= 0.0,
+              ("trigramMs must be non-negative for glob-trigram (got: " + std::to_string(timing.trigramMs) + ")").c_str());
+
+        std::cout << "    timing: trigram=" << timing.trigramMs
+                  << "ms phase1=" << timing.phase1Ms
+                  << "ms path=" << timing.searchPath << "\n";
+    }
 }

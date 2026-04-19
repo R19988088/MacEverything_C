@@ -1,6 +1,7 @@
 #pragma once
 #include "QueryAST.h"
 #include "QueryDateParser.h"
+#include "StringUtils.h"
 #include <string>
 #include <cctype>
 #include <cstdint>
@@ -42,24 +43,29 @@ public:
         else if (name == "case") {
             node.type = QueryNodeType::TERM;
             node.text = arg;
+            node.textLower = me::toLower(arg);
             node.mode = MatchMode::SUBSTRING;
             node.caseSensitive = true;
         } else if (name == "nocase") {
             node.type = QueryNodeType::TERM;
             node.text = arg;
+            node.textLower = me::toLower(arg);
             node.mode = MatchMode::SUBSTRING;
             node.caseSensitive = false;
         } else if (name == "regex") {
             node.type = QueryNodeType::TERM;
             node.text = arg;
+            node.textLower = me::toLower(arg);
             node.mode = MatchMode::REGEX;
         } else if (name == "ww" || name == "wholeword") {
             node.type = QueryNodeType::TERM;
             node.text = arg;
+            node.textLower = me::toLower(arg);
             node.mode = MatchMode::WHOLEWORD;
         } else if (name == "wfn" || name == "wholefilename") {
             node.type = QueryNodeType::TERM;
             node.text = arg;
+            node.textLower = me::toLower(arg);
             node.mode = MatchMode::WHOLEFILENAME;
         }
         // Phase 4: Macros — convert to ext: filter

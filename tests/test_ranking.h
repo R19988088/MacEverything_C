@@ -8,8 +8,10 @@ static void runSearchRankingTests() {
     std::cout << "  Part 3e: Search Ranking Tests\n";
     std::cout << "========================================\n\n";
 
-    // ── Test 1: Exact name match gets priority 0 ──
-    std::cout << "  --- Exact name match priority ---\n";
+    // ── Test 1: Space-split AND query — scoring term is first TERM ──
+    // "Alfred 5.app" is parsed as AND(TERM("alfred"), TERM("5.app"))
+    // Scoring term = "alfred", so exact name "Alfred" gets priority 0
+    std::cout << "  --- Space-split AND ranking ---\n";
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
@@ -21,8 +23,10 @@ static void runSearchRankingTests() {
 
         auto res = engine.query("Alfred 5.app");
         check(!res.empty(), "Ranking: 'Alfred 5.app' has results");
-        check(engine.getRecord(res[0]).name == "Alfred 5.app",
-              "Ranking: exact name match 'Alfred 5.app' is first result");
+        // "Alfred" is exact match on scoring term "alfred" → priority 0
+        // "Alfred 5.app" starts with "alfred" → priority 1
+        check(engine.getRecord(res[0]).name == "Alfred",
+              "Ranking: exact scoring-term match 'Alfred' is first result");
     }
 
     // ── Test 2: Prefix match before contains match ──
@@ -113,18 +117,18 @@ static void runSearchRankingTests() {
     {
         SearchEngine engine;
         std::vector<FileRecord> records;
-        // Add many path-only matches first (high index)
+        // Add many name-matching records (all contain "target" in name)
         for (int i = 0; i < 100; i++) {
-            records.push_back({"file_" + std::to_string(i) + ".dat",
-                               "/deep/nested/target_dir", 1, 100, 1000});
+            records.push_back({"target_" + std::to_string(i) + ".dat",
+                               "/deep/nested/dir", 1, 100, 1000});
         }
         // Add exact name match last (highest index)
-        records.push_back({"target_dir", "/usr", 2, 0, 2000});
+        records.push_back({"target", "/usr", 1, 0, 2000});
         engine.loadRecords(std::move(records));
 
-        auto res = engine.query("target_dir", 5);
+        auto res = engine.query("target", 5);
         check(!res.empty(), "Ranking: maxResults=5 has results");
-        check(engine.getRecord(res[0]).name == "target_dir",
+        check(engine.getRecord(res[0]).name == "target",
               "Ranking: exact match at high index still first with maxResults=5");
         check(res.size() == 5, "Ranking: maxResults=5 returns exactly 5");
     }

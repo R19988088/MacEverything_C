@@ -4,6 +4,7 @@
 #include <memory>
 #include <sstream>
 #include "StructuredQueryParser.h"
+#include "StringUtils.h"
 
 /// AST node types for the Everything-style query parser.
 enum class QueryNodeType {
@@ -26,9 +27,11 @@ struct QueryNode {
 
     // --- TERM fields ---
     std::string text;
+    std::string textLower;  // pre-computed lowercase of text (avoids per-record toLower)
     MatchMode mode = MatchMode::SUBSTRING;
     bool caseSensitive = false;
     bool matchPath = false;  // path: modifier
+    bool nameOnly = false;   // match name only (set by transformSlashTerms)
 
     // --- AND / OR / NOT: children ---
     std::vector<std::unique_ptr<QueryNode>> children;
@@ -51,6 +54,7 @@ struct QueryNode {
         auto n = std::make_unique<QueryNode>();
         n->type = QueryNodeType::TERM;
         n->text = text;
+        n->textLower = me::toLower(text);
         n->mode = mode;
         return n;
     }

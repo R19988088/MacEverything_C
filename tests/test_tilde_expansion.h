@@ -30,10 +30,12 @@ static void runTildeExpansionTests() {
     // and match f1.txt (Downloads) and notes.txt (Documents)
     auto res = engine.query("~/*/*.txt");
     check(res.size() == 2, "Tilde glob '~/*/*.txt': 2 matches (f1.txt, notes.txt)");
+    if (res.size() < 2) { std::cout << "  ABORT: wrong count, skipping rest\n"; return; }
 
     // ~/Downloads/*.txt should match only f1.txt
     res = engine.query("~/Downloads/*.txt");
     check(res.size() == 1, "Tilde glob '~/Downloads/*.txt': 1 match");
+    if (res.empty()) { std::cout << "  ABORT: empty result\n"; return; }
     check(engine.getRecord(res[0]).name == "f1.txt", "Tilde glob '~/Downloads/*.txt': correct file");
 
     // ~ alone (just home dir) — expands to e.g. "/Users/wujian"
@@ -50,6 +52,7 @@ static void runTildeExpansionTests() {
     // ~/Pictures/*/*.jpg should match photo.jpg
     res = engine.query("~/Pictures/*/*.jpg");
     check(res.size() == 1, "Tilde glob '~/Pictures/*/*.jpg': 1 match");
+    if (res.empty()) { std::cout << "  ABORT: empty result\n"; return; }
     check(engine.getRecord(res[0]).name == "photo.jpg", "Tilde glob '~/Pictures/*/*.jpg': correct file");
 
     // Tilde should NOT expand in the middle of a string

@@ -14,7 +14,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <chrono>
-#include <regex>
+#include <re2/re2.h>
 #include <functional>
 #include <thread>
 #include <dispatch/dispatch.h>
@@ -91,7 +91,8 @@ static bool isWholeWordMatch(const char* text, size_t textLen,
 }
 
 /// Pre-compiled regex cache, keyed by QueryNode pointer.
-using RegexCache = std::unordered_map<const QueryNode*, std::regex>;
+/// Uses RE2 for guaranteed linear-time matching (no backtracking).
+using RegexCache = std::unordered_map<const QueryNode*, std::unique_ptr<re2::RE2>>;
 
 /// Collect all REGEX TERM nodes from the AST for pre-compilation.
 static void collectRegexNodes(const QueryNode& node, std::vector<const QueryNode*>& out) {
@@ -311,9 +312,18 @@ static bool evalTerm(const QueryNode& node,
     case MatchMode::REGEX: {
         auto it = regexCache.find(&node);
         if (it == regexCache.end()) return false;
-        // Match against lowercase name by default
-        std::string name(nameData, nameLen);
-        return std::regex_search(name, it->second);
+        // Match against name using RE2 zero-copy StringPiece (no per-record allocation)
+        re2::StringPiece sp(nameData, nameLen);
+        if (RE2::PartialMatch(sp, *it->second)) return true;
+        // If not nameOnly, also try full path match
+        if (node.nameOnly) return false;
+        size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
+        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+        memcpy(pathBuf.data(), pathData, pathLen);
+        pathBuf[pathLen] = '/';
+        memcpy(pathBuf.data() + pathLen + 1, nameData, nameLen);
+        re2::StringPiece fullSp(pathBuf.data(), fullLen);
+        return RE2::PartialMatch(fullSp, *it->second);
     }
 
     case MatchMode::WHOLEWORD: {
@@ -601,12 +611,14 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         std::vector<const QueryNode*> regexNodes;
         collectRegexNodes(*ast, regexNodes);
         for (auto* rn : regexNodes) {
-            try {
-                regexCache.emplace(rn, std::regex(rn->text,
-                    std::regex::ECMAScript | std::regex::icase | std::regex::optimize));
-            } catch (const std::regex_error&) {
-                // Invalid regex — evalTerm will return false for this node
+            re2::RE2::Options opts;
+            opts.set_case_sensitive(rn->caseSensitive);
+            opts.set_log_errors(false);
+            auto re = std::make_unique<re2::RE2>(rn->text, opts);
+            if (re->ok()) {
+                regexCache.emplace(rn, std::move(re));
             }
+            // Invalid regex — evalTerm will return false for this node
         }
     }
 

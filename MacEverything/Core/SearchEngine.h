@@ -125,7 +125,6 @@ public:
 
     /// Snapshot data for v6 serialization (thread-safe).
     struct V6Snapshot {
-        std::vector<FileRecord> records;
         StringPool origNamePool;  // original-case names
         StringPool namePool;      // lowercase names
         std::vector<uint32_t> pathIndices;
@@ -244,7 +243,7 @@ public:
     uint64_t compactionGeneration() const { return compactionGen_.load(std::memory_order_relaxed); }
 
     /// Return indices of the most recently modified live records, sorted by modTime descending.
-    /// Accesses records_ directly under the lock to avoid per-record copy overhead.
+    /// Accesses recentCache_ directly under the lock to avoid per-record copy overhead.
     std::vector<uint32_t> recentIndices(uint32_t count) const;
 
     /// Look up the record index for a given full path. Returns UINT32_MAX if not found.
@@ -254,7 +253,7 @@ public:
     std::vector<FileRecord> exportRecords() const;
 
     /// Build the full path from a record's path and name components.
-    static std::string makeFullPath(const std::string& path, const std::string& name);
+    static std::string makeFullPath(std::string_view path, std::string_view name);
 
     /// Resolve a record's path via pathPool_. Thread-safe (acquires shared_lock).
     /// Returns by value to prevent dangling references during concurrent compaction.
@@ -264,15 +263,23 @@ public:
         return pathPool_.str(pathIndices_[index]);
     }
 
-    /// Batch callback access under a single shared_lock. Avoids per-record copy.
+    /// Batch callback access under a single shared_lock. Reconstructs FileRecord from SoA.
     /// Callback signature: void(uint32_t idx, const FileRecord& record, const std::string& path)
     template<typename Func>
     void forEachRecordWithPath(const std::vector<uint32_t>& indices, Func&& func) const {
         std::shared_lock lock(mutex_);
         for (uint32_t idx : indices) {
-            if (idx >= records_.size() || records_[idx].type == 0) continue;
+            if (idx >= types_.size() || types_[idx] == 0) continue;
             std::string path = pathPool_.str(pathIndices_[idx]);
-            func(idx, records_[idx], path);
+            FileRecord rec;
+            rec.name = origNamePool_.str(idx);
+            rec.path = path;
+            rec.type = types_[idx];
+            rec.size = sizes_[idx];
+            rec.modTime = static_cast<time_t>(modTimes_[idx]);
+            rec.inode = inodes_[idx];
+            rec.devId = devIds_[idx];
+            func(idx, rec, path);
         }
     }
 
@@ -282,10 +289,18 @@ public:
     template<typename Func>
     void forEachRecordInRange(uint32_t startIdx, uint32_t count, Func&& func) const {
         std::shared_lock lock(mutex_);
-        uint32_t end = std::min(startIdx + count, static_cast<uint32_t>(records_.size()));
+        uint32_t end = std::min(startIdx + count, static_cast<uint32_t>(types_.size()));
         for (uint32_t i = startIdx; i < end; i++) {
             std::string path = pathPool_.str(pathIndices_[i]);
-            func(i, records_[i], path);
+            FileRecord rec;
+            rec.name = origNamePool_.str(i);
+            rec.path = path;
+            rec.type = types_[i];
+            rec.size = sizes_[i];
+            rec.modTime = static_cast<time_t>(modTimes_[i]);
+            rec.inode = inodes_[i];
+            rec.devId = devIds_[i];
+            func(i, rec, path);
         }
     }
 
@@ -295,9 +310,16 @@ public:
     template<typename Func>
     void forEachRecordInRangeV5(uint32_t startIdx, uint32_t count, Func&& func) const {
         std::shared_lock lock(mutex_);
-        uint32_t end = std::min(startIdx + count, static_cast<uint32_t>(records_.size()));
+        uint32_t end = std::min(startIdx + count, static_cast<uint32_t>(types_.size()));
         for (uint32_t i = startIdx; i < end; i++) {
-            func(i, records_[i], pathIndices_[i],
+            FileRecord rec;
+            rec.name = origNamePool_.str(i);
+            rec.type = types_[i];
+            rec.size = sizes_[i];
+            rec.modTime = static_cast<time_t>(modTimes_[i]);
+            rec.inode = inodes_[i];
+            rec.devId = devIds_[i];
+            func(i, rec, pathIndices_[i],
                  namePool_.data(i), namePool_.length(i));
         }
     }
@@ -327,19 +349,18 @@ public:
     }
 
 private:
-    std::vector<FileRecord> records_;
     StringPool origNamePool_;              // contiguous original-case filenames (for v6 persistence)
     StringPool namePool_;                  // contiguous lowercase filenames
     std::vector<uint32_t> pathIndices_;    // per-record index into pathPool_
     StringPool pathPool_;                  // contiguous directory paths (deduplicated)
     StringPool lowerPathPool_;             // parallel to pathPool_, stores pre-lowered paths
 
-    // SoA columnar arrays for cache-friendly filter evaluation (P0)
-    std::vector<uint8_t>  types_;          // records_[i].type  — 1B per record
-    std::vector<uint64_t> sizes_;          // records_[i].size  — 8B per record
-    std::vector<int64_t>  modTimes_;       // records_[i].modTime — 8B per record
-    std::vector<uint64_t> inodes_;         // records_[i].inode — 8B per record
-    std::vector<int32_t>  devIds_;         // records_[i].devId — 4B per record
+    // SoA columnar arrays — the canonical per-record storage
+    std::vector<uint8_t>  types_;          // 1=file, 2=directory, 0=tombstone
+    std::vector<uint64_t> sizes_;          // file size in bytes
+    std::vector<int64_t>  modTimes_;       // modification time (Unix epoch)
+    std::vector<uint64_t> inodes_;         // inode number
+    std::vector<int32_t>  devIds_;         // device ID
     std::unordered_map<std::string, uint32_t> pathLookup_; // path string -> pathPool_ index
     std::unordered_map<std::string, uint32_t> lowerPathLookup_; // lowered path -> pathPool_ index
     std::unordered_map<std::string, uint32_t> pathIndex_; // fullPath -> record index
@@ -357,14 +378,11 @@ private:
     /// Deduplicates via pathLookup_. Must be called under unique_lock.
     uint32_t internPath(const std::string& path);
 
-    /// Tombstone a record at idx: clear record fields + SoA columns. Must be called under unique_lock.
+    /// Tombstone a record at idx: clear SoA columns. Must be called under unique_lock.
     void tombstoneAt(uint32_t idx);
 
-    /// Append a record + sync SoA columns. Must be called under unique_lock.
+    /// Append a record to SoA columns. Must be called under unique_lock.
     void pushRecord(FileRecord&& rec);
-
-    /// Rebuild SoA arrays from records_. Called after bulk assign (loadRecords/loadRecordsV5/compaction swap).
-    void rebuildSoA();
 
     /// Unlocked variants — caller must hold unique_lock on mutex_.
     bool removeByPathUnlocked(const std::string& fullPath);
@@ -489,7 +507,7 @@ private:
 
     /// Build trigram index from standalone data (no member access, used by COW compaction)
     static std::unordered_map<Trigram, std::vector<uint32_t>>
-        buildTrigramIndexFromData(const std::vector<FileRecord>& records,
+        buildTrigramIndexFromData(const std::vector<uint8_t>& types,
                                   const StringPool& namePool);
 
     /// Build path trigram index from pre-lowered StringPool (used by COW compaction)
@@ -498,12 +516,13 @@ private:
 
     /// Build pathIdx -> record indices mapping from standalone data (used by COW compaction)
     static std::vector<std::vector<uint32_t>>
-        buildPathIdxToRecordsFromData(const std::vector<FileRecord>& records,
+        buildPathIdxToRecordsFromData(const std::vector<uint8_t>& types,
                                       const std::vector<uint32_t>& pathIndices,
                                       uint32_t pathPoolSize);
 
     /// Build recent cache from standalone data (no member access, used by COW compaction)
     static std::set<RecentEntry>
-        buildRecentCacheFromData(const std::vector<FileRecord>& records,
+        buildRecentCacheFromData(const std::vector<uint8_t>& types,
+                                 const std::vector<int64_t>& modTimes,
                                  uint32_t cacheSize);
 };

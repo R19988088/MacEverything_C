@@ -86,11 +86,11 @@ std::vector<uint32_t> SearchEngine::intersectPostingListsMulti(
 // ---------------------------------------------------------------------------
 
 std::unordered_map<Trigram, std::vector<uint32_t>>
-SearchEngine::buildTrigramIndexFromData(const std::vector<FileRecord>& records,
+SearchEngine::buildTrigramIndexFromData(const std::vector<uint8_t>& types,
                                         const StringPool& namePool) {
     std::unordered_map<Trigram, std::vector<uint32_t>> index;
     for (uint32_t i = 0; i < namePool.entryCount(); i++) {
-        if (records[i].type == 0 || !namePool.isLive(i)) continue;
+        if (types[i] == 0 || !namePool.isLive(i)) continue;
         std::string_view sv = namePool.view(i);
         auto trigrams = ContentIndex::extractTrigrams(std::string(sv));
         std::sort(trigrams.begin(), trigrams.end());
@@ -106,7 +106,7 @@ SearchEngine::buildTrigramIndexFromData(const std::vector<FileRecord>& records,
 }
 
 void SearchEngine::buildTrigramIndex() {
-    nameTrigramIndex_ = buildTrigramIndexFromData(records_, namePool_);
+    nameTrigramIndex_ = buildTrigramIndexFromData(types_, namePool_);
 }
 
 void SearchEngine::addTrigramsForRecord(uint32_t idx, const char* data, uint16_t len) {
@@ -169,12 +169,12 @@ SearchEngine::buildPathTrigramIndexFromData(const StringPool& lowerPathPool) {
 }
 
 std::vector<std::vector<uint32_t>>
-SearchEngine::buildPathIdxToRecordsFromData(const std::vector<FileRecord>& records,
+SearchEngine::buildPathIdxToRecordsFromData(const std::vector<uint8_t>& types,
                                             const std::vector<uint32_t>& pathIndices,
                                             uint32_t pathPoolSize) {
     std::vector<std::vector<uint32_t>> mapping(pathPoolSize);
-    for (size_t i = 0; i < records.size(); i++) {
-        if (records[i].type == 0) continue;
+    for (size_t i = 0; i < types.size(); i++) {
+        if (types[i] == 0) continue;
         uint32_t pi = pathIndices[i];
         if (pi < mapping.size()) {
             mapping[pi].push_back(static_cast<uint32_t>(i));
@@ -191,7 +191,7 @@ void SearchEngine::buildPathTrigramIndex() {
 }
 
 void SearchEngine::rebuildPathIdxToRecords() {
-    pathIdxToRecords_ = buildPathIdxToRecordsFromData(records_, pathIndices_, pathPool_.entryCount());
+    pathIdxToRecords_ = buildPathIdxToRecordsFromData(types_, pathIndices_, pathPool_.entryCount());
 }
 
 void SearchEngine::addPathTrigramsForRecord(uint32_t idx) {

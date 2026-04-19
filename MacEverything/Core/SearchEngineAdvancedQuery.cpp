@@ -103,12 +103,12 @@ static void collectRegexNodes(const QueryNode& node, std::vector<const QueryNode
     }
 }
 
-/// Evaluate a FILTER node against a single record.
+/// Evaluate a FILTER node against a single record (SoA fields).
 /// When called from the pure-filter SoA fast path, nameData and pathData are nullptr —
 /// string-based filters short-circuit (return true) since isPureFilter() guarantees
 /// the query contains no string filters.
 static bool evalFilter(const QueryNode& node,
-                       const FileRecord& rec,
+                       uint8_t recType, uint64_t recSize, time_t recModTime,
                        const char* nameData, uint16_t nameLen,
                        const char* pathData, uint16_t pathLen,
                        std::vector<char>& pathBuf) {
@@ -140,23 +140,23 @@ static bool evalFilter(const QueryNode& node,
 
     // size: — compare file size
     if (name == "size") {
-        return compareNumeric(rec.size, node.op, node.numVal1, node.numVal2);
+        return compareNumeric(recSize, node.op, node.numVal1, node.numVal2);
     }
 
     // file: — match files only
     if (name == "file") {
-        return rec.type == 1; // 1=file
+        return recType == 1; // 1=file
     }
 
     // folder: — match directories only
     if (name == "folder") {
-        return rec.type == 2; // 2=dir
+        return recType == 2; // 2=dir
     }
 
     // type: — shorthand for file/folder
     if (name == "type") {
-        if (node.filterArg == "file") return rec.type == 1;
-        if (node.filterArg == "folder" || node.filterArg == "dir") return rec.type == 2;
+        if (node.filterArg == "file") return recType == 1;
+        if (node.filterArg == "folder" || node.filterArg == "dir") return recType == 2;
         return false;
     }
 
@@ -209,20 +209,20 @@ static bool evalFilter(const QueryNode& node,
 
     // dm: / datemodified: — modification date filter
     if (name == "dm" || name == "datemodified") {
-        return compareNumeric(static_cast<uint64_t>(rec.modTime), node.op,
+        return compareNumeric(static_cast<uint64_t>(recModTime), node.op,
                               node.numVal1, node.numVal2);
     }
 
     // dc: / datecreated: — creation date (uses modTime as fallback since
     // FileRecord doesn't store birthtime yet)
     if (name == "dc" || name == "datecreated") {
-        return compareNumeric(static_cast<uint64_t>(rec.modTime), node.op,
+        return compareNumeric(static_cast<uint64_t>(recModTime), node.op,
                               node.numVal1, node.numVal2);
     }
 
     // da: / dateaccessed: — access date (uses modTime as fallback)
     if (name == "da" || name == "dateaccessed") {
-        return compareNumeric(static_cast<uint64_t>(rec.modTime), node.op,
+        return compareNumeric(static_cast<uint64_t>(recModTime), node.op,
                               node.numVal1, node.numVal2);
     }
 
@@ -232,12 +232,14 @@ static bool evalFilter(const QueryNode& node,
 
 /// Evaluate a TERM node against a single record.
 /// Returns true if the record's name or full path matches the term text.
-/// nameData is lowercase (from namePool_), rec.name has original case.
+/// nameData is lowercase (from namePool_), origNameData has original case (from origNamePool_).
+/// pathData is lowercase, origPathData has original case (from pathPool_).
 /// Returns false when nameData is nullptr (pure-filter SoA fast path).
 static bool evalTerm(const QueryNode& node,
-                     const FileRecord& rec,
                      const char* nameData, uint16_t nameLen,
                      const char* pathData, uint16_t pathLen,
+                     const char* origNameData, uint16_t origNameLen,
+                     const char* origPathData, uint16_t origPathLen,
                      std::vector<char>& pathBuf,
                      const RegexCache& regexCache) {
     if (!nameData) return false; // SoA pure-filter path — no string data available
@@ -245,22 +247,25 @@ static bool evalTerm(const QueryNode& node,
 
     case MatchMode::SUBSTRING: {
         if (node.caseSensitive) {
-            // Case-sensitive: compare against original-case name (rec.name)
-            const auto& origName = rec.name;
+            // Case-sensitive: compare against original-case name
             const auto& term = node.text;
             // Check name
-            if (origName.size() >= term.size()) {
-                for (size_t i = 0; i + term.size() <= origName.size(); ++i) {
-                    if (memcmp(origName.data() + i, term.data(), term.size()) == 0)
+            if (origNameLen >= term.size()) {
+                for (size_t i = 0; i + term.size() <= origNameLen; ++i) {
+                    if (memcmp(origNameData + i, term.data(), term.size()) == 0)
                         return true;
                 }
             }
-            // Check full path (original case: rec.path + "/" + rec.name)
+            // Check full path (original case: origPath + "/" + origName)
             if (node.nameOnly) return false;
-            std::string fullPath = rec.path + "/" + rec.name;
-            if (fullPath.size() >= term.size()) {
-                for (size_t i = 0; i + term.size() <= fullPath.size(); ++i) {
-                    if (memcmp(fullPath.data() + i, term.data(), term.size()) == 0)
+            size_t fullLen = static_cast<size_t>(origPathLen) + 1 + origNameLen;
+            if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+            memcpy(pathBuf.data(), origPathData, origPathLen);
+            pathBuf[origPathLen] = '/';
+            memcpy(pathBuf.data() + origPathLen + 1, origNameData, origNameLen);
+            if (fullLen >= term.size()) {
+                for (size_t i = 0; i + term.size() <= fullLen; ++i) {
+                    if (memcmp(pathBuf.data() + i, term.data(), term.size()) == 0)
                         return true;
                 }
             }
@@ -334,35 +339,49 @@ static bool evalTerm(const QueryNode& node,
 
 /// Recursively evaluate AST node against a single record.
 static bool evalNode(const QueryNode& node,
-                     const FileRecord& rec,
+                     uint8_t recType, uint64_t recSize, time_t recModTime,
                      const char* nameData, uint16_t nameLen,
                      const char* pathData, uint16_t pathLen,
+                     const char* origNameData, uint16_t origNameLen,
+                     const char* origPathData, uint16_t origPathLen,
                      std::vector<char>& pathBuf,
                      const RegexCache& regexCache) {
     switch (node.type) {
         case QueryNodeType::TERM:
-            return evalTerm(node, rec, nameData, nameLen, pathData, pathLen, pathBuf, regexCache);
+            return evalTerm(node, nameData, nameLen, pathData, pathLen,
+                            origNameData, origNameLen, origPathData, origPathLen,
+                            pathBuf, regexCache);
 
         case QueryNodeType::AND:
             for (auto& child : node.children) {
-                if (!evalNode(*child, rec, nameData, nameLen, pathData, pathLen, pathBuf, regexCache))
+                if (!evalNode(*child, recType, recSize, recModTime,
+                              nameData, nameLen, pathData, pathLen,
+                              origNameData, origNameLen, origPathData, origPathLen,
+                              pathBuf, regexCache))
                     return false;
             }
             return true;
 
         case QueryNodeType::OR:
             for (auto& child : node.children) {
-                if (evalNode(*child, rec, nameData, nameLen, pathData, pathLen, pathBuf, regexCache))
+                if (evalNode(*child, recType, recSize, recModTime,
+                             nameData, nameLen, pathData, pathLen,
+                             origNameData, origNameLen, origPathData, origPathLen,
+                             pathBuf, regexCache))
                     return true;
             }
             return false;
 
         case QueryNodeType::NOT:
             if (node.children.empty()) return true;
-            return !evalNode(*node.children[0], rec, nameData, nameLen, pathData, pathLen, pathBuf, regexCache);
+            return !evalNode(*node.children[0], recType, recSize, recModTime,
+                             nameData, nameLen, pathData, pathLen,
+                             origNameData, origNameLen, origPathData, origPathLen,
+                             pathBuf, regexCache);
 
         case QueryNodeType::FILTER:
-            return evalFilter(node, rec, nameData, nameLen, pathData, pathLen, pathBuf);
+            return evalFilter(node, recType, recSize, recModTime,
+                              nameData, nameLen, pathData, pathLen, pathBuf);
     }
     return false;
 }
@@ -573,8 +592,8 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     std::shared_lock lock(mutex_);
     auto afterLock = std::chrono::steady_clock::now();
 
-    if (records_.empty()) return {};
-    size_t totalSize = records_.size();
+    if (types_.empty()) return {};
+    size_t totalSize = types_.size();
     uint64_t myGen = queryGeneration_.load(std::memory_order_relaxed);
 
     auto beforeTrigram = afterLock, afterTrigram = afterLock;
@@ -686,9 +705,11 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             uint64_t capturedGen = myGen;
             const uint32_t* candidatesData = candidates.data();
             const auto* astPtr = ast.get();
-            const auto& records = records_;
             const auto* typesPtr = types_.data();
+            const auto* sizesPtr = sizes_.data();
+            const auto* modTimesPtr = modTimes_.data();
             const auto& namePool = namePool_;
+            const auto& origNamePool = origNamePool_;
             const auto& lowerPathPool = lowerPathPool_;
             const auto& pathPool = pathPool_;
             const auto& pIndices = pathIndices_;
@@ -706,7 +727,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                     if ((ci & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
                     if (ci + PREFETCH_DIST < end) {
                         uint32_t futureIdx = candidatesData[ci + PREFETCH_DIST];
-                        __builtin_prefetch(&records[futureIdx], 0, 0);
+                        __builtin_prefetch(typesPtr + futureIdx, 0, 0);
                         __builtin_prefetch(namePool.entries() + futureIdx, 0, 0);
                     }
                     uint32_t idx = candidatesData[ci];
@@ -716,7 +737,14 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                     uint32_t pi = pIndices[idx];
                     const char* pd = lowerPathPool.data(pi);
                     uint16_t pl = lowerPathPool.length(pi);
-                    if (!evalNode(*astPtr, records[idx], nd, nl, pd, pl, localPathBuf, regCache)) continue;
+                    const char* ond = origNamePool.data(idx);
+                    uint16_t onl = origNamePool.length(idx);
+                    const char* opd = pathPool.data(pi);
+                    uint16_t opl = pathPool.length(pi);
+                    if (!evalNode(*astPtr, typesPtr[idx], sizesPtr[idx],
+                                  static_cast<time_t>(modTimesPtr[idx]),
+                                  nd, nl, pd, pl, ond, onl, opd, opl,
+                                  localPathBuf, regCache)) continue;
                     uint8_t priority = 2;
                     if (!sTerm.empty()) {
                         if (me::simdContains(nd, nl, sTerm.data(), sTerm.size())) {
@@ -737,11 +765,13 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             // Small candidate set — single-threaded with prefetch
             const uint32_t* candidatesData = candidates.data();
             const auto* smallTypesPtr = types_.data();
+            const auto* smallSizesPtr = sizes_.data();
+            const auto* smallModTimesPtr = modTimes_.data();
             for (size_t ci = 0; ci < candidateCount; ci++) {
                 if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                 if (ci + PREFETCH_DIST < candidateCount) {
                     uint32_t futureIdx = candidatesData[ci + PREFETCH_DIST];
-                    __builtin_prefetch(&records_[futureIdx], 0, 0);
+                    __builtin_prefetch(smallTypesPtr + futureIdx, 0, 0);
                     __builtin_prefetch(namePool_.entries() + futureIdx, 0, 0);
                 }
                 uint32_t idx = candidatesData[ci];
@@ -751,7 +781,14 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 uint32_t pi = pathIndices_[idx];
                 const char* pd = lowerPathPool_.data(pi);
                 uint16_t pl = lowerPathPool_.length(pi);
-                if (!evalNode(*ast, records_[idx], nd, nl, pd, pl, pathBuf, regexCache)) continue;
+                const char* ond = origNamePool_.data(idx);
+                uint16_t onl = origNamePool_.length(idx);
+                const char* opd = pathPool_.data(pi);
+                uint16_t opl = pathPool_.length(pi);
+                if (!evalNode(*ast, smallTypesPtr[idx], smallSizesPtr[idx],
+                              static_cast<time_t>(smallModTimesPtr[idx]),
+                              nd, nl, pd, pl, ond, onl, opd, opl,
+                              pathBuf, regexCache)) continue;
                 uint8_t priority = 2;
                 if (!scoringTerm.empty()) {
                     if (me::simdContains(nd, nl, scoringTerm.data(), scoringTerm.size())) {
@@ -783,9 +820,10 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         const auto* typesPtr = types_.data();
         const auto* sizesPtr = sizes_.data();
         const auto* modTimesPtr = modTimes_.data();
-        const auto& records = records_;
         const auto& namePool = namePool_;
+        const auto& origNamePool = origNamePool_;
         const auto& lowerPathPool = lowerPathPool_;
+        const auto& pathPool = pathPool_;
         const auto& pIndices = pathIndices_;
         const auto& regCache = regexCache;
         const auto& sTerm = scoringTerm;
@@ -801,18 +839,18 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
 
             if (pureFilter) {
                 // ── SIMD-batched pure-filter fast path ──
-                // Process 16 records at a time: batch liveness via simdTypeLive16,
-                // then evaluate surviving records through the SoA AST evaluator.
                 size_t idx = start;
 
-                // Align to 16-byte boundary for SIMD loads
                 size_t alignedStart = (start + 15) & ~size_t(15);
                 if (alignedStart > end) alignedStart = end;
 
-                // Scalar pre-amble (before alignment)
+                // Scalar pre-amble
                 for (; idx < alignedStart; idx++) {
                     if (typesPtr[idx] == 0) continue;
-                    if (!evalNode(*astPtr, records[idx], nullptr, 0, nullptr, 0, localPathBuf, regCache)) continue;
+                    if (!evalNode(*astPtr, typesPtr[idx], sizesPtr[idx],
+                                  static_cast<time_t>(modTimesPtr[idx]),
+                                  nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0,
+                                  localPathBuf, regCache)) continue;
                     local.push_back({static_cast<uint32_t>(idx), 2, 0});
                 }
 
@@ -820,15 +858,16 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 for (; idx + 16 <= end; idx += 16) {
                     if ((idx & 4095) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
 
-                    // Batch liveness: skip chunk if all 16 are tombstones
                     uint16_t liveMask = me::simdTypeLive16(typesPtr + idx);
                     if (liveMask == 0) continue;
 
-                    // Process live records in this chunk
                     while (liveMask) {
                         int bit = __builtin_ctz(liveMask);
                         size_t ri = idx + bit;
-                        if (evalNode(*astPtr, records[ri], nullptr, 0, nullptr, 0, localPathBuf, regCache)) {
+                        if (evalNode(*astPtr, typesPtr[ri], sizesPtr[ri],
+                                     static_cast<time_t>(modTimesPtr[ri]),
+                                     nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0,
+                                     localPathBuf, regCache)) {
                             local.push_back({static_cast<uint32_t>(ri), 2, 0});
                         }
                         liveMask &= liveMask - 1;
@@ -838,7 +877,10 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 // Scalar tail
                 for (; idx < end; idx++) {
                     if (typesPtr[idx] == 0) continue;
-                    if (!evalNode(*astPtr, records[idx], nullptr, 0, nullptr, 0, localPathBuf, regCache)) continue;
+                    if (!evalNode(*astPtr, typesPtr[idx], sizesPtr[idx],
+                                  static_cast<time_t>(modTimesPtr[idx]),
+                                  nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0,
+                                  localPathBuf, regCache)) continue;
                     local.push_back({static_cast<uint32_t>(idx), 2, 0});
                 }
             } else {
@@ -852,8 +894,15 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                     uint32_t pi = pIndices[idx];
                     const char* pd = lowerPathPool.data(pi);
                     uint16_t pl = lowerPathPool.length(pi);
+                    const char* ond = origNamePool.data(static_cast<uint32_t>(idx));
+                    uint16_t onl = origNamePool.length(static_cast<uint32_t>(idx));
+                    const char* opd = pathPool.data(pi);
+                    uint16_t opl = pathPool.length(pi);
 
-                    if (!evalNode(*astPtr, records[idx], nd, nl, pd, pl, localPathBuf, regCache)) continue;
+                    if (!evalNode(*astPtr, typesPtr[idx], sizesPtr[idx],
+                                  static_cast<time_t>(modTimesPtr[idx]),
+                                  nd, nl, pd, pl, ond, onl, opd, opl,
+                                  localPathBuf, regCache)) continue;
 
                     uint8_t priority = 2;
                     if (!sTerm.empty()) {

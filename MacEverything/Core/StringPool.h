@@ -111,12 +111,19 @@ public:
         }
     }
 
-    /// Construct pool directly from raw binary data (zero-copy bulk load).
+    /// Construct pool directly from raw binary data (copy-based bulk load).
     /// Used by v5 persistence to restore a StringPool from on-disk buffer+entries.
     void loadRaw(const char* buffer, size_t bufferSize,
                  const Entry* entries, uint32_t entryCount) {
         buffer_.assign(buffer, buffer + bufferSize);
         entries_.assign(entries, entries + entryCount);
+    }
+
+    /// Move-based bulk load (zero-copy from pre-read vectors).
+    /// Used by v6 persistence for direct I/O without intermediate copies.
+    void loadRaw(std::vector<char>&& buffer, std::vector<Entry>&& entries) {
+        buffer_ = std::move(buffer);
+        entries_ = std::move(entries);
     }
 
     /// Clear all entries and buffer.

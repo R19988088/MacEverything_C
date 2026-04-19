@@ -5,34 +5,91 @@
 #include <array>
 
 // ── CRC32 (ISO 3309 / zlib polynomial 0xEDB88320) ──
-static constexpr uint32_t makeCRC32Table(uint32_t idx) {
-    uint32_t c = idx;
-    for (int k = 0; k < 8; k++) {
-        c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+// Uses ARM CRC32 hardware instructions on Apple Silicon (~15 GB/s),
+// falls back to slicing-by-4 software table on other architectures (~2 GB/s).
+
+#if defined(__aarch64__) && defined(__APPLE__)
+#include <arm_acle.h>
+
+uint32_t IndexWAL::crc32(const void* data, size_t len) {
+    auto* p = static_cast<const uint8_t*>(data);
+    uint32_t crc = 0xFFFFFFFF;
+
+    // Process 8 bytes at a time using hardware CRC32 (ISO polynomial)
+    while (len >= 8) {
+        uint64_t val;
+        memcpy(&val, p, 8);
+        crc = __crc32d(crc, val);
+        p += 8;
+        len -= 8;
     }
-    return c;
+    // Process remaining 4 bytes
+    if (len >= 4) {
+        uint32_t val;
+        memcpy(&val, p, 4);
+        crc = __crc32w(crc, val);
+        p += 4;
+        len -= 4;
+    }
+    // Process remaining bytes one at a time
+    while (len-- > 0) {
+        crc = __crc32b(crc, *p++);
+    }
+
+    return crc ^ 0xFFFFFFFF;
 }
 
-// C4 fix: Use C++11 function-local static for thread-safe initialization
-// (guaranteed by §6.7/4 — "magic statics")
-static const uint32_t* getCRC32Table() {
-    static const auto table = []() {
-        std::array<uint32_t, 256> t{};
-        for (uint32_t i = 0; i < 256; i++) t[i] = makeCRC32Table(i);
-        return t;
-    }();
-    return table.data();
+#else
+// Software fallback: slicing-by-4 CRC32
+
+static const uint32_t (*getCRC32Tables())[256] {
+    static uint32_t tables[4][256];
+    static bool initialized = false;
+    if (!initialized) {
+        // Build base table
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++)
+                c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+            tables[0][i] = c;
+        }
+        // Build extended tables for slicing-by-4
+        for (uint32_t i = 0; i < 256; i++) {
+            tables[1][i] = (tables[0][i] >> 8) ^ tables[0][tables[0][i] & 0xFF];
+            tables[2][i] = (tables[1][i] >> 8) ^ tables[0][tables[1][i] & 0xFF];
+            tables[3][i] = (tables[2][i] >> 8) ^ tables[0][tables[2][i] & 0xFF];
+        }
+        initialized = true;
+    }
+    return tables;
 }
 
 uint32_t IndexWAL::crc32(const void* data, size_t len) {
-    const uint32_t* table = getCRC32Table();
+    auto tables = getCRC32Tables();
     auto* p = static_cast<const uint8_t*>(data);
     uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < len; i++) {
-        crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+
+    // Process 4 bytes at a time
+    while (len >= 4) {
+        uint32_t val;
+        memcpy(&val, p, 4);
+        crc ^= val;
+        crc = tables[3][crc & 0xFF]
+            ^ tables[2][(crc >> 8) & 0xFF]
+            ^ tables[1][(crc >> 16) & 0xFF]
+            ^ tables[0][(crc >> 24) & 0xFF];
+        p += 4;
+        len -= 4;
     }
+    // Process remaining bytes
+    while (len-- > 0) {
+        crc = tables[0][(crc ^ *p++) & 0xFF] ^ (crc >> 8);
+    }
+
     return crc ^ 0xFFFFFFFF;
 }
+
+#endif
 
 IndexWAL::~IndexWAL() {
     close();

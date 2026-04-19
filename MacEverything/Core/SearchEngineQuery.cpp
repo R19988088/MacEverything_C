@@ -64,7 +64,7 @@ void SearchEngine::queryDirList(const ParsedQuery& pq,
         auto candidates = intersectPostingLists(nameTrigramIndex_, dirName, allFound);
         if (allFound && candidates.size() <= totalSize / 4) {
             for (uint32_t idx : candidates) {
-                if (records_[idx].type != 2) continue; // must be directory
+                if (types_[idx] != 2) continue; // must be directory
                 const char* nd = namePool_.data(idx);
                 uint16_t nl = namePool_.length(idx);
                 if (nl != dirName.size()) continue;
@@ -79,7 +79,7 @@ void SearchEngine::queryDirList(const ParsedQuery& pq,
         } else {
             // Fallback: linear scan for directories
             for (size_t i = 0; i < totalSize; i++) {
-                if (records_[i].type != 2) continue;
+                if (types_[i] != 2) continue;
                 const char* nd = namePool_.data(i);
                 uint16_t nl = namePool_.length(i);
                 if (nl != dirName.size()) continue;
@@ -94,7 +94,7 @@ void SearchEngine::queryDirList(const ParsedQuery& pq,
     } else {
         // Short name or no trigram index — linear scan
         for (size_t i = 0; i < totalSize; i++) {
-            if (records_[i].type != 2) continue;
+            if (types_[i] != 2) continue;
             const char* nd = namePool_.data(i);
             uint16_t nl = namePool_.length(i);
             if (nl != dirName.size()) continue;
@@ -128,7 +128,7 @@ void SearchEngine::queryDirList(const ParsedQuery& pq,
 
         const auto& childRecords = pathIdxToRecords_[childPathIdx];
         for (uint32_t childIdx : childRecords) {
-            if (records_[childIdx].type == 0) continue; // skip tombstones
+            if (types_[childIdx] == 0) continue; // skip tombstones
             const char* nd = namePool_.data(childIdx);
             uint16_t nl = namePool_.length(childIdx);
             uint8_t priority = 2; // children are all "contains" priority
@@ -202,8 +202,8 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         std::shared_lock lock(mutex_);
         auto afterLock = std::chrono::steady_clock::now();
 
-        if (records_.empty()) return {};
-        size_t totalSize = records_.size();
+        if (types_.empty()) return {};
+        size_t totalSize = types_.size();
 
         std::vector<Match> merged;
         queryDirList(parsedQuery, totalSize, myGen, merged);

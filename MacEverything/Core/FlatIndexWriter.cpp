@@ -373,85 +373,114 @@ bool FlatIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
         fclose(f); return false;
     }
 
-    // Read all section data into memory
-    // Build a map from sectionId -> (data pointer, length)
-    struct SectionData {
-        std::vector<uint8_t> data;
-        uint32_t expectedCRC;
-    };
-    std::unordered_map<uint32_t, SectionData> sectionMap;
-    sectionMap.reserve(header.sectionCount);
+    // Build section lookup (sectionId -> index in sections array)
+    uint32_t sectionIdx[kSectionCount + 1];
+    memset(sectionIdx, 0xFF, sizeof(sectionIdx));
+    for (uint32_t i = 0; i < header.sectionCount; i++) {
+        uint32_t id = sections[i].sectionId;
+        if (id <= kSectionCount) sectionIdx[id] = i;
+    }
 
-    for (const auto& entry : sections) {
-        SectionData sd;
-        sd.data.resize(entry.byteLength);
-        sd.expectedCRC = entry.crc32;
+    // Helper: read a section from file, verify CRC, return raw bytes
+    auto readSectionRaw = [&](uint32_t sectionId, std::vector<uint8_t>& out) -> bool {
+        if (sectionIdx[sectionId] == 0xFFFFFFFF) return false;
+        const auto& entry = sections[sectionIdx[sectionId]];
+        out.resize(entry.byteLength);
         fseek(f, static_cast<long>(entry.offset), SEEK_SET);
-        if (fread(sd.data.data(), 1, entry.byteLength, f) != entry.byteLength) {
-            LOG_ERROR("FlatIndexWriter", "Failed to read section " << entry.sectionId);
-            fclose(f); return false;
-        }
-
-        // Verify CRC
-        uint32_t actualCRC = IndexWAL::crc32(sd.data.data(), sd.data.size());
-        if (actualCRC != sd.expectedCRC) {
-            LOG_ERROR("FlatIndexWriter", "CRC mismatch for section " << entry.sectionId);
-            fclose(f); return false;
-        }
-
-        sectionMap[entry.sectionId] = std::move(sd);
-    }
-    fclose(f);
-
-    // Deserialize each section
-    auto getSection = [&](uint32_t id) -> const SectionData* {
-        auto it = sectionMap.find(id);
-        return (it != sectionMap.end()) ? &it->second : nullptr;
-    };
-
-    // Required sections
-    StringPool origNamePool, namePool, pathPool, lowerPathPool;
-
-    auto* s1 = getSection(kSectionNamesOrig);
-    if (!s1 || !readStringPoolSection(s1->data.data(), s1->data.size(), origNamePool)) {
-        LOG_ERROR("FlatIndexWriter", "Failed to read NAMES_ORIG section"); return false;
-    }
-
-    auto* s2 = getSection(kSectionNamesLower);
-    if (!s2 || !readStringPoolSection(s2->data.data(), s2->data.size(), namePool)) {
-        LOG_ERROR("FlatIndexWriter", "Failed to read NAMES_LOWER section"); return false;
-    }
-
-    auto* s3 = getSection(kSectionPathPool);
-    if (!s3 || !readStringPoolSection(s3->data.data(), s3->data.size(), pathPool)) {
-        LOG_ERROR("FlatIndexWriter", "Failed to read PATH_POOL section"); return false;
-    }
-
-    auto* s4 = getSection(kSectionLowerPathPool);
-    if (!s4 || !readStringPoolSection(s4->data.data(), s4->data.size(), lowerPathPool)) {
-        LOG_ERROR("FlatIndexWriter", "Failed to read LOWER_PATH_POOL section"); return false;
-    }
-
-    uint32_t n = origNamePool.entryCount();
-
-    // Array sections — direct memcpy into vectors
-    auto readArray = [&]<typename T>(uint32_t sectionId, std::vector<T>& vec, const char* name) -> bool {
-        auto* s = getSection(sectionId);
-        if (!s) {
-            LOG_ERROR("FlatIndexWriter", "Missing section: " << name);
+        if (fread(out.data(), 1, entry.byteLength, f) != entry.byteLength) {
+            LOG_ERROR("FlatIndexWriter", "Failed to read section " << sectionId);
             return false;
         }
-        size_t expectedBytes = n * sizeof(T);
-        if (s->data.size() != expectedBytes) {
-            LOG_ERROR("FlatIndexWriter", "Section " << name << " size mismatch: "
-                      << s->data.size() << " vs expected " << expectedBytes);
+        uint32_t actualCRC = IndexWAL::crc32(out.data(), out.size());
+        if (actualCRC != entry.crc32) {
+            LOG_ERROR("FlatIndexWriter", "CRC mismatch for section " << sectionId);
             return false;
         }
-        vec.resize(n);
-        memcpy(vec.data(), s->data.data(), expectedBytes);
         return true;
     };
 
+    // Helper: read StringPool section directly into buffer+entries vectors, then move
+    auto readStringPoolDirect = [&](uint32_t sectionId, StringPool& pool, const char* name) -> bool {
+        if (sectionIdx[sectionId] == 0xFFFFFFFF) {
+            LOG_ERROR("FlatIndexWriter", "Missing section: " << name);
+            return false;
+        }
+        const auto& entry = sections[sectionIdx[sectionId]];
+        // Read the entire section into a temp buffer for CRC verification
+        std::vector<uint8_t> raw(entry.byteLength);
+        fseek(f, static_cast<long>(entry.offset), SEEK_SET);
+        if (fread(raw.data(), 1, entry.byteLength, f) != entry.byteLength) {
+            LOG_ERROR("FlatIndexWriter", "Failed to read section " << name);
+            return false;
+        }
+        uint32_t actualCRC = IndexWAL::crc32(raw.data(), raw.size());
+        if (actualCRC != entry.crc32) {
+            LOG_ERROR("FlatIndexWriter", "CRC mismatch for section " << name);
+            return false;
+        }
+        // Parse: bufSize(4) + buffer(bufSize) + entryCount(4) + entries
+        size_t pos = 0;
+        if (entry.byteLength < 8) return false;
+        uint32_t bufSize;
+        memcpy(&bufSize, raw.data() + pos, sizeof(uint32_t));
+        pos += sizeof(uint32_t);
+        if (pos + bufSize > entry.byteLength) return false;
+        // Move buffer data into a char vector
+        std::vector<char> buffer(bufSize);
+        if (bufSize > 0) memcpy(buffer.data(), raw.data() + pos, bufSize);
+        pos += bufSize;
+        if (pos + sizeof(uint32_t) > entry.byteLength) return false;
+        uint32_t entryCount;
+        memcpy(&entryCount, raw.data() + pos, sizeof(uint32_t));
+        pos += sizeof(uint32_t);
+        size_t entryBytes = entryCount * sizeof(StringPool::Entry);
+        if (pos + entryBytes > entry.byteLength) return false;
+        std::vector<StringPool::Entry> entries(entryCount);
+        if (entryCount > 0) memcpy(entries.data(), raw.data() + pos, entryBytes);
+        // Move into pool (zero-copy handoff)
+        pool.loadRaw(std::move(buffer), std::move(entries));
+        return true;
+    };
+
+    // Helper: read array section directly into target vector (no intermediate buffer)
+    auto readArrayDirect = [&]<typename T>(uint32_t sectionId, std::vector<T>& vec,
+                                            uint32_t expectedCount, const char* name) -> bool {
+        if (sectionIdx[sectionId] == 0xFFFFFFFF) {
+            LOG_ERROR("FlatIndexWriter", "Missing section: " << name);
+            return false;
+        }
+        const auto& entry = sections[sectionIdx[sectionId]];
+        size_t expectedBytes = expectedCount * sizeof(T);
+        if (entry.byteLength != expectedBytes) {
+            LOG_ERROR("FlatIndexWriter", "Section " << name << " size mismatch: "
+                      << entry.byteLength << " vs expected " << expectedBytes);
+            return false;
+        }
+        vec.resize(expectedCount);
+        fseek(f, static_cast<long>(entry.offset), SEEK_SET);
+        if (fread(vec.data(), 1, expectedBytes, f) != expectedBytes) {
+            LOG_ERROR("FlatIndexWriter", "Failed to read section " << name);
+            return false;
+        }
+        // CRC verification in-place (no extra copy)
+        uint32_t actualCRC = IndexWAL::crc32(reinterpret_cast<const uint8_t*>(vec.data()), expectedBytes);
+        if (actualCRC != entry.crc32) {
+            LOG_ERROR("FlatIndexWriter", "CRC mismatch for section " << name);
+            return false;
+        }
+        return true;
+    };
+
+    // Read StringPool sections (with move semantics)
+    StringPool origNamePool, namePool, pathPool, lowerPathPool;
+    if (!readStringPoolDirect(kSectionNamesOrig, origNamePool, "NAMES_ORIG")) { fclose(f); return false; }
+    if (!readStringPoolDirect(kSectionNamesLower, namePool, "NAMES_LOWER")) { fclose(f); return false; }
+    if (!readStringPoolDirect(kSectionPathPool, pathPool, "PATH_POOL")) { fclose(f); return false; }
+    if (!readStringPoolDirect(kSectionLowerPathPool, lowerPathPool, "LOWER_PATH_POOL")) { fclose(f); return false; }
+
+    uint32_t n = origNamePool.entryCount();
+
+    // Read array sections directly into target vectors (in-place CRC)
     std::vector<uint32_t> pathIndices;
     std::vector<uint8_t> types;
     std::vector<uint64_t> sizes;
@@ -459,12 +488,12 @@ bool FlatIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
     std::vector<uint64_t> inodes;
     std::vector<int32_t> devIds;
 
-    if (!readArray(kSectionPathIndices, pathIndices, "PATH_INDICES")) return false;
-    if (!readArray(kSectionTypes, types, "TYPES")) return false;
-    if (!readArray(kSectionSizes, sizes, "SIZES")) return false;
-    if (!readArray(kSectionModTimes, modTimes, "MOD_TIMES")) return false;
-    if (!readArray(kSectionInodes, inodes, "INODES")) return false;
-    if (!readArray(kSectionDevIds, devIds, "DEV_IDS")) return false;
+    if (!readArrayDirect(kSectionPathIndices, pathIndices, n, "PATH_INDICES")) { fclose(f); return false; }
+    if (!readArrayDirect(kSectionTypes, types, n, "TYPES")) { fclose(f); return false; }
+    if (!readArrayDirect(kSectionSizes, sizes, n, "SIZES")) { fclose(f); return false; }
+    if (!readArrayDirect(kSectionModTimes, modTimes, n, "MOD_TIMES")) { fclose(f); return false; }
+    if (!readArrayDirect(kSectionInodes, inodes, n, "INODES")) { fclose(f); return false; }
+    if (!readArrayDirect(kSectionDevIds, devIds, n, "DEV_IDS")) { fclose(f); return false; }
 
     // Metadata (optional)
     IndexMetadata meta;
@@ -472,10 +501,14 @@ bool FlatIndexWriter::load(SearchEngine& engine, IndexMetadata* outMeta) {
     meta.timestamp = header.timestamp;
     meta.lastEventId = header.lastEventId;
 
-    auto* s11 = getSection(kSectionMetadataKV);
-    if (s11) {
-        readMetadataSection(s11->data.data(), s11->data.size(), meta);
+    if (sectionIdx[kSectionMetadataKV] != 0xFFFFFFFF) {
+        std::vector<uint8_t> metaRaw;
+        if (readSectionRaw(kSectionMetadataKV, metaRaw)) {
+            readMetadataSection(metaRaw.data(), metaRaw.size(), meta);
+        }
     }
+
+    fclose(f);
 
     if (outMeta) *outMeta = std::move(meta);
 

@@ -13,7 +13,7 @@ using Trigram = uint32_t;
 
 /// Result of a content search query.
 struct ContentMatch {
-    uint32_t fileIndex;       // index into SearchEngine's records_ vector
+    uint32_t fileIndex;       // index into SearchEngine's SoA columns
     std::string snippet;      // ~200 chars context around match
     uint32_t matchOffset;     // byte offset of match in file
 };

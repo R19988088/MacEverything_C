@@ -95,9 +95,10 @@ bool SearchEngine::saveToFile(const std::string& filePath, const IndexMetadata& 
     }
 
     // Record count — count actual live records to ensure consistency
+    uint32_t totalCount = static_cast<uint32_t>(types_.size());
     uint32_t liveCount = 0;
-    for (size_t i = 0; i < records_.size(); i++) {
-        if (records_[i].type != 0) liveCount++;
+    for (uint32_t i = 0; i < totalCount; i++) {
+        if (types_[i] != 0) liveCount++;
     }
     safeWrite(&liveCount, sizeof(uint32_t), 1);
 
@@ -107,11 +108,16 @@ bool SearchEngine::saveToFile(const std::string& filePath, const IndexMetadata& 
         return false;
     }
 
-    // Records (same binary layout as v2)
-    for (size_t i = 0; i < records_.size(); i++) {
-        const auto& r = records_[i];
-        if (r.type == 0) continue;
-        // Resolve path from pathPool_ (record.path is cleared after interning)
+    // Records (same binary layout as v2) — reconstruct from SoA columns
+    for (uint32_t i = 0; i < totalCount; i++) {
+        if (types_[i] == 0) continue;
+        FileRecord r;
+        r.name = origNamePool_.str(i);
+        r.type = types_[i];
+        r.size = sizes_[i];
+        r.modTime = static_cast<time_t>(modTimes_[i]);
+        r.inode = inodes_[i];
+        r.devId = devIds_[i];
         std::string resolvedPath = pathPool_.str(pathIndices_[i]);
         if (!writeRecord(f, r, resolvedPath)) {
             fclose(f);

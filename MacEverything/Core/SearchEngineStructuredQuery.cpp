@@ -1,4 +1,5 @@
 #include "SearchEngine.h"
+#include "SIMDSearch.h"
 #include "StringUtils.h"
 #include <algorithm>
 #include <atomic>
@@ -197,59 +198,58 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
         }
     }
 
-    unsigned numThreads = std::thread::hardware_concurrency();
-    if (numThreads < 1) numThreads = 1;
-    if (numThreads > 32) numThreads = 32;
-    size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
-
-    std::vector<std::vector<Match>> threadResults(numThreads);
-    auto* threadResultsPtr = &threadResults;
-    const auto& records = records_;
-    const auto& namePool = namePool_;
-    const auto& pathPool = pathPool_;
-    const auto& pIndices = pathIndices_;
-    const auto* pathMatchCachePtr = &pathMatchCache;
-    const auto* genPtr = &queryGeneration_;
-    uint64_t capturedGen = myGen;
-
-    // Capture query parameters for block
-    auto mode = pq.mode;
-    const auto& npRef = namePattern;
-
-    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
-    dispatch_apply(numThreads, queue, ^(size_t t) {
-        size_t start = t * chunkSize;
-        size_t end = std::min(start + chunkSize, totalSize);
-        if (start >= end) return;
-
-        auto& local = (*threadResultsPtr)[t];
-        for (size_t i = start; i < end; i++) {
-            if ((i & 4095) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
-            if (records[i].type == 0) continue;
-
-            const char* nameData = namePool.data(static_cast<uint32_t>(i));
-            uint16_t nameLen = namePool.length(static_cast<uint32_t>(i));
-
-            if (mode == QueryMode::DIR_EXACT) {
-                if (records[i].type != 2) continue;
-                if (nameLen != npRef.size()) continue;
-                if (std::memcmp(nameData, npRef.data(), nameLen) != 0) continue;
-            } else {
-                if (!me::simdContains(nameData, nameLen, npRef.data(), npRef.size())) continue;
-            }
-
-            if (hasPathSegs && !(*pathMatchCachePtr)[pIndices[i]]) continue;
-
-            uint8_t priority = namePriority(nameData, nameLen, npRef.data(), npRef.size());
-            uint32_t pLen = static_cast<uint32_t>(pathPool.length(pIndices[i]) + 1 + nameLen);
-            local.push_back({static_cast<uint32_t>(i), priority, pLen});
-        }
-    });
+    // ------------------------------------------------------------------
+    // Buffer-scan: SIMD scan the contiguous namePool_ buffer, then
+    // binary-search entries_ to resolve byte offsets → record indices.
+    // Much faster than per-record iteration (1 stream vs 4 streams).
+    // ------------------------------------------------------------------
+    std::vector<size_t> hitOffsets;
+    me::simdFindAll(namePool_.rawBuffer(), namePool_.rawSize(),
+                    namePattern.data(), namePattern.size(), hitOffsets);
 
     if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
 
-    for (auto& v : threadResults) {
-        merged.insert(merged.end(), v.begin(), v.end());
+    const auto* entries = namePool_.entries();
+    uint32_t entryCount = namePool_.entryCount();
+
+    std::unordered_set<uint32_t> seen;
+    seen.reserve(std::min(hitOffsets.size(), size_t(4096)));
+
+    for (size_t hitOff : hitOffsets) {
+        // Binary search: find largest idx where entries[idx].offset <= hitOff
+        uint32_t lo = 0, hi = entryCount;
+        while (lo < hi) {
+            uint32_t mid = lo + (hi - lo) / 2;
+            if (entries[mid].offset <= static_cast<uint32_t>(hitOff)) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo == 0) continue;
+        uint32_t idx = lo - 1;
+
+        // Boundary check: hit must be fully within this entry
+        uint32_t entryEnd = entries[idx].offset + entries[idx].length;
+        if (hitOff + namePattern.size() > entryEnd)
+            continue;
+
+        // Dedup: same entry may be hit multiple times
+        if (!seen.insert(idx).second) continue;
+
+        // Tombstone check
+        if (records_[idx].type == 0) continue;
+
+        // DIR_EXACT: must be directory + exact name match
+        if (pq.mode == QueryMode::DIR_EXACT) {
+            if (records_[idx].type != 2) continue;
+            if (entries[idx].length != namePattern.size()) continue;
+        }
+
+        // Path constraint
+        if (hasPathSegs && !pathMatchCache[pathIndices_[idx]]) continue;
+
+        uint8_t priority = namePriority(namePool_.data(idx), namePool_.length(idx),
+                                         namePattern.data(), namePattern.size());
+        uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[idx]) + 1 + entries[idx].length);
+        merged.push_back({idx, priority, pLen});
     }
 }
 

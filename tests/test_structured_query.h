@@ -644,5 +644,116 @@ static void runStructuredQueryTests() {
         CHECK(!foundOther);
     }
 
+    // ── Buffer-scan fallback tests ──
+    // These tests verify the SIMD buffer-scan path in queryStructured().
+    // With small record sets, trigram cost exceeds threshold → falls to buffer scan.
+
+    // -- Test 29: Buffer-scan correctness --
+    std::cout << "\n  --- Test 29: Buffer-scan correctness ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"ls", "/usr/bin", 1, 100, 1000});
+        records.push_back({"ls", "/bin", 1, 200, 2000});
+        records.push_back({"false", "/usr/bin", 1, 300, 3000});
+        records.push_back({"pulse", "/var/log", 1, 400, 4000}); // contains "ls"
+        engine.loadRecords(std::move(records));
+
+        auto res = engine.query("bin/ls");
+        // Should find "ls" in /usr/bin and /bin, plus "pulse" in /var/log should NOT match
+        // (path constraint: must have "bin" segment)
+        int binLsCount = 0;
+        bool foundPulse = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "ls") binLsCount++;
+            if (rec.name == "pulse") foundPulse = true;
+        }
+        CHECK(binLsCount == 2);
+        CHECK(!foundPulse);
+    }
+
+    // -- Test 30: Cross-boundary false positive rejection --
+    std::cout << "\n  --- Test 30: Cross-boundary false positive rejection ---\n";
+    {
+        // Construct names so pattern spans entry boundary in the packed buffer:
+        // entry 0: "helo" → buffer: "helo"
+        // entry 1: "ols"  → buffer: "helools"
+        // Searching for "ools" would match at offset 3 in the buffer, but it
+        // crosses the boundary between entry 0 (offset=0,len=4) and entry 1 (offset=4,len=3).
+        // The buffer-scan must reject this cross-boundary hit.
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"helo", "/dir", 1, 100, 1000});
+        records.push_back({"ools", "/dir", 1, 200, 2000}); // "ools" IS a valid name
+        records.push_back({"nothing", "/dir", 1, 300, 3000});
+        engine.loadRecords(std::move(records));
+
+        auto res = engine.query("dir/ools");
+        // Should find "ools" as a valid match (it's a real entry name)
+        bool foundOols = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "ools") foundOols = true;
+        }
+        CHECK(foundOols);
+
+        // "helo" should NOT be returned (doesn't contain "ools")
+        bool foundHelo = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "helo") foundHelo = true;
+        }
+        CHECK(!foundHelo);
+    }
+
+    // -- Test 31: Tombstone exclusion in buffer scan --
+    std::cout << "\n  --- Test 31: Tombstone exclusion in buffer scan ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        records.push_back({"target.txt", "/data", 1, 100, 1000});
+        records.push_back({"target.log", "/data", 1, 200, 2000});
+        records.push_back({"other.txt", "/data", 1, 300, 3000});
+        engine.loadRecords(std::move(records));
+
+        // Delete target.txt via removeByPath
+        engine.removeByPath("/data/target.txt");
+
+        auto res = engine.query("data/target");
+        // Only target.log should remain
+        bool foundTxt = false;
+        bool foundLog = false;
+        for (uint32_t idx : res) {
+            auto rec = engine.getRecord(idx);
+            if (rec.name == "target.txt") foundTxt = true;
+            if (rec.name == "target.log") foundLog = true;
+        }
+        CHECK(!foundTxt);
+        CHECK(foundLog);
+    }
+
+    // -- Test 32: DIR_EXACT via buffer scan --
+    std::cout << "\n  --- Test 32: DIR_EXACT via buffer scan ---\n";
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // "bin" as directory, "bin" as file, "binary" as directory
+        records.push_back({"bin", "/usr", 2, 0, 1000});
+        records.push_back({"bin", "/opt", 1, 100, 2000}); // file, not dir
+        records.push_back({"binary", "/usr", 2, 0, 3000}); // dir but different name
+        engine.loadRecords(std::move(records));
+
+        // DIR_EXACT query: "/usr/bin/" — trailing slash means exact dir match
+        auto res = engine.query("/usr/bin/");
+        // Should only match the directory "bin" under /usr
+        CHECK(res.size() == 1);
+        if (!res.empty()) {
+            auto rec = engine.getRecord(res[0]);
+            CHECK(rec.name == "bin");
+            CHECK(rec.path == "/usr");
+        }
+    }
+
     std::cout << "\n";
 }

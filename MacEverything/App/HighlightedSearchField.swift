@@ -133,6 +133,26 @@ enum QueryHighlightTokenizer {
 
         return tokens
     }
+
+    /// Extract only the search keywords (plain words + unquoted text from quoted strings)
+    /// from a query, stripping out filter tokens and operators.
+    /// e.g. "ext:cpp hello" → ["hello"], "ext:cpp \"hello world\"" → ["hello world"]
+    static func extractSearchKeywords(_ input: String) -> [String] {
+        let tokens = tokenize(input)
+        var keywords: [String] = []
+        for token in tokens {
+            switch token.type {
+            case .word:
+                keywords.append((input as NSString).substring(with: token.range))
+            case .quoted:
+                var text = (input as NSString).substring(with: token.range)
+                text = text.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                if !text.isEmpty { keywords.append(text) }
+            default: break
+            }
+        }
+        return keywords
+    }
 }
 
 // MARK: - HighlightedSearchField (NSViewRepresentable)

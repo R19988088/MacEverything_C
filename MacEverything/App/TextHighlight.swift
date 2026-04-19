@@ -25,13 +25,26 @@ func highlightMatches(in text: String, keyword: String,
         return buildHighlightedText(text: text, ranges: ranges, font: font, color: color, highlightColor: highlightColor)
     }
 
-    // Find all non-overlapping occurrences
-    var ranges: [Range<String.Index>] = []
-    var searchStart = lowerText.startIndex
-    while searchStart < lowerText.endIndex,
-          let range = lowerText.range(of: lowerKey, range: searchStart..<lowerText.endIndex) {
-        ranges.append(range)
-        searchStart = range.upperBound
+    // Multi-keyword: split by spaces and find all matches for each word
+    let words = lowerKey.components(separatedBy: " ").filter { !$0.isEmpty }
+    if words.isEmpty {
+        return Text(text).font(font).foregroundColor(color)
+    }
+
+    let ranges: [Range<String.Index>]
+    if words.count == 1 {
+        // Single keyword — simple forward scan
+        var singleRanges: [Range<String.Index>] = []
+        var searchStart = lowerText.startIndex
+        while searchStart < lowerText.endIndex,
+              let range = lowerText.range(of: words[0], range: searchStart..<lowerText.endIndex) {
+            singleRanges.append(range)
+            searchStart = range.upperBound
+        }
+        ranges = singleRanges
+    } else {
+        // Multiple keywords — find all matches for each, merge ranges
+        ranges = findAllLiteralRanges(in: lowerText, literals: words)
     }
 
     if ranges.isEmpty {
@@ -86,13 +99,19 @@ func highlightCrossMatches(path: String, name: String, keyword: String,
     let lowerFull = fullPath.lowercased()
     let lowerKey = keyword.lowercased()
 
-    // Find all matches in fullPath
-    var fullRanges: [Range<String.Index>] = []
-    var searchStart = lowerFull.startIndex
-    while searchStart < lowerFull.endIndex,
-          let range = lowerFull.range(of: lowerKey, range: searchStart..<lowerFull.endIndex) {
-        fullRanges.append(range)
-        searchStart = range.upperBound
+    // Find all matches in fullPath (supports multi-keyword via space splitting)
+    let words = lowerKey.components(separatedBy: " ").filter { !$0.isEmpty }
+    var fullRanges: [Range<String.Index>]
+    if words.count <= 1 {
+        fullRanges = []
+        var searchStart = lowerFull.startIndex
+        while searchStart < lowerFull.endIndex,
+              let range = lowerFull.range(of: lowerKey, range: searchStart..<lowerFull.endIndex) {
+            fullRanges.append(range)
+            searchStart = range.upperBound
+        }
+    } else {
+        fullRanges = findAllLiteralRanges(in: lowerFull, literals: words)
     }
 
     if fullRanges.isEmpty {

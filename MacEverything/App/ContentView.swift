@@ -234,7 +234,7 @@ struct ContentView: View {
                             .padding(.vertical, 4)
                         }
                         ForEach(viewModel.displayItems) { item in
-                            ResultRow(item: item, keyword: viewModel.searchText)
+                            ResultRow(item: item, keyword: viewModel.highlightKeyword)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 2)
                                 .id(item.id)

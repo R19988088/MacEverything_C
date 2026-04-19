@@ -41,6 +41,11 @@ class SearchViewModel: ObservableObject {
     @Published var isSyncing: Bool = false
     @Published var ghostSuggestion: String? = nil
 
+    /// Extracted search keywords (excluding filter tokens and operators) for result highlighting
+    var highlightKeyword: String {
+        QueryHighlightTokenizer.extractSearchKeywords(searchText).joined(separator: " ")
+    }
+
     private let bridge = MacSearchBridge.shared()
     private let historyStore = SearchHistoryStore()
     private let searchOptions = SearchOptions.shared

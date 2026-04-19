@@ -373,9 +373,11 @@ private:
                       size_t totalSize, uint64_t myGen,
                       std::vector<Match>& merged) const;
 
+public:
     /// Check if a directory path matches the path segment constraints.
     static bool pathSegmentsMatch(std::string_view dirPath,
                                   const std::vector<PathSegment>& segments);
+private:
 
     /// Estimate trigram candidate count for a keyword (min posting list size).
     /// Returns SIZE_MAX if keyword is < 3 chars, 0 if any trigram not in index.

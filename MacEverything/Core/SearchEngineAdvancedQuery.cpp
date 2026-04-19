@@ -4,6 +4,7 @@
 #include "QueryTokenizer.h"
 #include "QueryFilterParser.h"
 #include "QueryNeedsAnalysis.h"
+#include "ASTStructuredTransform.h"
 #include "SIMDSearch.h"
 #include "Logger.h"
 #include <algorithm>
@@ -129,6 +130,18 @@ static bool evalFilter(const QueryNode& node,
                        const char* pathData, uint16_t pathLen,
                        std::vector<char>& pathBuf) {
     const auto& name = node.filterName;
+
+    // __pathseg: internal filter — structured path segment matching
+    if (name == "__pathseg") {
+        // Build full path: pathData/nameData for component-level matching
+        size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
+        if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+        memcpy(pathBuf.data(), pathData, pathLen);
+        pathBuf[pathLen] = '/';
+        memcpy(pathBuf.data() + pathLen + 1, nameData, nameLen);
+        std::string_view fullPath(pathBuf.data(), fullLen);
+        return SearchEngine::pathSegmentsMatch(fullPath, node.pathSegments);
+    }
 
     // ext: — match file extension
     if (name == "ext") {
@@ -367,8 +380,9 @@ static void collectTerms(const QueryNode& node, std::vector<std::string>& terms)
     }
 }
 
-/// Find the single best (shortest) term from the AND-level for trigram pre-filtering.
+/// Find the single best (longest) SUBSTRING TERM from the AND-level for trigram pre-filtering.
 /// For OR queries we can't pre-filter (any branch might match), so return empty.
+/// Skips __pathseg filter nodes and recurses into AND children.
 static std::string bestTrigramTerm(const QueryNode& node) {
     if (node.type == QueryNodeType::TERM) {
         // Only SUBSTRING mode can use trigram pre-filtering
@@ -377,10 +391,14 @@ static std::string bestTrigramTerm(const QueryNode& node) {
     }
     if (node.type == QueryNodeType::AND) {
         // Pick the longest SUBSTRING TERM child (more trigrams = better selectivity)
+        // Also recurse into nested AND children (from transformSlashTerms)
         std::string best;
         for (auto& child : node.children) {
             if (child->type == QueryNodeType::TERM && child->mode == MatchMode::SUBSTRING) {
                 std::string t = me::toLower(child->text);
+                if (t.size() > best.size()) best = t;
+            } else if (child->type == QueryNodeType::AND) {
+                std::string t = bestTrigramTerm(*child);
                 if (t.size() > best.size()) best = t;
             }
         }
@@ -512,15 +530,42 @@ static bool evalNodeSoA(const QueryNode& node,
 
 /// Extract the first SUBSTRING TERM text from the AST for result scoring.
 /// Returns empty string if no suitable term is found (pure filter queries).
+/// Skips __pathseg filter nodes (they are path constraints, not scoring terms).
 static std::string extractScoringTerm(const QueryNode& node) {
     if (node.type == QueryNodeType::TERM && node.mode == MatchMode::SUBSTRING) {
         return me::toLower(node.text);
+    }
+    if (node.type == QueryNodeType::FILTER && node.filterName == "__pathseg") {
+        return {}; // path segment constraint, not a scoring term
     }
     if (node.type == QueryNodeType::AND || node.type == QueryNodeType::OR) {
         for (auto& child : node.children) {
             auto t = extractScoringTerm(*child);
             if (!t.empty()) return t;
         }
+    }
+    return {};
+}
+
+/// Extract the best (longest, >= 3 chars) path segment text from __pathseg filters in the AST.
+/// Only looks in AND-level nodes (can't pre-filter OR branches).
+static std::string bestPathSegTerm(const QueryNode& node) {
+    if (node.type == QueryNodeType::FILTER && node.filterName == "__pathseg") {
+        std::string best;
+        for (auto& seg : node.pathSegments) {
+            if (seg.text.size() >= 3 && seg.text.size() > best.size()) {
+                best = seg.text;
+            }
+        }
+        return best;
+    }
+    if (node.type == QueryNodeType::AND) {
+        std::string best;
+        for (auto& child : node.children) {
+            auto t = bestPathSegTerm(*child);
+            if (t.size() > best.size()) best = t;
+        }
+        return best;
     }
     return {};
 }
@@ -543,6 +588,10 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     // Parse the AST
     auto ast = QueryParser::parse(input);
     if (!ast) return {};
+
+    // Transform TERM nodes containing '/' into structured path-segment constraints.
+    // e.g. TERM("/usr/local/test") → AND(FILTER("__pathseg",[usr,local]), TERM("test"))
+    ast = transformSlashTerms(std::move(ast));
 
     // Analyze which record fields the query actually needs
     QueryNeeds needs = analyzeQueryNeeds(*ast);
@@ -601,6 +650,35 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 useTrigramIndex = true;
             } else {
                 candidates.clear();
+            }
+            afterTrigram = std::chrono::steady_clock::now();
+        }
+    }
+
+    // Path trigram pre-filtering: if AST has __pathseg with a segment >= 3 chars,
+    // use pathTrigramIndex_ to narrow candidates via path indices → record indices.
+    if (useTrigram && !useTrigramIndex && !pathTrigramIndex_.empty()) {
+        std::string pathSegKey = bestPathSegTerm(*ast);
+        if (pathSegKey.size() >= 3) {
+            beforeTrigram = std::chrono::steady_clock::now();
+            bool allFound = false;
+            auto pathCandidates = intersectPostingLists(pathTrigramIndex_, pathSegKey, allFound);
+            if (allFound) {
+                // Expand path indices to record indices
+                for (uint32_t pi : pathCandidates) {
+                    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                    if (pi >= pathIdxToRecords_.size()) continue;
+                    const auto& recIds = pathIdxToRecords_[pi];
+                    candidates.insert(candidates.end(), recIds.begin(), recIds.end());
+                }
+                // Sort and deduplicate
+                std::sort(candidates.begin(), candidates.end());
+                candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+                if (candidates.size() <= totalSize / 4) {
+                    useTrigramIndex = true;
+                } else {
+                    candidates.clear();
+                }
             }
             afterTrigram = std::chrono::steady_clock::now();
         }
@@ -798,7 +876,13 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     timing.resultCount = result.size();
     timing.usedTrigram = useTrigramIndex;
     if (useTrigramIndex) {
-        timing.searchPath = trigramKey.empty() ? "advanced-regex-trigram" : "advanced-trigram";
+        if (!trigramKey.empty()) {
+            timing.searchPath = "advanced-trigram";
+        } else if (!bestPathSegTerm(*ast).empty()) {
+            timing.searchPath = "advanced-path-trigram";
+        } else {
+            timing.searchPath = "advanced-regex-trigram";
+        }
     } else if (needs.isPureFilter()) {
         timing.searchPath = "advanced-pure-filter-soa-gcd";
     } else {

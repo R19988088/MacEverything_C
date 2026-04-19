@@ -1,5 +1,6 @@
 #pragma once
 #include "QueryAST.h"
+#include "QueryDateParser.h"
 #include <string>
 #include <cctype>
 #include <cstdint>
@@ -26,6 +27,10 @@ public:
         } else if (name == "file" || name == "folder" || name == "type") {
             // No argument parsing needed for file:/folder:
             // type: arg is stored as-is in filterArg
+        } else if (name == "dm" || name == "datemodified" ||
+                   name == "dc" || name == "datecreated" ||
+                   name == "da" || name == "dateaccessed") {
+            QueryDateParser::parse(node, arg);
         } else if (name == "path" || name == "nopath" || name == "parent") {
             // Argument is a substring to match — stored as-is in filterArg
             // Lowercase it for case-insensitive matching

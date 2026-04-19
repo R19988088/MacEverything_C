@@ -10,7 +10,7 @@
 // and that name vs path trigram selection picks the better anchor.
 
 /// Helper: add N dummy records with distinct names to inflate totalSize so that
-/// the trigram threshold (totalSize/67) permits pre-filtering.
+/// the trigram threshold (totalSize/10) permits pre-filtering.
 static void addDummyRecords(std::vector<FileRecord>& records, int n,
                             const std::string& prefix = "dummy",
                             const std::string& path = "/noise") {
@@ -154,6 +154,73 @@ static void runTrigramCompetitionTests() {
         check(results.size() == 2, "69.6 test*.swift finds 2 files");
         check(timing.searchPath.find("trigram") != std::string::npos,
               "69.6 test*.swift uses trigram (got: " + timing.searchPath + ")");
+    }
+
+    // ── 69.7 Relaxed threshold: high-frequency keyword still uses trigram ──
+    // With totalSize/67 (~1.5%), a keyword matching 5% of records would be rejected.
+    // With totalSize/10 (10%), it should pass and use trigram.
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // Create 1000 records, 50 (5%) contain "test" in name
+        for (int i = 0; i < 50; i++) {
+            FileRecord r;
+            r.name = "test_file_" + std::to_string(i) + ".cpp";
+            r.path = "/src";
+            r.type = 1;
+            records.push_back(std::move(r));
+        }
+        addDummyRecords(records, 950);
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto results = engine.query("test", 100, true, timing);
+        check(results.size() == 50, "69.7 'test' finds 50 files with relaxed threshold");
+        check(timing.searchPath == "advanced-trigram",
+              "69.7 high-freq keyword uses trigram with relaxed threshold (got: " + timing.searchPath + ")");
+    }
+
+    // ── 69.8 Threshold boundary: >10% candidates falls to linear ──
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        // Create 100 records, 15 (15%) contain "test" — exceeds totalSize/10
+        for (int i = 0; i < 15; i++) {
+            FileRecord r;
+            r.name = "test_item_" + std::to_string(i) + ".cpp";
+            r.path = "/src";
+            r.type = 1;
+            records.push_back(std::move(r));
+        }
+        addDummyRecords(records, 85);
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto results = engine.query("test", 100, true, timing);
+        check(results.size() == 15, "69.8 'test' finds 15 files");
+        check(timing.searchPath == "advanced-linear-gcd",
+              "69.8 >10% candidates falls to linear (got: " + timing.searchPath + ")");
+    }
+
+    // ── 69.9 *.py glob with relaxed threshold uses trigram ──
+    {
+        SearchEngine engine;
+        std::vector<FileRecord> records;
+        for (int i = 0; i < 30; i++) {
+            FileRecord r;
+            r.name = "script_" + std::to_string(i) + ".py";
+            r.path = "/python";
+            r.type = 1;
+            records.push_back(std::move(r));
+        }
+        addDummyRecords(records, 970);
+        engine.loadRecords(std::move(records));
+
+        QueryTimingInfo timing;
+        auto results = engine.query("*.py", 100, true, timing);
+        check(results.size() == 30, "69.9 *.py finds 30 python files");
+        check(timing.searchPath.find("trigram") != std::string::npos,
+              "69.9 *.py uses trigram with relaxed threshold (got: " + timing.searchPath + ")");
     }
 
     std::cout << "  Part 69 summary: " << localPassed << " passed, " << localFailed << " failed\n";

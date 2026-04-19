@@ -103,6 +103,14 @@ FILES_TO_REMOVE=(
     # Internal planning docs
     "docs/superpowers"
 
+    # Chinese internal docs (bug fix plans, audit reports)
+    "修复计划.md"
+    "修复计划评估.md"
+    "审计报告.md"
+
+    # Publish script itself (contains personal paths in sed rules, internal tool)
+    "scripts"
+
     # Misplaced file (Homebrew README, not ours)
     "assets/README.md"
 )

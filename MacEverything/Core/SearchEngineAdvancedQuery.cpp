@@ -5,6 +5,8 @@
 #include "QueryFilterParser.h"
 #include "QueryNeedsAnalysis.h"
 #include "ASTStructuredTransform.h"
+#include "ASTGlobTransform.h"
+#include "CompiledGlob.h"
 #include "SIMDSearch.h"
 #include "Logger.h"
 #include <algorithm>
@@ -68,29 +70,7 @@ static uint64_t computeDepth(const char* pathData, uint16_t pathLen) {
     return depth;
 }
 
-/// Glob matching (copied from SearchEngineQuery.cpp anonymous namespace).
-static bool globMatchImpl(const std::string& pattern, const std::string& text) {
-    size_t px = 0, tx = 0;
-    size_t starPx = std::string::npos, starTx = 0;
-
-    while (tx < text.size()) {
-        if (px < pattern.size() && (pattern[px] == '?' || pattern[px] == text[tx])) {
-            px++;
-            tx++;
-        } else if (px < pattern.size() && pattern[px] == '*') {
-            starPx = px++;
-            starTx = tx;
-        } else if (starPx != std::string::npos) {
-            px = starPx + 1;
-            tx = ++starTx;
-        } else {
-            return false;
-        }
-    }
-
-    while (px < pattern.size() && pattern[px] == '*') px++;
-    return px == pattern.size();
-}
+// globMatchImpl is now in CompiledGlob.h
 
 /// Check if a character is a word boundary character (not alphanumeric).
 /// Note: underscore '_' IS a boundary (consistent with Everything behavior).
@@ -264,6 +244,7 @@ static bool evalTerm(const QueryNode& node,
                 }
             }
             // Check full path (original case: rec.path + "/" + rec.name)
+            if (node.nameOnly) return false;
             std::string fullPath = rec.path + "/" + rec.name;
             if (fullPath.size() >= term.size()) {
                 for (size_t i = 0; i + term.size() <= fullPath.size(); ++i) {
@@ -274,11 +255,13 @@ static bool evalTerm(const QueryNode& node,
             return false;
         }
         // Case-insensitive (default): use lowercase nameData
-        std::string lower = me::toLower(node.text);
+        const auto& lower = node.textLower;
         if (me::simdContains(nameData, nameLen, lower.data(), lower.size())) {
             return true;
         }
-        // Check full path match
+        // Skip full-path matching when nameOnly is set
+        // (transformSlashTerms uses this for name-component terms)
+        if (node.nameOnly) return false;
         size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
         if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
         memcpy(pathBuf.data(), pathData, pathLen);
@@ -288,7 +271,17 @@ static bool evalTerm(const QueryNode& node,
     }
 
     case MatchMode::GLOB: {
-        std::string pattern = me::toLower(node.text);
+        const auto& pattern = node.textLower;
+        // If pattern contains '/', match against full path; otherwise name only
+        if (pattern.find('/') != std::string::npos) {
+            size_t fullLen = static_cast<size_t>(pathLen) + 1 + nameLen;
+            if (pathBuf.size() < fullLen) pathBuf.resize(fullLen * 2);
+            memcpy(pathBuf.data(), pathData, pathLen);
+            pathBuf[pathLen] = '/';
+            memcpy(pathBuf.data() + pathLen + 1, nameData, nameLen);
+            std::string fullPath(pathBuf.data(), fullLen);
+            return globMatchImpl(pattern, fullPath);
+        }
         std::string name(nameData, nameLen);
         return globMatchImpl(pattern, name);
     }
@@ -302,7 +295,7 @@ static bool evalTerm(const QueryNode& node,
     }
 
     case MatchMode::WHOLEWORD: {
-        std::string lower = me::toLower(node.text);
+        const auto& lower = node.textLower;
         // Check in lowercase name
         std::string name(nameData, nameLen);
         for (size_t i = 0; i + lower.size() <= name.size(); ++i) {
@@ -315,7 +308,7 @@ static bool evalTerm(const QueryNode& node,
     }
 
     case MatchMode::WHOLEFILENAME: {
-        std::string lower = me::toLower(node.text);
+        const auto& lower = node.textLower;
         // Entire filename must match
         if (nameLen == lower.size() &&
             memcmp(nameData, lower.data(), nameLen) == 0)
@@ -366,7 +359,7 @@ static bool evalNode(const QueryNode& node,
 static void collectTerms(const QueryNode& node, std::vector<std::string>& terms) {
     switch (node.type) {
         case QueryNodeType::TERM:
-            terms.push_back(me::toLower(node.text));
+            terms.push_back(node.textLower);
             break;
         case QueryNodeType::AND:
         case QueryNodeType::OR:
@@ -387,7 +380,7 @@ static std::string bestTrigramTerm(const QueryNode& node) {
     if (node.type == QueryNodeType::TERM) {
         // Only SUBSTRING mode can use trigram pre-filtering
         if (node.mode != MatchMode::SUBSTRING) return {};
-        return me::toLower(node.text);
+        return node.textLower;
     }
     if (node.type == QueryNodeType::AND) {
         // Pick the longest SUBSTRING TERM child (more trigrams = better selectivity)
@@ -395,7 +388,7 @@ static std::string bestTrigramTerm(const QueryNode& node) {
         std::string best;
         for (auto& child : node.children) {
             if (child->type == QueryNodeType::TERM && child->mode == MatchMode::SUBSTRING) {
-                std::string t = me::toLower(child->text);
+                const auto& t = child->textLower;
                 if (t.size() > best.size()) best = t;
             } else if (child->type == QueryNodeType::AND) {
                 std::string t = bestTrigramTerm(*child);
@@ -533,7 +526,7 @@ static bool evalNodeSoA(const QueryNode& node,
 /// Skips __pathseg filter nodes (they are path constraints, not scoring terms).
 static std::string extractScoringTerm(const QueryNode& node) {
     if (node.type == QueryNodeType::TERM && node.mode == MatchMode::SUBSTRING) {
-        return me::toLower(node.text);
+        return node.textLower;
     }
     if (node.type == QueryNodeType::FILTER && node.filterName == "__pathseg") {
         return {}; // path segment constraint, not a scoring term
@@ -592,6 +585,9 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     // Transform TERM nodes containing '/' into structured path-segment constraints.
     // e.g. TERM("/usr/local/test") → AND(FILTER("__pathseg",[usr,local]), TERM("test"))
     ast = transformSlashTerms(std::move(ast));
+
+    // Transform TERM nodes containing '*' or '?' from SUBSTRING to GLOB mode.
+    ast = transformGlobTerms(std::move(ast));
 
     // Analyze which record fields the query actually needs
     QueryNeeds needs = analyzeQueryNeeds(*ast);

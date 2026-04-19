@@ -355,13 +355,6 @@ private:
     /// Priority: 0=exact, 1=starts-with, 2=contains, 3=path-only match.
     struct Match { uint32_t idx; uint8_t priority; uint32_t pathLen; };
 
-    /// Slash-split strategy: path/name trigram lookup for queries containing '/'.
-    /// Returns true if the strategy handled the query, false if both parts too short.
-    bool querySlashSplit(const std::string& lowerKey,
-                         size_t totalSize, uint64_t myGen,
-                         const std::vector<uint32_t>& trigramCandidates,
-                         std::vector<Match>& merged) const;
-
     /// Node-centric structured query: name trigram → name verify → path constraint verify.
     /// Handles SEGMENTS and DIR_EXACT modes.
     void queryStructured(const ParsedQuery& pq,
@@ -399,23 +392,6 @@ private:
                                    size_t anchorIdx,
                                    size_t totalSize, uint64_t myGen,
                                    std::vector<Match>& merged) const;
-
-    /// Path trigram strategy: lookup via pathTrigramIndex_ for non-slash queries.
-    void queryPathTrigram(const std::string& lowerKey,
-                          size_t totalSize, uint64_t myGen,
-                          const std::vector<uint32_t>& trigramCandidates,
-                          std::vector<Match>& merged) const;
-
-    /// Linear scan fallback for trigram Phase 2 path matches.
-    void queryLinearScanPath(const std::string& lowerKey,
-                             size_t totalSize, uint64_t myGen,
-                             const std::vector<uint32_t>& trigramCandidates,
-                             std::vector<Match>& merged) const;
-
-    /// Full linear scan for glob patterns and short keywords.
-    void queryLinearScan(const std::string& lowerKey,
-                         bool useGlob, size_t totalSize, uint64_t myGen,
-                         std::vector<Match>& merged) const;
 
     std::vector<bool> dirtyPages_;                // dirty page bitmap
     std::atomic<bool> fullRewriteNeeded_{false};   // set by compactRecords()

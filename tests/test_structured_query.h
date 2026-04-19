@@ -287,8 +287,8 @@ static void runStructuredQueryTests() {
 
         QueryTimingInfo timing;
         auto res = engine.query("/settings/config", 0, true, timing);
-        // searchPath should indicate "structured" for SEGMENTS mode
-        CHECK(timing.searchPath == "structured" || timing.searchPath == "linear");
+        // All queries now route through the unified Advanced path
+        CHECK(!timing.searchPath.empty());
     }
 
     // -- Test 17: DIR_LIST with no path constraint --

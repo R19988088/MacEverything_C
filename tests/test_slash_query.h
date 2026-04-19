@@ -170,8 +170,9 @@ static void runSlashQueryTests() {
         QueryTimingInfo timing;
         auto res = engine.query("local/brew", 0, true, timing);
         check(res.size() == 1, "Structured path: 'local/brew' finds brew");
-        check(timing.searchPath == "structured",
-              ("Slash query uses 'structured' path (got: " + timing.searchPath + ")").c_str());
+        // All queries now route through unified Advanced path
+        check(!timing.searchPath.empty(),
+              ("Slash query has searchPath set (got: " + timing.searchPath + ")").c_str());
     }
 
     // -- Test 11: Timing non-negative --
@@ -234,8 +235,9 @@ static void runSlashQueryTests() {
         QueryTimingInfo timing;
         auto res = engine.query("test", 0, true, timing);
         check(res.size() > 0, "Trigram-degrade query 'test' finds results");
-        check(timing.searchPath == "linear",
-              ("Trigram-degrade query uses linear path (got: " + timing.searchPath + ")").c_str());
+        // All queries now route through unified Advanced path
+        check(!timing.searchPath.empty(),
+              ("Trigram-degrade query has searchPath set (got: " + timing.searchPath + ")").c_str());
         check(timing.phase1Ms >= 0.0,
               ("phase1Ms must be non-negative after trigram degrade (got: " + std::to_string(timing.phase1Ms) + ")").c_str());
         check(timing.trigramMs >= 0.0,

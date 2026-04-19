@@ -16,19 +16,6 @@ DerivedData/
 
 # macOS
 .DS_Store
-
-# Compiled binaries
-mac_scanner
-string_search_bench
-test_runner
 test_all_master
-
-# Claude Code config (personal dev tooling)
-CLAUDE.md
-.claude/
-
-# Internal dev docs
-修复计划.md
-审计报告.md
-修复计划评估.md
-docs/superpowers/
+.claude/string_search_bench
+.claude/worktrees/

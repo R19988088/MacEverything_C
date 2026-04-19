@@ -43,7 +43,9 @@ static void runWalRaceTest() {
     for (auto& t : writers) t.join();
 
     check(appendCount.load() > 0, "C3: Concurrent WAL appends + compacts completed without crash");
-    check(true, "C3: No data race on wal_ pointer");
+    // Verify persistence is still functional after concurrent stress
+    persistence->compact();
+    check(appendCount.load() > 100, "C3: Substantial concurrent WAL appends completed without race");
 
     persistence.reset();
     fs::remove_all(tmpDir);

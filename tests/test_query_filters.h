@@ -144,8 +144,12 @@ static void runQueryFilterTests() {
         auto shallow = queryNames("depth:<=2");
         auto deep = queryNames("depth:>=100");
         // At least some files should match shallow depth
-        check(!shallow.empty() || true, "56.9a depth:<=2 doesn't crash");
-        check(true, "56.9b depth filter functional");
+        // depth depends on absolute path; tmpdir is at depth ~3-4, so depth:<=2 may be empty
+        // But depth:>=100 should definitely be empty (no files that deep)
+        check(deep.empty(), "56.9a depth:>=100 finds no files at extreme depth");
+        // depth:<=10 should capture files in /tmp/me_filter_tests/...
+        auto reasonable = queryNames("depth:<=10");
+        check(!reasonable.empty(), "56.9b depth:<=10 finds files in tmpdir");
     }
 
     // ── 56.10 Combined: ext + size ──

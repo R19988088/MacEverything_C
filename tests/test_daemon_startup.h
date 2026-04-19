@@ -42,7 +42,7 @@ static std::string daemonHttpGet(uint16_t port, const std::string& path) {
 
 static bool runPart41() {
     std::cout << "\n=== Part 41: CLI daemon startup ===\n";
-    bool allOk = true;
+
 
     // Check that the daemon binary exists
     if (access("./maceverything-daemon", X_OK) != 0) {
@@ -126,11 +126,11 @@ static bool runPart41() {
         waitpid(pid, &status, 0);
         check(false, "Daemon exited gracefully on SIGTERM");
     } else {
-        check(true, "Daemon exited gracefully on SIGTERM");
+        check(WIFEXITED(status), "Daemon exited gracefully on SIGTERM");
     }
 
     // Clean up
     fs::remove_all(tmpBase);
 
-    return allOk;
+    return true;
 }

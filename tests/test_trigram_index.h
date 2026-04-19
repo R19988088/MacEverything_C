@@ -197,7 +197,7 @@ static void runTrigramIndexTests() {
             double speedup = linearTime / trigramTime;
             std::cout << "    Trigram speedup (limited): " << std::fixed << std::setprecision(1) << speedup << "x\n";
         }
-        check(true, "Trigram performance benchmark completed");
+        check(trigramTime > 0 && linearTime > 0, "Trigram performance benchmark produced timing data");
 
         // partial_sort benchmark: compare maxResults=100 vs unlimited (full sort)
         // With partial_sort, limited queries should be faster on large result sets
@@ -225,7 +225,7 @@ static void runTrigramIndexTests() {
             double speedup = fullSortTime / partialSortTime;
             std::cout << "    partial_sort speedup: " << std::fixed << std::setprecision(1) << speedup << "x\n";
         }
-        check(true, "partial_sort benchmark completed");
+        check(partialSortTime > 0 && fullSortTime > 0, "partial_sort benchmark produced timing data");
     }
 
     // -- Test 8: Path-only match still works with trigram --
@@ -306,7 +306,7 @@ static void runTrigramIndexTests() {
 
         std::cout << "    Remove " << removed << " / " << totalRecords << " records: "
                   << std::fixed << std::setprecision(2) << removeTime << "ms\n";
-        check(true, "removeByPathPrefix benchmark completed");
+        check(removed > 0, "removeByPathPrefix benchmark: records were removed");
     }
 
     // -- Test 11: Trigram candidate threshold fallback to linear scan --
@@ -449,7 +449,7 @@ static void runTrigramIndexTests() {
             std::cout << "    Glob trigram speedup: " << std::fixed << std::setprecision(1)
                       << linearGlobTime / trigramGlobTime << "x\n";
         }
-        check(true, "Compiled glob + trigram benchmark completed");
+        check(trigramGlobTime > 0 && linearGlobTime > 0, "Compiled glob + trigram benchmark produced timing data");
     }
 
     // -- Test 13: Multi-segment glob + trigram pre-filtering --
@@ -598,9 +598,8 @@ static void runTrigramIndexTests() {
                 std::cout << "    Multi-seg trigram speedup: " << std::fixed << std::setprecision(1)
                           << linearTime / trigramTime << "x\n";
             }
+            check(trigramTime > 0 && linearTime > 0, "Multi-segment glob + trigram benchmark produced timing data");
         }
-
-        check(true, "Multi-segment glob + trigram benchmark completed");
     }
 
     std::cout << "\n";

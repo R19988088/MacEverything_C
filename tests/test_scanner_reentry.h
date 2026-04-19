@@ -25,7 +25,7 @@ static void runScannerReentryTest() {
     uint64_t dirCount1 = scanner.getStats().dirCount.load();
 
     check(results1.size() > 0, "C5: First scan found results");
-    check(fileCount1 >= 5, "C5: First scan found >= 5 files");
+    check(fileCount1 == 5, "C5: First scan found exactly 5 files");
 
     // Second scan on same scanner instance — must NOT fail or return empty
     scanner.scan(tmpDir);
@@ -47,7 +47,7 @@ static void runScannerReentryTest() {
     auto results3 = scanner.takeResults();
 
     // Should NOT contain results from previous scans
-    check(results3.size() >= 1, "C5: Third scan on different dir returns results");
+    check(results3.size() == 1, "C5: Third scan on different dir returns exactly 1 result");
     check(results3.size() < results1.size(), "C5: Third scan has fewer entries than first (different dir)");
 
     fs::remove_all(tmpDir);

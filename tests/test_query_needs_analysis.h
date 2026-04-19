@@ -14,7 +14,6 @@ inline void runQueryNeedsAnalysisTests() {
         CHECK(needs.needsName == true);
         CHECK(needs.needsPath == true);
         CHECK(needs.isPureFilter() == false);
-        std::cout << "  62a: TERM needs name+path        PASS\n";
     }
 
     // 62b: size: filter → isPureFilter, needsSize
@@ -27,7 +26,6 @@ inline void runQueryNeedsAnalysisTests() {
         CHECK(needs.needsName == false);
         CHECK(needs.needsPath == false);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62b: size: is pure filter        PASS\n";
     }
 
     // 62c: file: filter → isPureFilter, needsType
@@ -36,7 +34,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsType == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62c: file: is pure filter        PASS\n";
     }
 
     // 62d: folder: filter → isPureFilter, needsType
@@ -45,7 +42,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsType == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62d: folder: is pure filter      PASS\n";
     }
 
     // 62e: dm: filter → isPureFilter, needsModTime
@@ -54,7 +50,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsModTime == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62e: dm: is pure filter          PASS\n";
     }
 
     // 62f: ext: filter → needsName, NOT a pure filter
@@ -63,7 +58,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsName == true);
         CHECK(needs.isPureFilter() == false);
-        std::cout << "  62f: ext: needs name             PASS\n";
     }
 
     // 62g: path: filter → needsPath, NOT a pure filter
@@ -72,7 +66,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsPath == true);
         CHECK(needs.isPureFilter() == false);
-        std::cout << "  62g: path: needs path            PASS\n";
     }
 
     // 62h: AND(TERM, size:) → NOT pure filter (TERM requires name+path)
@@ -90,7 +83,6 @@ inline void runQueryNeedsAnalysisTests() {
         CHECK(needs.needsPath == true);
         CHECK(needs.needsSize == true);
         CHECK(needs.isPureFilter() == false);
-        std::cout << "  62h: AND(TERM,size:) not pure    PASS\n";
     }
 
     // 62i: OR(size:, dm:) → isPureFilter
@@ -112,7 +104,6 @@ inline void runQueryNeedsAnalysisTests() {
         CHECK(needs.needsName == false);
         CHECK(needs.needsPath == false);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62i: OR(size:,dm:) is pure       PASS\n";
     }
 
     // 62j: NOT(file:) → isPureFilter, needsType
@@ -123,7 +114,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*notNode);
         CHECK(needs.needsType == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62j: NOT(file:) is pure filter   PASS\n";
     }
 
     // 62k: AND(file:, size:, dm:) → isPureFilter, all filter flags set
@@ -145,7 +135,6 @@ inline void runQueryNeedsAnalysisTests() {
         CHECK(needs.needsSize == true);
         CHECK(needs.needsModTime == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62k: AND(file:,size:,dm:) pure   PASS\n";
     }
 
     // 62l: len: filter → needsName
@@ -156,7 +145,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsName == true);
         CHECK(needs.isPureFilter() == false);
-        std::cout << "  62l: len: needs name             PASS\n";
     }
 
     // 62m: type: filter → needsType, isPureFilter
@@ -165,7 +153,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsType == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62m: type: is pure filter        PASS\n";
     }
 
     // 62n: datemodified: (long form) → needsModTime
@@ -174,7 +161,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsModTime == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62n: datemodified: pure filter   PASS\n";
     }
 
     // 62o: datecreated: → needsModTime
@@ -183,7 +169,6 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsModTime == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62o: datecreated: pure filter    PASS\n";
     }
 
     // 62p: dateaccessed: → needsModTime
@@ -192,6 +177,5 @@ inline void runQueryNeedsAnalysisTests() {
         QueryNeeds needs = analyzeQueryNeeds(*node);
         CHECK(needs.needsModTime == true);
         CHECK(needs.isPureFilter() == true);
-        std::cout << "  62p: dateaccessed: pure filter   PASS\n";
     }
 }

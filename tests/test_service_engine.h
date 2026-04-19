@@ -30,9 +30,7 @@ static bool runPart40() {
         config.logPath = (tmpBase / "logs").string();
 
         auto engine = std::make_unique<ServiceEngine>(config);
-        bool constructed = (engine != nullptr);
-        std::cout << "  Construction: " << (constructed ? "PASS" : "FAIL") << "\n";
-        if (!constructed) allOk = false;
+        check(engine != nullptr, "ServiceEngine construction succeeds");
 
         check(engine->recordCount() == 0, "Initial recordCount is 0");
         check(!engine->isScanning(), "Not scanning initially");
@@ -84,8 +82,7 @@ static bool runPart40() {
 
         // Test 5: Shutdown
         se->shutdown();
-        std::cout << "  Shutdown: PASS\n";
-        passed++;
+        check(!se->isScanning(), "Not scanning after shutdown");
     }
 
     // Test 6: Incremental load (cold start = full scan fallback)

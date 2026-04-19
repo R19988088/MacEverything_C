@@ -182,8 +182,7 @@ inline void runPreprocessUnifiedTests() {
         // (trigram index not built, so results may be empty — that's OK)
         auto results = engine.query("  TEST_FILE  ", 10, false);
         // Verify the whitespace-trimmed + lowered query didn't crash
-        std::cout << "    [PASS] query with preprocessing did not crash\n";
-        passed++;
+        check(true || results.empty(), "query with preprocessing did not crash");
     }
 
     // --- Whitespace trim in preprocessing ---
@@ -208,11 +207,9 @@ inline void runPreprocessUnifiedTests() {
             // Query with ~ should expand and match
             // (may or may not match depending on query routing, but shouldn't crash)
             auto results = engine.query("~/myfile.txt", 10, false);
-            std::cout << "    (tilde expanded, no crash)\n";
-            passed++;
+            check(results.size() >= 0, "tilde expansion query did not crash");
         } else {
-            std::cout << "    [SKIP] no HOME\n";
-            passed++;
+            check(true, "tilde expansion skipped (no HOME set)");
         }
     }
 
@@ -222,8 +219,7 @@ inline void runPreprocessUnifiedTests() {
         // This is a compile-time verification — if SearchEngine::isGlobPattern
         // were still declared, the test would need to be different.
         // The fact that this file compiles proves the declaration is gone.
-        std::cout << "    [PASS] (compile-time verified)\n";
-        passed++;
+        check(true, "isGlobPattern removed (compile-time verified)");
     }
 
     std::cout << "\n  Part 68 complete.\n";

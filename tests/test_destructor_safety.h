@@ -17,8 +17,8 @@ static void runDestructorSafetyTest() {
         persistence->startAutoCompaction(0.1, std::shared_ptr<FileSystemWatcher>(nullptr));  // 100ms interval
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         persistence.reset();  // Should not crash — destructor waits for in-flight compaction
+        check(persistence == nullptr, "C2: IndexPersistence destroyed safely with active compaction timer");
     }
-    check(true, "C2: IndexPersistence destroyed safely with active compaction timer");
 
     // Test ContentIndexPersistence: same pattern
     {
@@ -30,8 +30,8 @@ static void runDestructorSafetyTest() {
         persistence->startAutoCompaction(0.1);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         persistence.reset();  // Should not crash
+        check(persistence == nullptr, "C2: ContentIndexPersistence destroyed safely with active compaction timer");
     }
-    check(true, "C2: ContentIndexPersistence destroyed safely with active compaction timer");
 
     fs::remove_all(tmpDir);
     std::cout << "\n";

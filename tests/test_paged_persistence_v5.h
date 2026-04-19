@@ -664,8 +664,8 @@ static void testV5DeadSpaceReclamation() {
     PagedIndexWriter reader(pagesPath, ptablePath);
     IndexMetadata loadedMeta;
     check(reader.load(*engine2, &loadedMeta), "P53-10: load after reclaim succeeds");
-    // liveRecordCount depends on compaction; at minimum original live records load
-    check(engine2->liveRecordCount() > 0, "P53-10: records present after reclaim");
+    // All 1024 records should survive (updates modified dead0.txt in-place, no removals)
+    check(engine2->liveRecordCount() == 1024, "P53-10: all 1024 records present after reclaim");
 
     fs::remove_all(tmpDir);
 }

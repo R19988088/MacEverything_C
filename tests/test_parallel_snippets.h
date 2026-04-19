@@ -72,7 +72,7 @@ static void runParallelSnippetTests() {
     if (parMs > 0) {
         std::cout << "    Speedup: " << std::fixed << std::setprecision(1) << seqMs / parMs << "x\n";
     }
-    check(true, "parallel snippet generation: benchmark completed");
+    check(seqMs > 0 && parMs > 0, "parallel snippet generation: benchmark produced timing data");
 
     // Verify parallel results are correct
     {

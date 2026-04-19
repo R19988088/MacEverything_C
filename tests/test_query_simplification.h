@@ -218,8 +218,7 @@ static void runQuerySimplificationTests() {
         auto results = engine.query("test", 100, false, timing);
         // Simple query should now go through advanced path
         check(!timing.searchPath.empty(), "66.17 searchPath is set");
-        check(timing.searchPath != "linear" || timing.searchPath == "linear",
-              "66.17 timing populated");
+        check(!timing.searchPath.empty(), "66.17 timing populated");
     }
 
     // ── 66.18 globMatchImpl via CompiledGlob.h ──

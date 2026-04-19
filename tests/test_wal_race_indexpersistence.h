@@ -55,7 +55,7 @@ static void runWalRaceIndexPersistenceTest() {
     // Test 2: attachWAL + compact() interleaving
     persistence->attachWAL();
     persistence->compact(999, /*force=*/true);
-    check(true, "H1: attachWAL + compact interleaving safe");
+    check(engine->liveRecordCount() == 100, "H1: attachWAL + compact interleaving preserved all records");
 
     persistence.reset();
     fs::remove_all(tmpDir);

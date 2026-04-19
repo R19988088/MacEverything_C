@@ -99,7 +99,7 @@ static void runEventDrivenCompactionTests() {
         // Double stop — also no crash
         cip.stopAutoCompactionAndWait();
 
-        check(true, "EventDrivenCompact: start/stop auto-compaction without crash");
+        check(ci->indexedFileCount() == 0, "EventDrivenCompact: start/stop auto-compaction leaves clean state");
     }
 
     // Test 5: Multiple rapid walAppendAdd calls don't cause multiple concurrent compactions

@@ -42,8 +42,6 @@ static std::string httpGet(uint16_t port, const std::string& path) {
 
 static bool runPart39() {
     std::cout << "\n=== Part 39: HttpServer engine swap ===\n";
-    bool allOk = true;
-
     // Create two engines with different data
     auto engine1 = std::make_shared<SearchEngine>();
     { FileRecord rec; rec.name = "file1.txt"; rec.path = "/tmp"; rec.type = 1; rec.size = 100; rec.modTime = time(nullptr); engine1->addRecord(std::move(rec)); }
@@ -70,44 +68,32 @@ static bool runPart39() {
     // Test 1: Query should use engine1
     {
         auto resp = httpGet(port, "/api/status");
-        // engine1 has 1 record
-        bool found = resp.find("\"recordCount\":1") != std::string::npos;
-        std::cout << "  Status with engine1 (1 record): " << (found ? "PASS" : "FAIL") << "\n";
-        if (!found) {
-            allOk = false;
-            std::cout << "    Response: " << resp.substr(resp.find("\r\n\r\n") + 4) << "\n";
-        }
+        check(resp.find("\"recordCount\":1") != std::string::npos,
+              "Status with engine1 shows 1 record");
     }
 
     // Test 2: Swap engine, same server should reflect new engine
     *currentEngine = engine2;
     {
         auto resp = httpGet(port, "/api/status");
-        // engine2 has 2 records
-        bool found = resp.find("\"recordCount\":2") != std::string::npos;
-        std::cout << "  Status after engine swap (2 records): " << (found ? "PASS" : "FAIL") << "\n";
-        if (!found) {
-            allOk = false;
-            std::cout << "    Response: " << resp.substr(resp.find("\r\n\r\n") + 4) << "\n";
-        }
+        check(resp.find("\"recordCount\":2") != std::string::npos,
+              "Status after engine swap shows 2 records");
     }
 
     // Test 3: Search should use new engine
     {
         auto resp = httpGet(port, "/api/search?q=file2");
-        bool found = resp.find("file2.txt") != std::string::npos;
-        std::cout << "  Search on swapped engine: " << (found ? "PASS" : "FAIL") << "\n";
-        if (!found) allOk = false;
+        check(resp.find("file2.txt") != std::string::npos,
+              "Search on swapped engine finds file2.txt");
     }
 
     // Test 4: Health endpoint always works (no engine needed)
     {
         auto resp = httpGet(port, "/api/health");
-        bool found = resp.find("\"status\":\"ok\"") != std::string::npos;
-        std::cout << "  Health endpoint: " << (found ? "PASS" : "FAIL") << "\n";
-        if (!found) allOk = false;
+        check(resp.find("\"status\":\"ok\"") != std::string::npos,
+              "Health endpoint returns ok status");
     }
 
     server.stop();
-    return allOk;
+    return true;
 }

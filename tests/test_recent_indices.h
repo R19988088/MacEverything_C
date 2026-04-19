@@ -81,7 +81,7 @@ static void runRecentIndicesTests() {
         std::cout << "    100x recentIndices(100) on 100k records: "
                   << std::fixed << std::setprecision(2) << ms << "ms ("
                   << ms / 100.0 << "ms/call)\n";
-        check(true, "recentIndices: performance benchmark completed");
+        check(ms < 5000.0, "recentIndices: 100x calls on 100k records completes within 5s");
     }
 
     std::cout << "\n";

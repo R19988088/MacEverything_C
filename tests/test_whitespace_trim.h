@@ -9,11 +9,7 @@ static void runWhitespaceTrimTests() {
     std::cout << "========================================\n\n";
 
     const char* home = std::getenv("HOME");
-    if (!home) {
-        std::cout << "  SKIP: HOME not set\n";
-        return;
-    }
-    std::string homeStr(home);
+    std::string homeStr(home ? home : "/tmp");
 
     SearchEngine engine;
 
@@ -54,12 +50,16 @@ static void runWhitespaceTrimTests() {
           "Interior space preserved: '  hello world  ' same as 'hello world'");
 
     // Trim + tilde expansion combined: "  ~/Downloads/*.txt  "
-    auto tildeTrimmed = engine.query("  ~/Downloads/*.txt  ");
-    auto tildeClean   = engine.query("~/Downloads/*.txt");
-    check(tildeTrimmed.size() == tildeClean.size(),
-          "Trim + tilde: '  ~/Downloads/*.txt  ' same as '~/Downloads/*.txt'");
-    check(tildeTrimmed.size() == 1,
-          "Trim + tilde: matches f1.txt");
+    if (home) {
+        auto tildeTrimmed = engine.query("  ~/Downloads/*.txt  ");
+        auto tildeClean   = engine.query("~/Downloads/*.txt");
+        check(tildeTrimmed.size() == tildeClean.size(),
+              "Trim + tilde: '  ~/Downloads/*.txt  ' same as '~/Downloads/*.txt'");
+        check(tildeTrimmed.size() == 1,
+              "Trim + tilde: matches f1.txt");
+    } else {
+        std::cout << "  SKIP: tilde tests (HOME not set)\n";
+    }
 
     std::cout << "  All whitespace trim tests passed!\n\n";
 }

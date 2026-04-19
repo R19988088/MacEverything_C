@@ -90,8 +90,8 @@ static void runRegexTrigramTests() {
             if (l == "alpha") hasAlpha = true;
             if (l == "beta") hasBeta = true;
         }
-        // At least one should exist (both are >= 3)
-        check(hasAlpha || hasBeta, "60.7 extractRegexLiterals alternation: got at least one");
+        // Both should exist (both are >= 3 chars)
+        check(hasAlpha && hasBeta, "60.7 extractRegexLiterals alternation: got both sides");
     }
 
     // ── Test 8: Case normalization ──

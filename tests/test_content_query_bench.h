@@ -68,7 +68,7 @@ static void runContentIndexQueryBenchmark() {
 
     std::cout << "  " << iterations << "x query no-match: " << std::fixed << std::setprecision(2)
               << noMatchTime << "ms (" << noMatchTime / iterations << "ms/query)\n";
-    check(true, "CI-Bench: query benchmark completed");
+    check(totalMatches > 0, "CI-Bench: query benchmark returned matches");
 
     // Test: posting lists are sorted after load from file
     std::string savePath = tmpDir + "/ci_bench.bin";

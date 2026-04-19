@@ -117,7 +117,7 @@ static void runQueryPerfBenchmarks() {
         printResult(r1);
         auto r2 = benchmark("test", 0, RUNS);
         printResult(r2);
-        check(true, "High candidate count benchmark completed");
+        check(r1.resultCount > 0, "High candidate count benchmark returned results");
     }
 
     // ── Scenario 2: Medium selectivity ──
@@ -128,7 +128,7 @@ static void runQueryPerfBenchmarks() {
         printResult(r1);
         auto r2 = benchmark("module", 100, RUNS);
         printResult(r2);
-        check(true, "Medium selectivity benchmark completed");
+        check(r1.resultCount > 0 && r2.resultCount > 0, "Medium selectivity benchmark returned results");
     }
 
     // ── Scenario 3: Excellent selectivity (rare keyword) ──
@@ -139,7 +139,7 @@ static void runQueryPerfBenchmarks() {
         printResult(r1);
         auto r2 = benchmark("unique_xyz_12345", 100, RUNS);
         printResult(r2);
-        check(true, "Excellent selectivity benchmark completed");
+        check(r1.resultCount > 0, "Excellent selectivity benchmark returned results");
     }
 
     // ── Scenario 4: Short keyword (no trigram, linear scan) ──
@@ -150,7 +150,7 @@ static void runQueryPerfBenchmarks() {
         printResult(r1);
         auto r2 = benchmark("a", 100, RUNS);
         printResult(r2);
-        check(true, "Short keyword benchmark completed");
+        check(r1.resultCount > 0, "Short keyword benchmark returned results");
     }
 
     // ── Scenario 5: Glob pattern (parallel linear scan) ──
@@ -160,7 +160,7 @@ static void runQueryPerfBenchmarks() {
         printResult(r1);
         auto r2 = benchmark("test_*", 100, RUNS);
         printResult(r2);
-        check(true, "Glob pattern benchmark completed");
+        check(r1.resultCount > 0, "Glob pattern benchmark returned results");
     }
 
     // ── Scenario 6: No match (trigram early exit) ──
@@ -168,7 +168,7 @@ static void runQueryPerfBenchmarks() {
     {
         auto r1 = benchmark("qzqzqz_nonexistent", 100, RUNS);
         printResult(r1);
-        check(true, "No-match benchmark completed");
+        check(r1.resultCount == 0, "No-match benchmark returned zero results");
     }
 
     // ── Scenario 7: Correctness validation ──
@@ -221,7 +221,7 @@ static void runQueryPerfBenchmarks() {
         // (not 100x slower as in production with 4.8M records)
         double ratio = highCand.avgMs / linearScan.avgMs;
         std::cout << "    Ratio (high_cand / linear_scan): " << std::setprecision(1) << ratio << "x\n";
-        check(true, "Performance summary completed");
+        check(ratio > 0, "Performance summary: ratio is valid");
     }
 
     std::cout << "\n";

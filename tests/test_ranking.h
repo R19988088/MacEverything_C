@@ -44,7 +44,7 @@ static void runSearchRankingTests() {
         engine.loadRecords(std::move(records));
 
         auto res = engine.query("alfred");
-        check(res.size() >= 3, "Ranking: 'alfred' matches multiple records");
+        check(res.size() == 4, "Ranking: 'alfred' matches all 4 records");
 
         // "Alfred" is exact match (case-insensitive) -> priority 0
         check(engine.getRecord(res[0]).name == "Alfred",

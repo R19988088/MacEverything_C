@@ -107,6 +107,7 @@ namespace fs = std::filesystem;
 #include "tests/test_query_date_filters.h"
 #include "tests/test_structured_query.h"
 #include "tests/test_query_modifiers.h"
+#include "tests/test_regex_trigram.h"
 
 // ═══════════════════════════════════════════════════════
 //  Main
@@ -155,7 +156,8 @@ static void printUsage(const char* prog) {
     std::cout << "  56 (query filters),\n";
     std::cout << "  57 (query date filters),\n";
     std::cout << "  58 (structured query),\n";
-    std::cout << "  59 (query modifiers & macros)\n";
+    std::cout << "  59 (query modifiers & macros),\n";
+    std::cout << "  60 (regex trigram pre-filtering)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -170,7 +172,7 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--fast") {
             explicitSelection = true;
-            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59"});
+            selectedParts.insert({"3", "3b", "3c", "3d", "3e", "5", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60"});
         } else if (arg == "--bench") {
             explicitSelection = true;
             selectedParts.insert({"44", "46"});
@@ -196,7 +198,7 @@ int main(int argc, char* argv[]) {
 
     // If no explicit selection, run all parts
     if (!explicitSelection) {
-        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59"};
+        selectedParts = {"1", "3", "3b", "3c", "3d", "3e", "4", "5", "6", "7", "7b", "7c", "7d", "7e", "7f", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "47", "48", "49", "50", "51", "52", "53", "54", "55", "56", "57", "58", "59", "60"};
     }
 
     // Validate root path if scan test is selected
@@ -287,6 +289,7 @@ int main(int argc, char* argv[]) {
     if (selectedParts.count("57")) runQueryDateFilterTests();
     if (selectedParts.count("58")) runStructuredQueryTests();
     if (selectedParts.count("59")) runQueryModifierTests();
+    if (selectedParts.count("60")) runRegexTrigramTests();
 
     // ── Final Summary ──
     std::cout << "╔══════════════════════════════════════════╗\n";

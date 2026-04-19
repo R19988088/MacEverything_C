@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <regex>
+#include <functional>
 
 // ---------------------------------------------------------------------------
 // queryAdvanced: evaluate a parsed AST against the record set.
@@ -385,7 +386,74 @@ static std::string bestTrigramTerm(const QueryNode& node) {
     return {};
 }
 
+/// Extract continuous literal substrings (length >= 3) from a regex pattern.
+/// Used for trigram pre-filtering of regex queries.
+static std::vector<std::string> extractRegexLiteralsImpl(const std::string& pattern) {
+    std::vector<std::string> literals;
+    std::string current;
+    bool inCharClass = false;
+
+    for (size_t i = 0; i < pattern.size(); i++) {
+        char c = pattern[i];
+        if (c == '\\' && i + 1 < pattern.size()) {
+            char next = pattern[i + 1];
+            // Escaped literal metacharacters
+            if (next == '.' || next == '*' || next == '+' || next == '?' ||
+                next == '(' || next == ')' || next == '[' || next == ']' ||
+                next == '{' || next == '}' || next == '|' || next == '^' ||
+                next == '$' || next == '\\' || next == '/') {
+                if (!inCharClass) current += std::tolower(static_cast<unsigned char>(next));
+                i++;
+            } else {
+                // \d, \w, \s, etc. — break current literal
+                if (current.size() >= 3) literals.push_back(std::move(current));
+                current.clear();
+                i++;
+            }
+        } else if (c == '[') {
+            if (current.size() >= 3) literals.push_back(std::move(current));
+            current.clear();
+            inCharClass = true;
+        } else if (c == ']') {
+            inCharClass = false;
+        } else if (inCharClass) {
+            // Inside character class — don't extract
+        } else if (c == '.' || c == '*' || c == '+' || c == '?' ||
+                   c == '(' || c == ')' || c == '{' || c == '}' ||
+                   c == '|' || c == '^' || c == '$') {
+            // Metacharacter — break current literal
+            if (current.size() >= 3) literals.push_back(std::move(current));
+            current.clear();
+        } else {
+            current += std::tolower(static_cast<unsigned char>(c));
+        }
+    }
+    if (current.size() >= 3) literals.push_back(std::move(current));
+    return literals;
+}
+
+/// Collect regex literal substrings from all REGEX TERM nodes in the AST.
+static std::vector<std::string> extractRegexLiteralsFromAST(const QueryNode& node) {
+    std::vector<std::string> allLiterals;
+    std::function<void(const QueryNode&)> collect = [&](const QueryNode& n) {
+        if (n.type == QueryNodeType::TERM && n.mode == MatchMode::REGEX) {
+            auto lits = extractRegexLiteralsImpl(n.text);
+            allLiterals.insert(allLiterals.end(), lits.begin(), lits.end());
+        }
+        for (auto& child : n.children) collect(*child);
+    };
+    collect(node);
+    return allLiterals;
+}
+
 } // anonymous namespace
+
+// Expose extractRegexLiterals for unit testing
+namespace me_test {
+    std::vector<std::string> extractRegexLiterals(const std::string& pattern) {
+        return extractRegexLiteralsImpl(pattern);
+    }
+}
 
 std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                                                    uint32_t maxResults,
@@ -438,6 +506,22 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             candidates.clear();
         }
         afterTrigram = std::chrono::steady_clock::now();
+    }
+
+    // Regex trigram pre-filtering: extract literal substrings from regex patterns
+    if (useTrigram && !useTrigramIndex && !nameTrigramIndex_.empty()) {
+        auto regexLiterals = extractRegexLiteralsFromAST(*ast);
+        if (!regexLiterals.empty()) {
+            beforeTrigram = std::chrono::steady_clock::now();
+            bool allFound = false;
+            candidates = intersectPostingListsMulti(nameTrigramIndex_, regexLiterals, allFound);
+            if (allFound && candidates.size() <= totalSize / 67) {
+                useTrigramIndex = true;
+            } else {
+                candidates.clear();
+            }
+            afterTrigram = std::chrono::steady_clock::now();
+        }
     }
 
     // Evaluate AST against each candidate (or all records for linear scan)
@@ -525,7 +609,11 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     timing.pathMatches = 0;
     timing.resultCount = result.size();
     timing.usedTrigram = useTrigramIndex;
-    timing.searchPath = useTrigramIndex ? "advanced-trigram" : "advanced-linear";
+    if (useTrigramIndex) {
+        timing.searchPath = trigramKey.empty() ? "advanced-regex-trigram" : "advanced-trigram";
+    } else {
+        timing.searchPath = "advanced-linear";
+    }
 
     auto ms = static_cast<long long>(timing.totalMs);
     if (ms > 100) {

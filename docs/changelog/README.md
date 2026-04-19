@@ -146,6 +146,7 @@
 | [129](129-fix-test-quality.md) | test | Fix Test Quality — Tautological & Weak Assertions | 2026-04-19 |
 | [130](130-publish-opensource-script.md) | chore | 开源发布脚本 (publish-opensource.sh) | 2026-04-19 |
 | [131](131-soa-tombstone-check.md) | performance | SoA Tombstone Check 优化 | 2026-04-19 |
+| [132](132-docs-release-preparation.md) | docs | 公开发布前文档审计与修复 | 2026-04-19 |
 
 ## 统计
 
@@ -156,9 +157,9 @@
 | performance | 31 |
 | refactor | 17 |
 | test | 5 |
-| docs | 1 |
+| docs | 2 |
 | chore | 1 |
-| **合计** | **138 条 (131 个编号, 7 组重复编号各 2 条)** |
+| **合计** | **139 条 (132 个编号, 7 组重复编号各 2 条)** |
 
 ---
 
@@ -169,4 +170,4 @@
 | 2026-04-16 | 16 |
 | 2026-04-17 | 11 |
 | 2026-04-18 | 22 |
-| 2026-04-19 | 37 |
+| 2026-04-19 | 38 |

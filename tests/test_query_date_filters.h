@@ -8,7 +8,6 @@
 #include <ctime>
 #include <sys/stat.h>
 #include <utime.h>
-#include "MacEverything/Core/QueryFilterParser.h"
 
 // ── Part 57: Query Date Filter Tests ──
 // Tests for Phase 3 date filters: dm:, dc:, datemodified:, datecreated:

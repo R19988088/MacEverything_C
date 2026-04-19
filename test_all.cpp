@@ -18,6 +18,7 @@
 #include "MacEverything/Core/ServiceEngine.h"
 #include "MacEverything/Core/QueryTokenizer.h"
 #include "MacEverything/Core/QueryParser.h"
+#include "MacEverything/Core/QueryFilterParser.h"
 #include <chrono>
 #include <iostream>
 #include <iomanip>
@@ -149,7 +150,8 @@ static void printUsage(const char* prog) {
     std::cout << "  50 (string pool), 51 (SIMD search), 52 (lowerPathPool),\n";
     std::cout << "  53 (paged persistence v5),\n";
     std::cout << "  54 (query tokenizer), 55 (query parser),\n";
-    std::cout << "  56 (query filters)\n";
+    std::cout << "  56 (query filters),\n";
+    std::cout << "  57 (query date filters)\n";
 }
 
 int main(int argc, char* argv[]) {

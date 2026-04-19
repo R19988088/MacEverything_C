@@ -188,15 +188,22 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
     bool hasPathSegs = !pq.pathSegments.empty();
 
     if (hasPathSegs) {
-        // Path-first: match ~100K paths, then iterate only their records.
-        // For "bin/ls" this is ~50K records vs 5M — massive reduction.
-        uint32_t pathCount = lowerPathPool_.entryCount();
-        for (uint32_t pi = 0; pi < pathCount; pi++) {
-            if (!lowerPathPool_.isLive(pi)) continue;
-            std::string_view lpv(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
-            if (!pathSegmentsMatch(lpv, pq.pathSegments)) continue;
+        // Path-first: narrow candidate paths, then iterate only their records.
+        // Try path trigram index first (O(candidates) vs O(all_paths)).
+        // Find the best segment (longest, >= 3 chars) for trigram lookup.
+        int bestSegIdx = -1;
+        size_t bestSegLen = 0;
+        for (size_t i = 0; i < pq.pathSegments.size(); i++) {
+            if (pq.pathSegments[i].text.size() >= 3 &&
+                pq.pathSegments[i].text.size() > bestSegLen) {
+                bestSegLen = pq.pathSegments[i].text.size();
+                bestSegIdx = static_cast<int>(i);
+            }
+        }
 
-            if (pi >= pathIdxToRecords_.size()) continue;
+        // Lambda: check name match and emit result for records under pathIdx pi
+        auto emitRecordsForPath = [&](uint32_t pi) {
+            if (pi >= pathIdxToRecords_.size()) return;
             const auto& recIds = pathIdxToRecords_[pi];
             for (uint32_t idx : recIds) {
                 if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
@@ -216,6 +223,36 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
                 uint8_t priority = namePriority(nd, nl, namePattern.data(), namePattern.size());
                 uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[idx]) + 1 + nl);
                 merged.push_back({idx, priority, pLen});
+            }
+        };
+
+        bool usedTrigram = false;
+        if (bestSegIdx >= 0 && !pathTrigramIndex_.empty()) {
+            bool allFound = false;
+            auto candidatePaths = intersectPostingLists(
+                pathTrigramIndex_, pq.pathSegments[bestSegIdx].text, allFound);
+
+            if (allFound) {
+                usedTrigram = true;
+                for (uint32_t pi : candidatePaths) {
+                    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+                    if (!lowerPathPool_.isLive(pi)) continue;
+                    std::string_view lpv(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
+                    if (!pathSegmentsMatch(lpv, pq.pathSegments)) continue;
+                    emitRecordsForPath(pi);
+                }
+            }
+        }
+
+        if (!usedTrigram) {
+            // Linear scan all paths (no usable trigrams)
+            uint32_t pathCount = lowerPathPool_.entryCount();
+            for (uint32_t pi = 0; pi < pathCount; pi++) {
+                if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+                if (!lowerPathPool_.isLive(pi)) continue;
+                std::string_view lpv(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
+                if (!pathSegmentsMatch(lpv, pq.pathSegments)) continue;
+                emitRecordsForPath(pi);
             }
         }
     } else {

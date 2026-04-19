@@ -376,19 +376,28 @@ static void collectTerms(const QueryNode& node, std::vector<std::string>& terms)
 /// Find the single best (longest) SUBSTRING TERM from the AND-level for trigram pre-filtering.
 /// For OR queries we can't pre-filter (any branch might match), so return empty.
 /// Skips __pathseg filter nodes and recurses into AND children.
+/// Extract the best trigram key from a TERM node (SUBSTRING or GLOB mode).
+static std::string termTrigramKey(const QueryNode& node) {
+    if (node.mode == MatchMode::SUBSTRING) return node.textLower;
+    if (node.mode == MatchMode::GLOB) {
+        auto segs = extractLiteralSegments(node.textLower);
+        std::string best;
+        for (const auto& s : segs)
+            if (s.size() >= 3 && s.size() > best.size()) best = s;
+        return best;
+    }
+    return {};
+}
+
 static std::string bestTrigramTerm(const QueryNode& node) {
     if (node.type == QueryNodeType::TERM) {
-        // Only SUBSTRING mode can use trigram pre-filtering
-        if (node.mode != MatchMode::SUBSTRING) return {};
-        return node.textLower;
+        return termTrigramKey(node);
     }
     if (node.type == QueryNodeType::AND) {
-        // Pick the longest SUBSTRING TERM child (more trigrams = better selectivity)
-        // Also recurse into nested AND children (from transformSlashTerms)
         std::string best;
         for (auto& child : node.children) {
-            if (child->type == QueryNodeType::TERM && child->mode == MatchMode::SUBSTRING) {
-                const auto& t = child->textLower;
+            if (child->type == QueryNodeType::TERM) {
+                std::string t = termTrigramKey(*child);
                 if (t.size() > best.size()) best = t;
             } else if (child->type == QueryNodeType::AND) {
                 std::string t = bestTrigramTerm(*child);
@@ -617,67 +626,77 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
 
     auto beforeTrigram = afterLock, afterTrigram = afterLock;
 
-    // Try to use trigram index to narrow down candidates.
-    // Extract the best term from the top-level AND for pre-filtering.
+    // --- Trigram pre-filtering: competitive selection among name, regex, and path trigrams ---
     std::string trigramKey = bestTrigramTerm(*ast);
     std::vector<uint32_t> candidates;
     bool useTrigramIndex = false;
 
+    // Stage 1: Name trigram — stash result, don't commit yet
+    std::vector<uint32_t> nameCands;
+    bool nameOk = false;
     if (useTrigram && !trigramKey.empty() && trigramKey.size() >= 3 && !nameTrigramIndex_.empty()) {
         beforeTrigram = std::chrono::steady_clock::now();
         bool allFound = false;
-        candidates = intersectPostingLists(nameTrigramIndex_, trigramKey, allFound);
-        if (allFound && candidates.size() <= totalSize / 67) {
-            useTrigramIndex = true;
-        } else {
-            candidates.clear();
-        }
+        nameCands = intersectPostingLists(nameTrigramIndex_, trigramKey, allFound);
+        nameOk = allFound && nameCands.size() <= totalSize / 67;
+        if (!nameOk) nameCands.clear();
         afterTrigram = std::chrono::steady_clock::now();
     }
 
-    // Regex trigram pre-filtering: extract literal substrings from regex patterns
-    if (useTrigram && !useTrigramIndex && !nameTrigramIndex_.empty()) {
+    // Stage 2: Regex trigram (only if name failed)
+    if (useTrigram && !nameOk && !nameTrigramIndex_.empty()) {
         auto regexLiterals = extractRegexLiteralsFromAST(*ast);
         if (!regexLiterals.empty()) {
             beforeTrigram = std::chrono::steady_clock::now();
             bool allFound = false;
-            candidates = intersectPostingListsMulti(nameTrigramIndex_, regexLiterals, allFound);
-            if (allFound && candidates.size() <= totalSize / 67) {
-                useTrigramIndex = true;
-            } else {
-                candidates.clear();
-            }
+            nameCands = intersectPostingListsMulti(nameTrigramIndex_, regexLiterals, allFound);
+            nameOk = allFound && nameCands.size() <= totalSize / 67;
+            if (!nameOk) nameCands.clear();
             afterTrigram = std::chrono::steady_clock::now();
         }
     }
 
-    // Path trigram pre-filtering: if AST has __pathseg with a segment >= 3 chars,
-    // use pathTrigramIndex_ to narrow candidates via path indices → record indices.
-    if (useTrigram && !useTrigramIndex && !pathTrigramIndex_.empty()) {
+    // Stage 3: Path trigram — always attempt (compete with name trigram)
+    std::vector<uint32_t> pathCands;
+    bool pathOk = false;
+    if (useTrigram && !pathTrigramIndex_.empty()) {
         std::string pathSegKey = bestPathSegTerm(*ast);
         if (pathSegKey.size() >= 3) {
-            beforeTrigram = std::chrono::steady_clock::now();
+            auto pt0 = std::chrono::steady_clock::now();
             bool allFound = false;
-            auto pathCandidates = intersectPostingLists(pathTrigramIndex_, pathSegKey, allFound);
+            auto pathIdxCands = intersectPostingLists(pathTrigramIndex_, pathSegKey, allFound);
             if (allFound) {
-                // Expand path indices to record indices
-                for (uint32_t pi : pathCandidates) {
+                for (uint32_t pi : pathIdxCands) {
                     if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
                     if (pi >= pathIdxToRecords_.size()) continue;
                     const auto& recIds = pathIdxToRecords_[pi];
-                    candidates.insert(candidates.end(), recIds.begin(), recIds.end());
+                    pathCands.insert(pathCands.end(), recIds.begin(), recIds.end());
                 }
-                // Sort and deduplicate
-                std::sort(candidates.begin(), candidates.end());
-                candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-                if (candidates.size() <= totalSize / 4) {
-                    useTrigramIndex = true;
-                } else {
-                    candidates.clear();
-                }
+                std::sort(pathCands.begin(), pathCands.end());
+                pathCands.erase(std::unique(pathCands.begin(), pathCands.end()), pathCands.end());
+                pathOk = pathCands.size() <= totalSize / 4;
+                if (!pathOk) pathCands.clear();
             }
-            afterTrigram = std::chrono::steady_clock::now();
+            if (!nameOk) afterTrigram = std::chrono::steady_clock::now();
         }
+    }
+
+    // Stage 4: Pick best — fewer candidates wins
+    if (nameOk && pathOk) {
+        if (pathCands.size() < nameCands.size()) {
+            candidates = std::move(pathCands);
+            trigramKey.clear(); // signal path-trigram for searchPath label
+        } else {
+            candidates = std::move(nameCands);
+        }
+        useTrigramIndex = true;
+    } else if (nameOk) {
+        candidates = std::move(nameCands);
+        useTrigramIndex = true;
+    } else if (pathOk) {
+        candidates = std::move(pathCands);
+        trigramKey.clear();
+        useTrigramIndex = true;
     }
 
     // Evaluate AST against each candidate (or all records for linear scan)

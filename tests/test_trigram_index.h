@@ -497,8 +497,8 @@ static void runTrigramIndexTests() {
             QueryTimingInfo timing;
             auto res = engine.query("*source*.cpp", 0, true, timing);
             check(res.size() == 70, "Multi-seg glob: '*source*.cpp' finds 70 files (50 src + 20 test)");
-            check(timing.searchPath == "advanced-linear-gcd",
-                  "Multi-seg glob: '*source*.cpp' uses advanced-linear-gcd path");
+            check(timing.searchPath == "advanced-trigram",
+                  "Multi-seg glob: '*source*.cpp' uses advanced-trigram path");
             std::cout << "    '*source*.cpp': " << res.size() << " results, path=" << timing.searchPath
                       << ", candidates=" << timing.candidates << "\n";
         }
@@ -508,8 +508,8 @@ static void runTrigramIndexTests() {
             QueryTimingInfo timing;
             auto res = engine.query("*.cpp.*", 0, true, timing);
             check(res.size() == 10, "Multi-seg glob: '*.cpp.*' finds 10 .cpp.bak files");
-            check(timing.searchPath == "advanced-linear-gcd",
-                  "Multi-seg glob: '*.cpp.*' uses advanced-linear-gcd path");
+            check(timing.searchPath == "advanced-trigram",
+                  "Multi-seg glob: '*.cpp.*' uses advanced-trigram path");
             std::cout << "    '*.cpp.*': " << res.size() << " results, path=" << timing.searchPath
                       << ", candidates=" << timing.candidates << "\n";
         }
@@ -519,8 +519,8 @@ static void runTrigramIndexTests() {
             QueryTimingInfo timing;
             auto res = engine.query("test_*.cpp", 0, true, timing);
             check(res.size() == 20, "Multi-seg glob: 'test_*.cpp' finds 20 test files");
-            check(timing.searchPath == "advanced-linear-gcd",
-                  "Multi-seg glob: 'test_*.cpp' uses advanced-linear-gcd path");
+            check(timing.searchPath == "advanced-trigram",
+                  "Multi-seg glob: 'test_*.cpp' uses advanced-trigram path");
             std::cout << "    'test_*.cpp': " << res.size() << " results, path=" << timing.searchPath
                       << ", candidates=" << timing.candidates << "\n";
         }
@@ -530,8 +530,8 @@ static void runTrigramIndexTests() {
             QueryTimingInfo timing;
             auto res = engine.query("*.ext.*", 0, true, timing);
             check(res.size() == 15, "Multi-seg glob: '*.ext.*' finds 15 .ext.tmp files");
-            check(timing.searchPath == "advanced-linear-gcd",
-                  "Multi-seg glob: '*.ext.*' uses advanced-linear-gcd path");
+            check(timing.searchPath == "advanced-trigram",
+                  "Multi-seg glob: '*.ext.*' uses advanced-trigram path");
             std::cout << "    '*.ext.*': " << res.size() << " results, path=" << timing.searchPath
                       << ", candidates=" << timing.candidates << "\n";
         }
@@ -542,8 +542,8 @@ static void runTrigramIndexTests() {
             auto res = engine.query("?ource*.cpp", 0, true, timing);
             // ?ource matches "source" (? = 's'), so finds source_*.cpp = 50 files
             check(res.size() == 50, "Multi-seg glob: '?ource*.cpp' finds 50 source files");
-            check(timing.searchPath == "advanced-linear-gcd",
-                  "Multi-seg glob: '?ource*.cpp' uses advanced-linear-gcd path");
+            check(timing.searchPath == "advanced-trigram",
+                  "Multi-seg glob: '?ource*.cpp' uses advanced-trigram path");
             std::cout << "    '?ource*.cpp': " << res.size() << " results, path=" << timing.searchPath
                       << ", candidates=" << timing.candidates << "\n";
         }

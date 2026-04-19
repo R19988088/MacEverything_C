@@ -16,8 +16,8 @@
 <p align="center">
   <a href="#installation"><img src="https://img.shields.io/badge/macOS-13%2B-blue?logo=apple" alt="macOS 13+" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" /></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-77%20modules-brightgreen" alt="77 test modules" /></a>
-  <a href="#mcp-integration"><img src="https://img.shields.io/badge/MCP-compatible-blueviolet" alt="MCP Compatible" /></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-79%20modules-brightgreen" alt="79 test modules" /></a>
+  <a href="#ai-tool-integration-mcp"><img src="https://img.shields.io/badge/MCP-compatible-blueviolet" alt="MCP Compatible" /></a>
 </p>
 
 ---
@@ -26,56 +26,95 @@
   <img src="assets/screen-shot.jpg" alt="MacEverything Screenshot" width="720" />
 </p>
 
-## Why MacEverything?
-
-Spotlight is slow. `find` is slower. `mdfind` misses files. MacEverything indexes your **entire disk — 5 million+ files — in seconds**, then answers every search in **under 5ms**.
-
-| What | MacEverything | Spotlight | `find` |
-|------|:---:|:---:|:---:|
-| Index 5M files | ~14s | Minutes+ | N/A (no index) |
-| Search latency (typical) | **< 5ms** | 200ms–2s | 5–30s |
-| Real-time FS monitoring | FSEvents | FSEvents | None |
-| Content search | Trigram index | Metadata-heavy | `grep` |
-| AI-tool integration (MCP) | Built-in | No | No |
-
-## Key Features
+## Feature Highlights
 
 ### Blazing Fast Search
 
-- **Trigram inverted index** — sub-linear search, 33x–300x faster than brute-force linear scan
-- **ARM NEON SIMD** string matching — 11.5 GB/s single-thread, 74 GB/s multi-thread (60% of memory bandwidth on M3 Pro)
-- **GCD parallel query** — leverages all CPU cores for linear-scan fallback paths
-- **< 5ms average** for trigram-accelerated queries across 5.4M indexed files ([benchmarks →](#benchmarks))
+Index an entire disk — **5 million+ files in just 14 seconds** — then get results in **under 5ms** for every search. Two orders of magnitude faster than Spotlight.
+
+| Comparison | MacEverything | Spotlight | `find` |
+|------------|:---:|:---:|:---:|
+| Index 5M files | ~14s | Minutes+ | No index |
+| Search latency | **< 5ms** | 200ms–2s | 5–30s |
+| Real-time monitoring | FSEvents | FSEvents | None |
+| Content search | Trigram index | Metadata-heavy | `grep` |
+| AI tool integration | Built-in MCP | No | No |
+
+### Always at Your Fingertips
+
+Press **`Option+Space`** to summon the search window anytime (hotkey is customizable). The search bar auto-focuses — start typing immediately, find what you need, and move on. Supports launch-at-login with minimized background mode, staying out of your workflow.
+
+### Smart Input Experience
+
+- **Ghost text autocomplete** — semi-transparent suggestions appear as you type, drawn from search history (sorted by frequency) or system keywords (e.g., typing `ex` suggests `ext:`). Press **Tab** to accept
+- **Search bar syntax highlighting** — real-time color coding: filter names in purple, arguments in blue, quoted strings in orange, operators in red
+- **Search option badges** — colorful badges next to the search bar for one-click toggling of Regex / Case Sensitive / Whole Word / Match Filename
+
+### Everything-Style Query Syntax
+
+Full AST parser supporting 15+ filters, boolean operators, glob wildcards, and regular expressions. Built-in syntax help window (**Cmd+?**).
+
+| Query | Description |
+|-------|-------------|
+| `readme` | Files containing "readme" in the name |
+| `*.swift` | All Swift source files |
+| `ext:py size:>1mb` | Python files larger than 1MB |
+| `dm:today` | Files modified today |
+| `config path:/usr` | Files containing "config" under `/usr` |
+| `"exact phrase"` | Exact phrase matching |
+| `foo OR bar` | Boolean OR operation |
+| `case:Makefile` | Case-sensitive search |
+| `regex:^test_.*\.py$` | Regular expression search |
+| `type:folder node_modules` | Search directories only |
+| `~/Documents/*.pdf` | Tilde expansion + glob |
+| `infile:TODO ext:cpp` | Search "TODO" inside C++ files |
+
+<details>
+<summary><b>Full filter list</b></summary>
+
+| Filter | Description | Example |
+|--------|-------------|---------|
+| `ext:` | File extension | `ext:swift,h` |
+| `size:` | File size | `size:>1mb`, `size:100kb-5mb` |
+| `type:` | File/folder | `type:folder` |
+| `path:` | Path contains | `path:Downloads` |
+| `nopath:` | Path excludes | `nopath:node_modules` |
+| `parent:` | Direct parent directory | `parent:src` |
+| `depth:` | Directory depth | `depth:<3` |
+| `dm:` | Date modified | `dm:today`, `dm:>2024-01-01` |
+| `dc:` | Date created | `dc:thisweek` |
+| `da:` | Date accessed | `da:last7days` |
+| `len:` | Filename length | `len:>50` |
+| `case:` | Case-sensitive | `case:README` |
+| `regex:` | Regular expression | `regex:^test_` |
+| `ww:` | Whole word match | `ww:test` |
+| `wfn:` | Whole filename match | `wfn:Makefile` |
+| `content:` / `infile:` | Content search | `infile:TODO` |
+| `audio:` `video:` `pic:` `doc:` `zip:` | File type macros | `audio:` = all audio files |
+
+</details>
 
 ### Full-Text Content Search
 
-- `infile:keyword` — trigram-indexed full-text search with highlighted context snippets
-- Incremental updates via FNV-1a content hashing — only re-indexes changed files
-- Configurable file types and size limits
+Type `infile:keyword` to search file contents — results include highlighted context snippets around the keyword. Powered by a Trigram index for speed, only re-indexing changed files. Configure indexed file types and max file size in Content Settings.
 
-### Rich Query Language
+### Real-Time Sync, Always Up to Date
 
-Everything-style query syntax with full AST parser:
+- **File monitoring** — FSEvents-based real-time file system listener; new, renamed, or deleted files appear in search results immediately
+- **Two-phase instant startup** — loads disk cache on launch (searchable immediately), then catches up with changes via FSEvents in the background. Zero wait time
+- **Focus-aware power saving** — pauses refresh when the window is in the background, batch-catches up on refocus. Near-zero background CPU usage
 
-```
-*.swift                      # glob patterns
-ext:py size:>1mb             # filters
-readme path:/usr             # path-scoped search
-"exact phrase" OR alternative   # boolean operators
-dm:today type:folder         # date & type filters
-case:Makefile                # case-sensitive mode
-infile:TODO                  # content search
-```
+### Interaction Details
 
-### Real-Time File System Monitoring
+- **Smart highlighting** — matches highlighted in search results, AST-aware: correctly handles glob wildcards, regex, case sensitivity, NOT exclusions, and other complex patterns
+- **Drag & drop** — drag files directly from search results to Finder, VS Code, Xcode, or any application
+- **Context menu** — Open / Reveal in Finder / Copy Path
+- **Cmd+Click** — quickly locate files in Finder
+- **Recent files** — automatically shows recently modified files when the search bar is empty
 
-- **FSEvents** file-level event listener — index stays current without polling
-- **WAL (Write-Ahead Log)** with CRC32 checksums — crash-safe persistence
-- Startup replays from last `eventId` — no full rebuild, ever
+### AI Tool Integration (MCP)
 
-### MCP Integration
-
-Built-in [Model Context Protocol](https://modelcontextprotocol.io/) server — lets AI coding tools search your filesystem instantly.
+Built-in [Model Context Protocol](https://modelcontextprotocol.io/) server — lets AI coding tools instantly search your file system. Enable with one click from the menu bar. Supports **Claude Code**, **Cursor**, and **Claude Desktop**.
 
 ```
 Claude Code / Cursor / Claude Desktop
@@ -87,68 +126,67 @@ Claude Code / Cursor / Claude Desktop
   MacEverything.app
 ```
 
-**4 MCP Tools:**
-
 | Tool | Description |
 |------|-------------|
-| `search_files` | Filename search (trigram-accelerated) |
+| `search_files` | Filename search (Trigram-accelerated) |
 | `search_content` | Full-text content search |
 | `recent_files` | Recently modified files |
-| `index_status` | Index statistics and health |
-
-One-click setup for **Claude Code**, **Cursor**, and **Claude Desktop** — toggle from the app's menu bar.
+| `index_status` | Index statistics & health |
 
 ### HTTP API
 
 Local REST API on `localhost:19860` for scripting and automation:
 
 ```bash
-# Search files
-curl "http://localhost:19860/api/search?q=readme&limit=10"
-
-# Content search
-curl "http://localhost:19860/api/search/content?q=TODO"
-
-# Recent files
-curl "http://localhost:19860/api/recent?limit=20"
-
-# Index status
-curl "http://localhost:19860/api/status"
+curl "http://localhost:19860/api/search?q=readme&limit=10"       # Search files
+curl "http://localhost:19860/api/search/content?q=TODO"           # Content search
+curl "http://localhost:19860/api/recent?limit=20"                 # Recent files
+curl "http://localhost:19860/api/status"                          # Index status
 ```
 
-Every search response includes detailed `timing` telemetry (totalMs, trigramMs, candidates, searchPath, etc.).
+### Installation
 
-## Benchmarks
+#### Download DMG (Recommended)
 
-Tested on macOS Darwin 24.3.0 with **5.4 million indexed files**, 48 query types, 26 rounds of iterative optimization:
+1. Download `MacEverything.dmg` from [Releases](../../releases)
+2. Drag `MacEverything.app` to Applications
+3. Launch and grant **Full Disk Access** when prompted
+4. Wait for initial scan (~14 seconds)
+5. Press `Option+Space` to start searching
 
-### Search Latency
+#### Build from Source
 
-| Query Type | Avg Latency | Example |
-|------------|:-----------:|---------|
-| Long keywords (7+ chars) | **0.1–1ms** | `screenshot` 0.1ms, `dockerfile` 0.1ms |
-| Medium keywords (4–6 chars) | **1–5ms** | `readme` 1.2ms, `config` 4.7ms |
-| Glob patterns | **0.7–18ms** | `*.cpp` 0.7ms, `*.swift` 1.5ms |
-| Path queries | **3–32ms** | `package.json` 2.9ms |
-| All 48 queries (avg) | **39.8ms** | Includes edge cases & linear fallbacks |
+**Requirements:** macOS 13+, Xcode 15+
 
-### Trigram vs Linear Scan
+```bash
+git clone https://github.com/user/MacEverything.git && cd MacEverything
 
-| Query | Trigram | Linear | Speedup |
-|-------|:------:|:------:|:-------:|
-| `node_modules` | 0.5ms | 154ms | **308x** |
-| `application` | 2.1ms | 175ms | **83x** |
-| `readme` | 1.2ms | 49ms | **41x** |
+xcodebuild -project MacEverything.xcodeproj -scheme MacEverything \
+  -configuration Release build SYMROOT=build
 
-### SIMD String Search (Apple M3 Pro)
+hdiutil create -volname MacEverything \
+  -srcfolder build/Release/MacEverything.app \
+  -ov -format UDZO MacEverything.dmg
+```
 
-| Method | Throughput | vs `std::string::find` |
-|--------|:---------:|:----------------------:|
-| `std::string::find` | 1.2 GB/s | baseline |
-| **NEON 128-bit (1 thread)** | **11.5 GB/s** | **9.5x** |
-| **NEON 128-bit (12 threads)** | **74.3 GB/s** | **60.7x** |
+#### CLI Daemon
 
-## Architecture
+Headless mode for servers or automation environments:
+
+```bash
+make daemon
+./maceverything-daemon --port 19860 --root /
+```
+
+---
+
+<h2 align="center">For Developers: Technical Deep Dive</h2>
+
+<p align="center">
+  The following content is for developers interested in implementation details.
+</p>
+
+### Architecture Overview
 
 ```
 ┌─────────────────────────────────────┐
@@ -160,20 +198,7 @@ Tested on macOS Darwin 24.3.0 with **5.4 million indexed files**, 48 query types
 └─────────────────────────────────────┘
 ```
 
-### Core Engine Highlights
-
-| Component | Key Design |
-|-----------|-----------|
-| **DirectoryScanner** | Multi-threaded work-stealing via `getattrlistbulk` — single syscall for bulk attribute reads |
-| **SearchEngine** | Trigram inverted index + SoA columnar layout + `__builtin_prefetch` for cache-friendly access |
-| **ContentIndex** | Trigram-based inverted index with FNV-1a content hashing for incremental updates |
-| **SIMDSearch** | ARM NEON 128-bit vectorized string matching with 2x loop unrolling |
-| **IndexPersistence** | WAL + CRC32 + paged dirty-page flushing with atomic rename |
-| **FileSystemWatcher** | FSEvents monitoring with incremental eventId replay |
-| **PathTable** | String interning — directory paths stored as `uint32` index, not full strings |
-| **QueryParser** | Full AST pipeline: Tokenizer → FilterParser → Parser → QueryAST |
-
-### Deployment Modes
+The same C++20 core engine powers three deployment modes:
 
 | Mode | Description |
 |------|-------------|
@@ -181,85 +206,90 @@ Tested on macOS Darwin 24.3.0 with **5.4 million indexed files**, 48 query types
 | **CLI Daemon** | Headless `maceverything-daemon` — same engine, no UI |
 | **MCP Server** | `MacEverythingMCP` — stdio JSON-RPC proxy for AI tools |
 
-## Installation
+### Core Engine
 
-### From DMG (Recommended)
+| Component | Key Design |
+|-----------|-----------|
+| **DirectoryScanner** | Multi-threaded work-stealing + `getattrlistbulk` single-syscall bulk attribute reads, 4–32 threads adaptive |
+| **SearchEngine** | Trigram inverted index (name + path dual indexes) + competitive optimal candidate selection + SoA columnar filtering |
+| **ContentIndex** | Trigram full-text inverted index, FNV-1a hash incremental updates, only re-indexes changed files |
+| **SIMDSearch** | ARM NEON 128-bit first-last byte vectorized matching + 2x loop unrolling, 11.5 GB/s single-thread |
+| **IndexPersistence** | WAL + CRC32 + paged dirty-page flushing + atomic rename, COW non-blocking compaction (lock held < 100ms) |
+| **FileSystemWatcher** | FSEvents + eventId incremental replay + log truncation detection with automatic subtree rescan |
+| **PathTable** | Path string interning — directory paths stored as `uint32` index, saving ~550MB at million-file scale |
+| **QueryParser** | Full AST pipeline: Tokenizer → FilterParser → Parser → QueryAST, 30+ filter keywords |
 
-1. Download `MacEverything.dmg` from [Releases](../../releases)
-2. Drag `MacEverything.app` to Applications
-3. Launch and grant **Full Disk Access** when prompted
-4. Wait for initial scan (~14s for a typical disk)
-5. Press `Option+Space` to search
+### Benchmarks
 
-### Build from Source
+Test environment: macOS Darwin 24.3.0, **5.4 million indexed files**, 48 query types:
 
-**Requirements:** macOS 13+, Xcode 15+
+#### Search Latency
 
-```bash
-# Clone
-git clone https://github.com/user/MacEverything.git
-cd MacEverything
+| Query Type | Avg Latency | Example |
+|------------|:-----------:|---------|
+| Long keywords (7+ chars) | **0.1–1ms** | `screenshot` 0.1ms, `dockerfile` 0.1ms |
+| Medium keywords (4–6 chars) | **1–5ms** | `readme` 1.2ms, `config` 4.7ms |
+| Glob patterns | **0.7–18ms** | `*.cpp` 0.7ms, `*.swift` 1.5ms |
+| Path queries | **3–32ms** | `package.json` 2.9ms |
+| All 48 queries (average) | **10.5ms** | Latest results after SoA optimization |
 
-# Build
-xcodebuild -project MacEverything.xcodeproj -scheme MacEverything \
-  -configuration Release build SYMROOT=build
+#### Trigram vs Linear Scan
 
-# Package DMG
-hdiutil create -volname MacEverything \
-  -srcfolder build/Release/MacEverything.app \
-  -ov -format UDZO MacEverything.dmg
-```
+| Query | Trigram | Linear Scan | Speedup |
+|-------|:------:|:------:|:------:|
+| `node_modules` | 0.5ms | 154ms | **308x** |
+| `application` | 2.1ms | 175ms | **83x** |
+| `readme` | 1.2ms | 49ms | **41x** |
 
-### CLI Daemon
+#### SIMD String Search (Apple M3 Pro)
 
-```bash
-make daemon
-./maceverything-daemon --port 19860 --root /
-```
+| Method | Throughput | vs `std::string::find` |
+|--------|:---------:|:----------------------:|
+| `std::string::find` | 1.2 GB/s | baseline |
+| **NEON 128-bit (single-thread)** | **11.5 GB/s** | **9.5x** |
+| **NEON 128-bit (12 threads)** | **74.3 GB/s** | **60.7x** |
 
-## Testing
+### Key Technologies
 
-77 test modules covering the full stack — from trigram index correctness to MCP protocol compliance.
+| Technology | Impact |
+|------------|--------|
+| `getattrlistbulk` | Single syscall for bulk file attributes — avoids per-file `stat` |
+| Trigram inverted index | Sub-linear search: 33x–308x faster than linear scan |
+| SoA columnar layout | Cache-friendly memory access, SIMD batch-checks 16 records for pure filter queries |
+| `__builtin_prefetch` | Prefetch distance 8, hides random memory access latency during candidate verification |
+| ARM NEON SIMD | 128-bit vectorized string matching, 2x loop unrolling, approaches memory bandwidth ceiling |
+| GCD parallel scan | Multi-core linear scan when trigram can't accelerate |
+| StringPool contiguous memory | Filenames packed in a single `char` buffer, SIMD-friendly |
+| PathTable interning | Directory paths stored as `uint32` index — saves ~550MB at million-file scale |
+| Generation counter | Checked every 1024 iterations, zero-overhead cancellation of stale queries during fast typing |
+| APFS Firmlink dedup | inode + devid detection, correctly handles macOS Data/System volume merge loops |
+| Regex Trigram pre-filter | Extracts literals from regex to generate trigram candidates, ~7s → <100ms |
+| Adaptive Trigram bypass | Falls back to parallel scan when candidate set is too large, avoiding wasteful index lookups |
+| COW non-blocking compaction | Copy-on-write, exclusive lock held < 100ms during compaction (was 30–60s) |
+| Paged incremental persistence | Only writes dirty pages, typical flush I/O drops from ~112MB to KB-level |
+
+### Testing
+
+79 test modules covering the full stack, with AddressSanitizer and ThreadSanitizer support:
 
 ```bash
 make test          # Fast unit tests + bridge lint
 make test-slow     # Integration tests (full disk scan, FSEvents, E2E)
-make test-all      # Everything
+make test-all      # All tests
 make test-asan     # AddressSanitizer
 make test-tsan     # ThreadSanitizer
 ```
 
-Test categories include:
+Coverage:
 - **Core engine**: scan, query, mutation, compaction, ranking, path search
-- **Persistence**: WAL CRC integrity, batch replay, race conditions, paged persistence
+- **Persistence**: WAL CRC integrity, batch replay, race conditions, paged persistence v5
 - **Content index**: trigram, compaction, mod-time tracking, WAL tracking
-- **Search/Query**: tokenizer, parser, filters, date filters, structured queries, regex trigram
+- **Search/Query**: tokenizer, parser, filters, date filters, structured queries, regex trigram, highlight hints
 - **Performance**: SIMD search, 10M-record synthetic benchmarks, trigram competition
-- **Integration**: thread safety, E2E, HTTP engine swap, MCP protocol (29 assertions)
-- **Sanitizers**: ASan + TSan builds for memory and threading safety
+- **Integration**: thread safety, E2E, HTTP engine hot-swap, MCP protocol
+- **Memory safety**: ASan + TSan builds
 
-## Usage
-
-1. **Grant Full Disk Access** — the app guides you through this on first launch
-2. **Wait for initial scan** — progress shows in the menu bar (~14s typical)
-3. **`Option+Space`** — summon the search window from anywhere
-4. **Type to search** — results appear instantly as you type
-5. **`infile:keyword`** — switch to full-text content search
-6. **Right-click** — open, reveal in Finder, copy path, drag & drop
-
-### Query Examples
-
-| Query | What it finds |
-|-------|--------------|
-| `readme` | All files containing "readme" |
-| `*.swift` | All Swift source files |
-| `ext:py size:>1mb` | Large Python files |
-| `dm:today` | Files modified today |
-| `config path:/usr` | "config" files under `/usr` |
-| `infile:TODO ext:cpp` | C++ files containing "TODO" |
-| `type:folder node_modules` | Directories named "node_modules" |
-
-## Project Structure
+### Project Structure
 
 ```
 MacEverything/
@@ -278,41 +308,24 @@ MacEverything/
 │   └── MacSearchBridge    # C++ ↔ Swift zero-overhead interop
 ├── App/                   # SwiftUI application
 │   ├── ContentView        # Main search UI
-│   ├── SearchViewModel    # MVVM with tiered debouncing
+│   ├── SearchViewModel    # MVVM + tiered debouncing
 │   ├── HotkeyManager      # Global hotkey registration
 │   └── MCPConfigManager   # One-click MCP setup
 ├── CLI/                   # Command-line tools
 │   ├── daemon_main        # Headless daemon
 │   └── mcp_main           # MCP server (stdio JSON-RPC)
-└── tests/                 # 77 test modules
+└── tests/                 # 79 test modules
 ```
-
-## Performance Design
-
-| Technique | Impact |
-|-----------|--------|
-| `getattrlistbulk` | Single syscall for bulk file attributes — avoids per-file `stat` |
-| Trigram inverted index | Sub-linear search: 33x–300x faster than linear scan |
-| SoA columnar layout | Cache-friendly memory access patterns for filtering |
-| `__builtin_prefetch` | Hides random memory access latency during candidate verification |
-| ARM NEON SIMD | 128-bit vectorized string matching, 9.5x single-thread speedup |
-| GCD parallel scan | Multi-core linear scan when trigram can't help |
-| PathTable interning | Directory paths stored as `uint32` — massive memory savings |
-| Generation counter | Auto-cancels stale queries every 1024 iterations during fast typing |
-| APFS Firmlink dedup | Correctly handles macOS Data/System volume merge loops |
-| Thread-local bitmap | O(1) trigram deduplication during content extraction (2^24 bits) |
-| Adaptive trigram bypass | Falls back to parallel scan when trigram selectivity is poor |
-| 80ms/300ms tiered debounce | Balances responsiveness with resource usage in the UI |
 
 ## Contributing
 
-Contributions are welcome! Please:
+Contributions are welcome! Please follow this workflow:
 
 1. Fork the repository
 2. Create a feature branch (`feat/...`) or bugfix branch (`fix/...`)
 3. Write tests for new functionality
 4. Ensure `make test-all` passes
-5. Submit a pull request
+5. Submit a Pull Request
 
 ## License
 

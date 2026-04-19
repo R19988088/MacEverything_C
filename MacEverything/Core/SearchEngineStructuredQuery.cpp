@@ -3,23 +3,25 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <thread>
 #include <unordered_set>
+#include <dispatch/dispatch.h>
 
 // ---------------------------------------------------------------------------
 // pathSegmentsMatch: check if dirPath satisfies path segment constraints
 // ---------------------------------------------------------------------------
-bool SearchEngine::pathSegmentsMatch(const std::string& dirPath,
+bool SearchEngine::pathSegmentsMatch(std::string_view dirPath,
                                      const std::vector<PathSegment>& segments) {
     if (segments.empty()) return true;
 
     // Split dirPath into components by '/'
+    // dirPath comes from lowerPathPool_ which is already lowercase — no lowering needed
     std::vector<std::string_view> components;
-    std::string_view dp(dirPath);
     size_t start = 0;
-    for (size_t i = 0; i <= dp.size(); i++) {
-        if (i == dp.size() || dp[i] == '/') {
+    for (size_t i = 0; i <= dirPath.size(); i++) {
+        if (i == dirPath.size() || dirPath[i] == '/') {
             if (i > start) {
-                components.push_back(dp.substr(start, i - start));
+                components.push_back(dirPath.substr(start, i - start));
             }
             start = i + 1;
         }
@@ -30,34 +32,23 @@ bool SearchEngine::pathSegmentsMatch(const std::string& dirPath,
     int compIdx = static_cast<int>(components.size()) - 1;
 
     while (segIdx >= 0 && compIdx >= 0) {
-        // Lowercase comparison: check if component contains segment text
-        std::string lowerComp;
-        lowerComp.reserve(components[compIdx].size());
-        for (char c : components[compIdx]) {
-            lowerComp += (c >= 'A' && c <= 'Z') ? (c + 32) : c;
-        }
-
-        if (lowerComp.find(segments[segIdx].text) != std::string::npos) {
-            // Segment matched at this component position
+        // Input is already lowercase — direct string_view find
+        if (components[compIdx].find(segments[segIdx].text) != std::string_view::npos) {
             segIdx--;
             compIdx--;
         } else {
-            // If the previous segment requires adjacency, this is a mismatch
             if (segIdx < static_cast<int>(segments.size()) - 1 &&
                 segments[segIdx + 1].adjacentToNext == false) {
-                // Non-adjacent: skip this component, keep trying
                 compIdx--;
             } else if (segIdx == static_cast<int>(segments.size()) - 1) {
-                // First (rightmost) segment to match — can skip components
                 compIdx--;
             } else {
-                // Adjacent required but component doesn't match — fail
                 return false;
             }
         }
     }
 
-    return segIdx < 0; // All segments matched
+    return segIdx < 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,31 +179,77 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
     }
 
     // ------------------------------------------------------------------
-    // Linear scan fallback
+    // Linear scan fallback — parallel with pathMatchCache
     // ------------------------------------------------------------------
-    for (size_t i = 0; i < totalSize; i++) {
-        if ((i & 4095) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
-        if (records_[i].type == 0) continue;
 
-        const char* nameData = namePool_.data(i);
-        uint16_t nameLen = namePool_.length(i);
-
-        if (pq.mode == QueryMode::DIR_EXACT) {
-            if (records_[i].type != 2) continue;
-            if (nameLen != namePattern.size()) continue;
-            if (std::memcmp(nameData, namePattern.data(), nameLen) != 0) continue;
-        } else {
-            if (!me::simdContains(nameData, nameLen, namePattern.data(), namePattern.size())) continue;
+    // Pre-compute path segment matching: O(~100K) unique paths once,
+    // then O(1) lookup per record via pathMatchCache
+    bool hasPathSegs = !pq.pathSegments.empty();
+    uint32_t pathCount = lowerPathPool_.entryCount();
+    std::vector<bool> pathMatchCache;
+    if (hasPathSegs) {
+        pathMatchCache.resize(pathCount, false);
+        for (uint32_t pi = 0; pi < pathCount; pi++) {
+            if (!lowerPathPool_.isLive(pi)) continue;
+            std::string_view lpv(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
+            if (pathSegmentsMatch(lpv, pq.pathSegments))
+                pathMatchCache[pi] = true;
         }
+    }
 
-        if (!pq.pathSegments.empty()) {
-            std::string dirPath(lowerPathPool_.view(pathIndices_[i]));
-            if (!pathSegmentsMatch(dirPath, pq.pathSegments)) continue;
+    unsigned numThreads = std::thread::hardware_concurrency();
+    if (numThreads < 1) numThreads = 1;
+    if (numThreads > 32) numThreads = 32;
+    size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
+
+    std::vector<std::vector<Match>> threadResults(numThreads);
+    auto* threadResultsPtr = &threadResults;
+    const auto& records = records_;
+    const auto& namePool = namePool_;
+    const auto& pathPool = pathPool_;
+    const auto& pIndices = pathIndices_;
+    const auto* pathMatchCachePtr = &pathMatchCache;
+    const auto* genPtr = &queryGeneration_;
+    uint64_t capturedGen = myGen;
+
+    // Capture query parameters for block
+    auto mode = pq.mode;
+    const auto& npRef = namePattern;
+
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_apply(numThreads, queue, ^(size_t t) {
+        size_t start = t * chunkSize;
+        size_t end = std::min(start + chunkSize, totalSize);
+        if (start >= end) return;
+
+        auto& local = (*threadResultsPtr)[t];
+        for (size_t i = start; i < end; i++) {
+            if ((i & 4095) == 0 && genPtr->load(std::memory_order_relaxed) != capturedGen) return;
+            if (records[i].type == 0) continue;
+
+            const char* nameData = namePool.data(static_cast<uint32_t>(i));
+            uint16_t nameLen = namePool.length(static_cast<uint32_t>(i));
+
+            if (mode == QueryMode::DIR_EXACT) {
+                if (records[i].type != 2) continue;
+                if (nameLen != npRef.size()) continue;
+                if (std::memcmp(nameData, npRef.data(), nameLen) != 0) continue;
+            } else {
+                if (!me::simdContains(nameData, nameLen, npRef.data(), npRef.size())) continue;
+            }
+
+            if (hasPathSegs && !(*pathMatchCachePtr)[pIndices[i]]) continue;
+
+            uint8_t priority = namePriority(nameData, nameLen, npRef.data(), npRef.size());
+            uint32_t pLen = static_cast<uint32_t>(pathPool.length(pIndices[i]) + 1 + nameLen);
+            local.push_back({static_cast<uint32_t>(i), priority, pLen});
         }
+    });
 
-        uint8_t priority = namePriority(nameData, nameLen, namePattern.data(), namePattern.size());
-        uint32_t pLen = static_cast<uint32_t>(pathPool_.length(pathIndices_[i]) + 1 + nameLen);
-        merged.push_back({static_cast<uint32_t>(i), priority, pLen});
+    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+
+    for (auto& v : threadResults) {
+        merged.insert(merged.end(), v.begin(), v.end());
     }
 }
 
@@ -245,8 +282,7 @@ bool SearchEngine::queryStructuredNameAnchor(const ParsedQuery& pq,
         }
 
         if (!pq.pathSegments.empty()) {
-            std::string dirPath(lowerPathPool_.view(pathIndices_[idx]));
-            if (!pathSegmentsMatch(dirPath, pq.pathSegments)) continue;
+            if (!pathSegmentsMatch(lowerPathPool_.view(pathIndices_[idx]), pq.pathSegments)) continue;
         }
 
         uint8_t priority = namePriority(nameData, nameLen, namePattern.data(), namePattern.size());
@@ -293,7 +329,7 @@ bool SearchEngine::queryStructuredPathAnchor(const ParsedQuery& pq,
 
         // Verify ancestor segments [0..anchorIdx-1] against this record's path
         if (anchorIdx > 0) {
-            std::string dirPath(lowerPathPool_.view(pathIndices_[idx]));
+            std::string_view dirPath = lowerPathPool_.view(pathIndices_[idx]);
             std::vector<PathSegment> ancestorSegs(
                 pq.pathSegments.begin(),
                 pq.pathSegments.begin() + static_cast<int>(anchorIdx));

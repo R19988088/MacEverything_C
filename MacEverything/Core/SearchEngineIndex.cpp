@@ -81,6 +81,31 @@ std::vector<uint32_t> SearchEngine::intersectPostingListsMulti(
     return result;
 }
 
+std::vector<uint32_t> SearchEngine::unionPostingListsMulti(
+    const std::unordered_map<Trigram, std::vector<uint32_t>>& index,
+    const std::vector<std::string>& segments) {
+    // For each segment, intersect its trigrams to get that segment's candidates.
+    // Then UNION across all segments. This is safe for both AND and OR semantics
+    // from FilteredRE2 — wider than pure intersection but never drops results.
+    std::vector<uint32_t> result;
+    for (const auto& seg : segments) {
+        bool allFound = false;
+        auto segCands = intersectPostingLists(index, seg, allFound);
+        if (!allFound) continue;  // skip atoms with no trigram coverage
+        if (result.empty()) {
+            result = std::move(segCands);
+        } else {
+            std::vector<uint32_t> merged;
+            merged.reserve(result.size() + segCands.size());
+            std::set_union(result.begin(), result.end(),
+                           segCands.begin(), segCands.end(),
+                           std::back_inserter(merged));
+            result = std::move(merged);
+        }
+    }
+    return result;
+}
+
 // ---------------------------------------------------------------------------
 // Name trigram index build / add / remove
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <re2/re2.h>
+#include <re2/filtered_re2.h>
 #include <functional>
 #include <thread>
 #include <dispatch/dispatch.h>
@@ -456,50 +457,22 @@ static std::string bestTrigramTerm(const QueryNode& node) {
     return {};
 }
 
-/// Extract continuous literal substrings (length >= 3) from a regex pattern.
-/// Used for trigram pre-filtering of regex queries.
+/// Extract literal atoms from a regex pattern using RE2's FilteredRE2.
+/// Returns lowercased, deduplicated atoms (min length 3) that RE2's own
+/// AST parser determines are useful for pre-filtering.
+/// Correctly handles alternation, character classes, and all regex constructs.
 static std::vector<std::string> extractRegexLiteralsImpl(const std::string& pattern) {
-    std::vector<std::string> literals;
-    std::string current;
-    bool inCharClass = false;
-
-    for (size_t i = 0; i < pattern.size(); i++) {
-        char c = pattern[i];
-        if (c == '\\' && i + 1 < pattern.size()) {
-            char next = pattern[i + 1];
-            // Escaped literal metacharacters
-            if (next == '.' || next == '*' || next == '+' || next == '?' ||
-                next == '(' || next == ')' || next == '[' || next == ']' ||
-                next == '{' || next == '}' || next == '|' || next == '^' ||
-                next == '$' || next == '\\' || next == '/') {
-                if (!inCharClass) current += std::tolower(static_cast<unsigned char>(next));
-                i++;
-            } else {
-                // \d, \w, \s, etc. — break current literal
-                if (current.size() >= 3) literals.push_back(std::move(current));
-                current.clear();
-                i++;
-            }
-        } else if (c == '[') {
-            if (current.size() >= 3) literals.push_back(std::move(current));
-            current.clear();
-            inCharClass = true;
-        } else if (c == ']') {
-            inCharClass = false;
-        } else if (inCharClass) {
-            // Inside character class — don't extract
-        } else if (c == '.' || c == '*' || c == '+' || c == '?' ||
-                   c == '(' || c == ')' || c == '{' || c == '}' ||
-                   c == '|' || c == '^' || c == '$') {
-            // Metacharacter — break current literal
-            if (current.size() >= 3) literals.push_back(std::move(current));
-            current.clear();
-        } else {
-            current += std::tolower(static_cast<unsigned char>(c));
-        }
+    re2::FilteredRE2 fre2(3);  // min_atom_len = 3 (matches trigram minimum)
+    re2::RE2::Options opts;
+    opts.set_case_sensitive(false);
+    opts.set_log_errors(false);
+    int id;
+    if (fre2.Add(pattern, opts, &id) != re2::RE2::NoError) {
+        return {};
     }
-    if (current.size() >= 3) literals.push_back(std::move(current));
-    return literals;
+    std::vector<std::string> atoms;
+    fre2.Compile(&atoms);
+    return atoms;
 }
 
 /// Collect regex literal substrings from all REGEX TERM nodes in the AST.
@@ -671,13 +644,14 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
     }
 
     // Stage 2: Regex trigram (only if name failed)
+    // Uses UNION (not AND) across atoms because FilteredRE2 atoms may have
+    // OR semantics (e.g. alternation `foo|bar` → atoms are OR-related).
     if (useTrigram && !nameOk && !nameTrigramIndex_.empty()) {
         auto regexLiterals = extractRegexLiteralsFromAST(*ast);
         if (!regexLiterals.empty()) {
             beforeTrigram = std::chrono::steady_clock::now();
-            bool allFound = false;
-            nameCands = intersectPostingListsMulti(nameTrigramIndex_, regexLiterals, allFound);
-            nameOk = allFound && nameCands.size() <= totalSize / 10;
+            nameCands = unionPostingListsMulti(nameTrigramIndex_, regexLiterals);
+            nameOk = !nameCands.empty() && nameCands.size() <= totalSize / 10;
             if (!nameOk) nameCands.clear();
             afterTrigram = std::chrono::steady_clock::now();
         }

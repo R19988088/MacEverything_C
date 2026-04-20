@@ -21,7 +21,7 @@
 
 - **单元测试**：Part 65（7 个波浪号展开测试）— 全部通过。
 - **构建**：`xcodebuild` Release 构建成功。
-- **HTTP**：`curl "localhost:19860/api/search?q=~/*/*.txt"` 返回预期结果（如 `/Users/wujian/Downloads/f1.txt`）。
+- **HTTP**：`curl "localhost:19860/api/search?q=~/*/*.txt"` 返回预期结果（如 `/Users/username/Downloads/f1.txt`）。
 
 ## 风险
 

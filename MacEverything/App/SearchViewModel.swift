@@ -59,6 +59,7 @@ class SearchViewModel: ObservableObject {
     private var cachedResults: [MEFileResult] = []
     private var loadedCount: Int = 0
     private var searchGeneration: UInt64 = 0
+    private static let guiSessionId: UInt64 = 1
 
     private static let pageSize: Int = 100
     private static let maxResults: UInt32 = 10000
@@ -107,6 +108,7 @@ class SearchViewModel: ObservableObject {
         guard scanComplete, !searchText.isEmpty, !isContentSearch else { return }
         searchTask?.cancel()
         searchGeneration &+= 1
+        bridge.cancelSession(Self.guiSessionId)
         performSearch(searchText)
     }
 
@@ -208,8 +210,8 @@ class SearchViewModel: ObservableObject {
             contentKeyword = "" // H-9: reset cached keyword
             ghostSuggestion = nil
             settledTask?.cancel()
-            // Bump C++ query generation to cancel any in-flight dispatch_apply scan
-            _ = bridge.queryIndices("", maxResults: 0)
+            // Cancel any in-flight queries for this GUI session
+            bridge.cancelSession(Self.guiSessionId)
             if scanComplete {
                 // Slight delay so the stale query's dispatch_apply threads
                 // detect the generation change and exit before we compete for the thread pool
@@ -274,7 +276,7 @@ class SearchViewModel: ObservableObject {
         Task.detached { [weak self] in
             let start = CFAbsoluteTimeGetCurrent()
             // P-4: Use batch method — single engine lock, no NSNumber boxing
-            let results = bridge.queryResults(query, maxResults: maxResults)
+            let results = bridge.queryResults(query, maxResults: maxResults, sessionId: Self.guiSessionId)
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let totalCount = results.count
 

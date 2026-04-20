@@ -51,7 +51,7 @@ bool SearchEngine::globMatch(const std::string& pattern, const std::string& text
 // queryDirList: DIR_LIST mode — find directory, return its children
 // ---------------------------------------------------------------------------
 void SearchEngine::queryDirList(const ParsedQuery& pq,
-                                size_t totalSize, uint64_t myGen,
+                                size_t totalSize, const QueryCancelCtx& cancel,
                                 std::vector<Match>& merged) const {
     const auto& dirName = pq.namePattern;
     if (dirName.empty()) return;
@@ -111,7 +111,7 @@ void SearchEngine::queryDirList(const ParsedQuery& pq,
 
     // For each matching directory, find its children via pathLookup_ + pathIdxToRecords_
     for (uint32_t dirIdx : dirIndices) {
-        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+        if (cancel.cancelled()) return;
 
         // Build the full directory path: parentPath + "/" + dirName
         std::string parentPath = pathPool_.str(pathIndices_[dirIdx]);
@@ -179,15 +179,16 @@ static PreprocessedQuery preprocessQuery(const std::string& raw) {
 // ---------------------------------------------------------------------------
 
 std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t maxResults,
-                                          bool useTrigram) const {
+                                          bool useTrigram, uint64_t sessionId) const {
     QueryTimingInfo unused;
-    return query(keyword, maxResults, useTrigram, unused);
+    return query(keyword, maxResults, useTrigram, unused, sessionId);
 }
 
 std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t maxResults,
-                                          bool useTrigram, QueryTimingInfo& timing) const {
-    // Increment generation so any in-flight query detects it has been superseded.
-    uint64_t myGen = queryGeneration_.fetch_add(1, std::memory_order_relaxed) + 1;
+                                          bool useTrigram, QueryTimingInfo& timing,
+                                          uint64_t sessionId) const {
+    // Acquire per-session generation so only same-session queries cancel each other.
+    auto [genAtom, myGen] = acquireSessionGeneration(sessionId);
 
     if (keyword.empty()) return {};
 
@@ -206,9 +207,10 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
         size_t totalSize = types_.size();
 
         std::vector<Match> merged;
-        queryDirList(parsedQuery, totalSize, myGen, merged);
+        QueryCancelCtx cancel{genAtom.get(), myGen};
+        queryDirList(parsedQuery, totalSize, cancel, merged);
 
-        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+        if (genAtom->load(std::memory_order_relaxed) != myGen) return {};
 
         auto beforeUnlock = std::chrono::steady_clock::now();
         lock.unlock();
@@ -247,5 +249,32 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     }
 
     // All non-DIR_LIST queries go through the unified Advanced path
-    return queryAdvanced(pq.original, maxResults, useTrigram, timing);
+    return queryAdvanced(pq.original, maxResults, useTrigram, timing, myGen, genAtom.get());
+}
+
+// ---------------------------------------------------------------------------
+// Per-session generation management
+// ---------------------------------------------------------------------------
+
+std::pair<std::shared_ptr<std::atomic<uint64_t>>, uint64_t>
+SearchEngine::acquireSessionGeneration(uint64_t sessionId) const {
+    if (sessionId == 0) {
+        // No cancellation: return a dummy atomic that nobody else will check
+        auto dummy = std::make_shared<std::atomic<uint64_t>>(0);
+        return {dummy, 0};
+    }
+    std::lock_guard<std::mutex> lock(sessionGenMutex_);
+    auto& ptr = sessionGenerations_[sessionId];
+    if (!ptr) ptr = std::make_shared<std::atomic<uint64_t>>(0);
+    uint64_t gen = ptr->fetch_add(1, std::memory_order_relaxed) + 1;
+    return {ptr, gen};
+}
+
+void SearchEngine::cancelSession(uint64_t sessionId) const {
+    if (sessionId == 0) return;
+    std::lock_guard<std::mutex> lock(sessionGenMutex_);
+    auto it = sessionGenerations_.find(sessionId);
+    if (it != sessionGenerations_.end()) {
+        it->second->fetch_add(1, std::memory_order_relaxed);
+    }
 }

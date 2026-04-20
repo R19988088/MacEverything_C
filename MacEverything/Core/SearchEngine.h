@@ -14,6 +14,8 @@
 #include <memory>
 #include <map>
 #include <set>
+#include <mutex>
+#include <utility>
 
 #include "IndexWAL.h"
 #include "QueryAST.h"
@@ -90,6 +92,15 @@ struct QueryTimingInfo {
     std::string searchPath;   // "trigram", "trigram-split", or "linear"
 };
 
+/// Bundled cancellation context passed through query call chain.
+struct QueryCancelCtx {
+    const std::atomic<uint64_t>* gen;
+    uint64_t myGen;
+    bool cancelled() const {
+        return gen->load(std::memory_order_relaxed) != myGen;
+    }
+};
+
 class SearchEngine {
 public:
     /// Takes ownership of scanned records and pre-computes lowercase names.
@@ -143,18 +154,28 @@ public:
     /// If maxResults > 0, stops early once enough matches are found.
     /// If useTrigram is false, bypasses trigram index and does NEON full scan.
     std::vector<uint32_t> query(const std::string& keyword, uint32_t maxResults = 0,
-                                bool useTrigram = true) const;
+                                bool useTrigram = true, uint64_t sessionId = 0) const;
 
     /// Same as query() but also populates timing breakdown.
     std::vector<uint32_t> query(const std::string& keyword, uint32_t maxResults,
-                                bool useTrigram, QueryTimingInfo& timing) const;
+                                bool useTrigram, QueryTimingInfo& timing,
+                                uint64_t sessionId = 0) const;
 
     /// Advanced query: evaluate an AST with boolean operators, quoted phrases,
     /// and filter nodes. Uses trigram index for TERM nodes, then applies
     /// AND/OR/NOT logic. Called automatically by query() when advanced syntax
     /// is detected.
     std::vector<uint32_t> queryAdvanced(const std::string& input, uint32_t maxResults,
-                                         bool useTrigram, QueryTimingInfo& timing) const;
+                                         bool useTrigram, QueryTimingInfo& timing,
+                                         uint64_t myGen = 0,
+                                         const std::atomic<uint64_t>* genPtr = nullptr) const;
+
+    /// Cancel in-flight queries for the given session. Lock-free on the generation atomic.
+    void cancelSession(uint64_t sessionId) const;
+
+    /// Get or create the generation atomic for a session. Returns {atomicPtr, currentGenValue}.
+    std::pair<std::shared_ptr<std::atomic<uint64_t>>, uint64_t>
+    acquireSessionGeneration(uint64_t sessionId) const;
 
     FileRecord getRecord(uint32_t index) const;
     uint32_t recordCount() const;
@@ -425,12 +446,12 @@ private:
     /// Node-centric structured query: name trigram → name verify → path constraint verify.
     /// Handles SEGMENTS and DIR_EXACT modes.
     void queryStructured(const ParsedQuery& pq,
-                         size_t totalSize, uint64_t myGen,
+                         size_t totalSize, const QueryCancelCtx& cancel,
                          std::vector<Match>& merged) const;
 
     /// DIR_LIST mode: find matching directories, return their direct children.
     void queryDirList(const ParsedQuery& pq,
-                      size_t totalSize, uint64_t myGen,
+                      size_t totalSize, const QueryCancelCtx& cancel,
                       std::vector<Match>& merged) const;
 
 public:
@@ -446,18 +467,18 @@ private:
     /// Tree-walk from anchor directory down to target segment, collecting matches.
     void treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
                       int fromSegIdx, int toSegIdx,
-                      size_t totalSize, uint64_t myGen,
+                      size_t totalSize, const QueryCancelCtx& cancel,
                       std::vector<Match>& merged) const;
 
     /// Anchor on namePattern: trigram intersect + path verify. Returns false to fall back.
     bool queryStructuredNameAnchor(const ParsedQuery& pq,
-                                   size_t totalSize, uint64_t myGen,
+                                   size_t totalSize, const QueryCancelCtx& cancel,
                                    std::vector<Match>& merged) const;
 
     /// Anchor on path segment: trigram intersect + tree-walk. Returns false to fall back.
     bool queryStructuredPathAnchor(const ParsedQuery& pq,
                                    size_t anchorIdx,
-                                   size_t totalSize, uint64_t myGen,
+                                   size_t totalSize, const QueryCancelCtx& cancel,
                                    std::vector<Match>& merged) const;
 
     std::vector<bool> dirtyPages_;                // dirty page bitmap
@@ -473,8 +494,10 @@ private:
     std::atomic<bool> phase2Pending_{false};
     uint32_t phase2StartRecordCount_{0};
 
-    // Query cancellation: incremented on each query(), checked in scan loops
-    mutable std::atomic<uint64_t> queryGeneration_{0};
+    // Per-session query generation for cancellation.
+    // Key: sessionId (0 = no cancellation). Value: shared atomic counter.
+    mutable std::unordered_map<uint64_t, std::shared_ptr<std::atomic<uint64_t>>> sessionGenerations_;
+    mutable std::mutex sessionGenMutex_;  // protects sessionGenerations_ map only
 
     // Recent files cache: top-K records by modTime, maintained incrementally
     static constexpr uint32_t kRecentCacheSize = 200;

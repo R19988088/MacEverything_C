@@ -14,11 +14,12 @@
 #include <thread>
 #include <vector>
 
+#include <re2/re2.h>
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Config
 // ─────────────────────────────────────────────────────────────────────────────
 
-static constexpr size_t DATA_SIZE   = 5ULL * 1024 * 1024 * 1024;
 static constexpr int    NUM_INSERTS = 1000;
 static constexpr int    SEED        = 42;
 static constexpr int    NUM_RUNS    = 3;
@@ -97,6 +98,66 @@ static BenchResult run_bench(const std::string& name, SearchFn fn,
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         times.push_back(ms);
         match_count = results.size();
+        std::cout << std::fixed << std::setprecision(0) << ms << "ms ";
+        std::cout.flush();
+    }
+    std::cout << "\n";
+
+    double min_ms = *std::min_element(times.begin(), times.end());
+    double max_ms = *std::max_element(times.begin(), times.end());
+    double avg_ms = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+    double avg_gbs = (data_len / (1024.0 * 1024 * 1024)) / (avg_ms / 1000.0);
+
+    return {name, match_count, min_ms, max_ms, avg_ms, avg_gbs};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RE2 benchmark runner (uses pattern string, not needle bytes)
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct RE2BenchResult {
+    std::string name;
+    size_t      matches;
+    double      min_ms, max_ms, avg_ms;
+    double      avg_gbs;
+};
+
+static RE2BenchResult run_re2_bench(const std::string& name,
+                                     const std::string& pattern,
+                                     const uint8_t* data, size_t data_len,
+                                     int num_runs) {
+    std::cout << "  " << name << " [" << pattern << "]: " << std::flush;
+
+    RE2 re(pattern);
+    if (!re.ok()) {
+        std::cerr << "RE2 compile error: " << re.error() << "\n";
+        return {name, 0, 0, 0, 0, 0};
+    }
+
+    std::vector<double> times;
+    size_t match_count = 0;
+
+    re2::StringPiece input(reinterpret_cast<const char*>(data), data_len);
+
+    for (int r = 0; r < num_runs; r++) {
+        re2::StringPiece remaining = input;
+        re2::StringPiece match_piece;
+        size_t count = 0;
+
+        auto t0 = std::chrono::high_resolution_clock::now();
+        while (re.Match(remaining, 0, remaining.size(),
+                        RE2::UNANCHORED, &match_piece, 1)) {
+            count++;
+            // Advance past the match (at least 1 byte to avoid infinite loop)
+            size_t advance = match_piece.data() - remaining.data() + match_piece.size();
+            if (advance == 0) advance = 1;
+            remaining.remove_prefix(advance);
+        }
+        auto t1 = std::chrono::high_resolution_clock::now();
+
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        times.push_back(ms);
+        match_count = count;
         std::cout << std::fixed << std::setprecision(0) << ms << "ms ";
         std::cout.flush();
     }
@@ -351,18 +412,64 @@ static std::vector<size_t> search_neon_2x(const uint8_t* data, size_t data_len,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+static size_t parse_size(const char* s) {
+    char* end = nullptr;
+    double val = strtod(s, &end);
+    if (end && (*end == 'g' || *end == 'G')) return (size_t)(val * 1024 * 1024 * 1024);
+    if (end && (*end == 'm' || *end == 'M')) return (size_t)(val * 1024 * 1024);
+    if (end && (*end == 'k' || *end == 'K')) return (size_t)(val * 1024);
+    return (size_t)val;
+}
+
+static void print_usage(const char* prog) {
+    std::cout << "Usage: " << prog << " [OPTIONS] [query]\n"
+              << "Options:\n"
+              << "  --size <N>   Data size (default 1G). Suffix: K, M, G\n"
+              << "  --re2-only   Only run RE2 regex benchmarks\n"
+              << "  --no-re2     Skip RE2 regex benchmarks\n"
+              << "  --help       Show this help\n"
+              << "\nExamples:\n"
+              << "  " << prog << " hello              # 1 GB, query=\"hello\"\n"
+              << "  " << prog << " --size 512M hello  # 512 MB\n"
+              << "  " << prog << " --re2-only hello   # RE2 benchmarks only\n";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
-    const char* query = (argc > 1) ? argv[1] : "hello";
+    size_t data_size = 1ULL * 1024 * 1024 * 1024; // default 1 GB
+    bool re2_only = false;
+    bool no_re2 = false;
+    const char* query = "hello";
+
+    // Parse args
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--size") == 0 && i + 1 < argc) {
+            data_size = parse_size(argv[++i]);
+        } else if (strcmp(argv[i], "--re2-only") == 0) {
+            re2_only = true;
+        } else if (strcmp(argv[i], "--no-re2") == 0) {
+            no_re2 = true;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            query = argv[i];
+        }
+    }
+
     size_t query_len = strlen(query);
     unsigned hw_threads = std::thread::hardware_concurrency();
 
     // ── Allocate & fill ──────────────────────────────────────────────────
-    std::cout << "Allocating " << DATA_SIZE / (1024.0 * 1024 * 1024)
+    std::cout << "Allocating " << data_size / (1024.0 * 1024 * 1024)
               << " GB..." << std::flush;
-    uint8_t* data = static_cast<uint8_t*>(malloc(DATA_SIZE));
+    uint8_t* data = static_cast<uint8_t*>(malloc(data_size));
     if (!data) { std::cerr << " FAILED!\n"; return 1; }
     std::cout << " OK\n";
 
@@ -370,7 +477,7 @@ int main(int argc, char* argv[]) {
     {
         std::mt19937_64 rng(SEED);
         uint64_t* p64 = reinterpret_cast<uint64_t*>(data);
-        size_t n64 = DATA_SIZE / 8;
+        size_t n64 = data_size / 8;
         for (size_t i = 0; i < n64; i++) {
             uint64_t r = rng();
             uint64_t val = 0;
@@ -380,7 +487,7 @@ int main(int argc, char* argv[]) {
             }
             p64[i] = val;
         }
-        for (size_t i = n64 * 8; i < DATA_SIZE; i++)
+        for (size_t i = n64 * 8; i < data_size; i++)
             data[i] = 'a' + (rng() % 26);
     }
     std::cout << " OK\n";
@@ -388,7 +495,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Inserting " << NUM_INSERTS << " copies of \"" << query << "\"..." << std::flush;
     {
         std::mt19937_64 rng(SEED + 1);
-        std::uniform_int_distribution<size_t> dist(0, DATA_SIZE - query_len);
+        std::uniform_int_distribution<size_t> dist(0, data_size - query_len);
         for (int i = 0; i < NUM_INSERTS; i++)
             memcpy(data + dist(rng), query, query_len);
     }
@@ -413,7 +520,6 @@ int main(int argc, char* argv[]) {
 
     // Multi-threaded variants (wrap each single-threaded algo)
     std::vector<AlgoDef> multi_algos;
-    // Only multi-thread the interesting ones (skip Rabin-Karp which is very slow)
     std::vector<std::string> mt_candidates = {
         "std::string::find", "memmem", "KMP",
         "Boyer-Moore-Horspool",
@@ -434,17 +540,18 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // ── Run benchmarks ───────────────────────────────────────────────────
+    // ── Run string search benchmarks ────────────────────────────────────
     auto run_section = [&](const std::string& title,
                            std::vector<AlgoDef>& algos) -> std::vector<BenchResult> {
         std::cout << "\n=== " << title << " (query=\"" << query
                   << "\", " << NUM_RUNS << " runs) ===\n";
-        std::cout << "Platform: Apple M3 Pro (ARM64, NEON), "
-                  << hw_threads << " threads\n\n";
+        std::cout << "Data size: " << std::fixed << std::setprecision(2)
+                  << data_size / (1024.0 * 1024 * 1024) << " GB, "
+                  << hw_threads << " hw threads\n\n";
 
         std::vector<BenchResult> results;
         for (auto& a : algos) {
-            auto r = run_bench(a.name, a.fn, data, DATA_SIZE,
+            auto r = run_bench(a.name, a.fn, data, data_size,
                               reinterpret_cast<const uint8_t*>(query), query_len,
                               NUM_RUNS);
             results.push_back(r);
@@ -477,9 +584,63 @@ int main(int argc, char* argv[]) {
         return results;
     };
 
-    auto st_results = run_section("Single-threaded", single_algos);
-    auto mt_results = run_section("Multi-threaded (" + std::to_string(hw_threads) + " threads)",
-                                   multi_algos);
+    std::vector<BenchResult> st_results, mt_results;
+    if (!re2_only) {
+        st_results = run_section("Single-threaded", single_algos);
+        mt_results = run_section("Multi-threaded (" + std::to_string(hw_threads) + " threads)",
+                                 multi_algos);
+    }
+
+    // ── RE2 regex benchmarks ─────────────────────────────────────────────
+    std::vector<RE2BenchResult> re2_results;
+    if (!no_re2) {
+        std::cout << "\n=== RE2 Regex Benchmarks (data=" << std::fixed << std::setprecision(2)
+                  << data_size / (1024.0 * 1024 * 1024) << " GB, "
+                  << NUM_RUNS << " runs) ===\n\n";
+
+        // Escape query for use as literal in regex
+        std::string escaped_query = RE2::QuoteMeta(query);
+
+        struct RE2TestCase {
+            std::string name;
+            std::string pattern;
+        };
+
+        std::vector<RE2TestCase> re2_tests = {
+            {"RE2 literal",                  escaped_query},
+            {"RE2 case-insensitive",         "(?i)" + escaped_query},
+            {"RE2 alternation (2)",          escaped_query + "|zzzzz"},
+            {"RE2 alternation (4)",          escaped_query + "|zzzzz|yyyyy|xxxxx"},
+            {"RE2 char-class prefix",        "[a-z]" + escaped_query.substr(1)},
+            {"RE2 dot-star prefix",          ".*" + escaped_query},
+            {"RE2 bounded repeat",           ".{0,5}" + escaped_query},
+            {"RE2 word boundary sim",        "[^a-z]" + escaped_query + "[^a-z]"},
+        };
+
+        for (auto& tc : re2_tests) {
+            auto r = run_re2_bench(tc.name, tc.pattern, data, data_size, NUM_RUNS);
+            re2_results.push_back(r);
+        }
+
+        // Print RE2 table
+        std::cout << "\n" << std::left << std::setw(30) << "Pattern"
+                  << std::right << std::setw(8) << "Matches"
+                  << std::setw(10) << "Min(ms)"
+                  << std::setw(10) << "Avg(ms)"
+                  << std::setw(10) << "Max(ms)"
+                  << std::setw(14) << "Avg(GB/s)"
+                  << "\n" << std::string(82, '-') << "\n";
+
+        for (auto& r : re2_results) {
+            std::cout << std::left << std::setw(30) << r.name
+                      << std::right << std::setw(8) << r.matches
+                      << std::setw(10) << std::fixed << std::setprecision(1) << r.min_ms
+                      << std::setw(10) << r.avg_ms
+                      << std::setw(10) << r.max_ms
+                      << std::setw(14) << std::setprecision(2) << r.avg_gbs
+                      << "\n";
+        }
+    }
 
     // ── Summary ──────────────────────────────────────────────────────────
     std::cout << "\n=== Summary ===\n\n";
@@ -488,6 +649,10 @@ int main(int argc, char* argv[]) {
     std::vector<BenchResult> all_results;
     all_results.insert(all_results.end(), st_results.begin(), st_results.end());
     all_results.insert(all_results.end(), mt_results.begin(), mt_results.end());
+    // Add RE2 results into the common format
+    for (auto& r : re2_results) {
+        all_results.push_back({r.name, r.matches, r.min_ms, r.max_ms, r.avg_ms, r.avg_gbs});
+    }
 
     // Sort by throughput descending
     std::sort(all_results.begin(), all_results.end(),
@@ -502,9 +667,11 @@ int main(int argc, char* argv[]) {
               << "\n" << std::string(66, '-') << "\n";
 
     double baseline_ms = 0;
-    // Find std::string::find as baseline
+    // Find std::string::find as baseline (or first result if re2-only)
     for (auto& r : all_results)
         if (r.name == "std::string::find") { baseline_ms = r.avg_ms; break; }
+    if (baseline_ms == 0 && !all_results.empty())
+        baseline_ms = all_results.back().avg_ms; // use slowest as baseline for re2-only
 
     for (auto& r : all_results) {
         std::cout << std::left << std::setw(30) << r.name
@@ -514,9 +681,11 @@ int main(int argc, char* argv[]) {
                   << "\n";
     }
 
-    std::cout << "\nFastest: " << all_results[0].name << " ("
-              << std::fixed << std::setprecision(2) << all_results[0].avg_gbs << " GB/s, "
-              << std::setprecision(1) << (baseline_ms / all_results[0].avg_ms) << "x vs baseline)\n";
+    if (!all_results.empty()) {
+        std::cout << "\nFastest: " << all_results[0].name << " ("
+                  << std::fixed << std::setprecision(2) << all_results[0].avg_gbs << " GB/s, "
+                  << std::setprecision(1) << (baseline_ms / all_results[0].avg_ms) << "x vs baseline)\n";
+    }
 
     free(data);
     return 0;

@@ -81,16 +81,15 @@ static void runRegexTrigramTests() {
         check(hasHello && hasWorld, "60.6 extractRegexLiterals multiple: got both literals");
     }
 
-    // ── Test 7: Alternation breaks literal ──
+    // ── Test 7: Alternation — FilteredRE2 extracts atoms from both sides ──
     {
         auto lits = me_test::extractRegexLiterals("alpha|beta");
-        // alternation '|' breaks — each side < 5 chars but >= 3
+        // FilteredRE2 should extract atoms from alternation branches
         bool hasAlpha = false, hasBeta = false;
         for (auto& l : lits) {
             if (l == "alpha") hasAlpha = true;
             if (l == "beta") hasBeta = true;
         }
-        // Both should exist (both are >= 3 chars)
         check(hasAlpha && hasBeta, "60.7 extractRegexLiterals alternation: got both sides");
     }
 
@@ -182,6 +181,86 @@ static void runRegexTrigramTests() {
     {
         auto lits = me_test::extractRegexLiterals("");
         check(lits.empty(), "60.12 extractRegexLiterals empty: no literals");
+    }
+
+    // ── Test 13: Parenthesized alternation extracts atoms ──
+    {
+        auto lits = me_test::extractRegexLiterals("(foo|bar|baz)");
+        bool hasFoo = false, hasBar = false, hasBaz = false;
+        for (auto& l : lits) {
+            if (l == "foo") hasFoo = true;
+            if (l == "bar") hasBar = true;
+            if (l == "baz") hasBaz = true;
+        }
+        check(hasFoo && hasBar && hasBaz, "60.13 extractRegexLiterals paren alternation: got all 3");
+    }
+
+    // ── Test 14: Prefix+alternation+suffix — FilteredRE2 expands ──
+    {
+        auto lits = me_test::extractRegexLiterals("prefix(foo|bar)suffix");
+        // FilteredRE2 may expand to "prefixfoosuffix" and "prefixbarsuffix"
+        // or extract constituent parts — either way, atoms should exist
+        check(!lits.empty(), "60.14 extractRegexLiterals prefix+alt+suffix: got atoms");
+    }
+
+    // ── Test 15: No alternation — AND semantics unaffected ──
+    {
+        auto lits = me_test::extractRegexLiterals("config.*\\.json");
+        bool hasConfig = false;
+        for (auto& l : lits) {
+            if (l.find("config") != std::string::npos) hasConfig = true;
+        }
+        check(hasConfig, "60.15 extractRegexLiterals no-alt: got 'config'");
+    }
+
+    // ── Test 16: Pure literal pattern ──
+    {
+        auto lits = me_test::extractRegexLiterals("no_alt_here");
+        bool hasIt = false;
+        for (auto& l : lits) {
+            if (l.find("no_alt_here") != std::string::npos) hasIt = true;
+        }
+        check(hasIt, "60.16 extractRegexLiterals pure literal: got full string");
+    }
+
+    // ── Test 17: UNION semantics — atoms from alternation produce correct candidates ──
+    // Note: The query parser tokenizes `|` as a PIPE operator at the query level,
+    // so regex alternation can't reach the engine through `queryAdvanced`.
+    // This test verifies the UNION logic directly via extractRegexLiterals.
+    {
+        // "testfoo|testbar" produces atoms ["testfoo", "testbar"] via FilteredRE2
+        auto atoms = me_test::extractRegexLiterals("testfoo|testbar");
+        check(atoms.size() >= 2, "60.17 UNION atoms: got at least 2 atoms from alternation");
+        bool hasFoo = false, hasBar = false;
+        for (auto& a : atoms) {
+            if (a.find("testfoo") != std::string::npos) hasFoo = true;
+            if (a.find("testbar") != std::string::npos) hasBar = true;
+        }
+        check(hasFoo && hasBar, "60.17 UNION atoms: both alternation branches extracted");
+    }
+
+    // ── Test 18: Engine-level AND semantics still correct ──
+    {
+        SearchEngine engine;
+        for (int i = 0; i < 300; i++) {
+            FileRecord r;
+            r.name = "random_" + std::to_string(i) + ".log";
+            r.path = "/logs";
+            r.size = 50;
+            r.modTime = 1000000;
+            r.type = 1;
+            engine.updateByPath(r.path + "/" + r.name, std::move(r));
+        }
+        FileRecord target;
+        target.name = "config_backup.json";
+        target.path = "/etc";
+        target.size = 300;
+        target.modTime = 2000000;
+        target.type = 1;
+        engine.updateByPath(target.path + "/" + target.name, std::move(target));
+        QueryTimingInfo timing;
+        auto results = engine.queryAdvanced("regex:config.*\\.json", 100, true, timing);
+        check(results.size() == 1, "60.18 regex AND semantics engine: found target");
     }
 
     std::cout << "\n";

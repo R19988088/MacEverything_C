@@ -508,6 +508,13 @@ private:
         const std::vector<std::string>& segments,
         bool& allFound);
 
+    /// Union posting lists across multiple atoms for regex pre-filtering.
+    /// Each atom's trigrams are intersected internally, then results are unioned.
+    /// Safe for both AND and OR semantics from FilteredRE2.
+    static std::vector<uint32_t> unionPostingListsMulti(
+        const std::unordered_map<Trigram, std::vector<uint32_t>>& index,
+        const std::vector<std::string>& segments);
+
     /// Build full path in a reusable buffer: path + '/' + name.
     /// Lowercases the path portion via SIMD. Returns the full path length.
     /// Buffer is resized if needed (with 2x growth).

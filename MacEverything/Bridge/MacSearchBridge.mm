@@ -349,6 +349,36 @@
     return results;
 }
 
+- (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword
+                               maxResults:(uint32_t)maxResults
+                                sessionId:(uint64_t)sessionId {
+    auto engine = _serviceEngine->safeEngine();
+    if (!engine) return @[];
+
+    std::string key([keyword UTF8String]);
+    auto indices = engine->query(key, maxResults, true, sessionId);
+    if (indices.empty()) return @[];
+
+    NSMutableArray<MEFileResult *> *results = [NSMutableArray arrayWithCapacity:indices.size()];
+    engine->forEachRecordWithPath(indices, [&](uint32_t, const FileRecord& r, const std::string& path) {
+        NSString *nsName = [NSString stringWithUTF8String:r.name.c_str()];
+        NSString *nsPath = [NSString stringWithUTF8String:path.c_str()];
+        if (!nsName || !nsPath) return;
+        [results addObject:[[MEFileResult alloc] initWithName:nsName
+                                                        path:nsPath
+                                                        type:r.type
+                                                        size:r.size
+                                                     modTime:r.modTime]];
+    });
+    return results;
+}
+
+- (void)cancelSession:(uint64_t)sessionId {
+    auto engine = _serviceEngine->safeEngine();
+    if (!engine) return;
+    engine->cancelSession(sessionId);
+}
+
 - (NSArray<MEFileResult *> *)recentResults:(uint32_t)count {
     auto engine = _serviceEngine->safeEngine();
     if (!engine) return @[];

@@ -561,7 +561,13 @@ namespace me_test {
 std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                                                    uint32_t maxResults,
                                                    bool useTrigram,
-                                                   QueryTimingInfo& timing) const {
+                                                   QueryTimingInfo& timing,
+                                                   uint64_t myGen,
+                                                   const std::atomic<uint64_t>* genPtr) const {
+    // If no external generation pointer, create a local dummy (no cancellation)
+    std::atomic<uint64_t> dummyGen{myGen};
+    if (!genPtr) genPtr = &dummyGen;
+
     auto queryStart = std::chrono::steady_clock::now();
 
     // Parse the AST
@@ -601,8 +607,6 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
 
     if (types_.empty()) return {};
     size_t totalSize = types_.size();
-    uint64_t myGen = queryGeneration_.load(std::memory_order_relaxed);
-
     auto beforeTrigram = afterLock, afterTrigram = afterLock;
 
     // --- Trigram pre-filtering: competitive selection among name, regex, and path trigrams ---
@@ -673,7 +677,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 bool skipExpansion = nameOk && pathIdxCands.size() >= nameCands.size();
                 if (!skipExpansion) {
                     for (uint32_t pi : pathIdxCands) {
-                        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                        if (genPtr->load(std::memory_order_relaxed) != myGen) return {};
                         if (pi >= pathIdxToRecords_.size()) continue;
                         const auto& recIds = pathIdxToRecords_[pi];
                         pathCands.insert(pathCands.end(), recIds.begin(), recIds.end());
@@ -760,7 +764,6 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             size_t chunkSize = (candidateCount + numThreads - 1) / numThreads;
 
             __block std::vector<std::vector<Match>> threadResults(numThreads);
-            const auto* genPtr = &queryGeneration_;
             uint64_t capturedGen = myGen;
             const uint32_t* candidatesData = candidates.data();
             const auto* astPtr = ast.get();
@@ -816,7 +819,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                 }
             });
 
-            if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+            if (genPtr->load(std::memory_order_relaxed) != myGen) return {};
             for (auto& v : threadResults) {
                 merged.insert(merged.end(), v.begin(), v.end());
             }
@@ -827,7 +830,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
             const auto* smallSizesPtr = sizes_.data();
             const auto* smallModTimesPtr = modTimes_.data();
             for (size_t ci = 0; ci < candidateCount; ci++) {
-                if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+                if ((ci & 1023) == 0 && genPtr->load(std::memory_order_relaxed) != myGen) return {};
                 if (ci + PREFETCH_DIST < candidateCount) {
                     uint32_t futureIdx = candidatesData[ci + PREFETCH_DIST];
                     __builtin_prefetch(smallTypesPtr + futureIdx, 0, 0);
@@ -870,7 +873,6 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         size_t chunkSize = (totalSize + numThreads - 1) / numThreads;
         __block std::vector<std::vector<Match>> threadResults(numThreads);
 
-        const auto* genPtr = &queryGeneration_;
         uint64_t capturedGen = myGen;
         bool pureFilter = needs.isPureFilter();
 
@@ -978,7 +980,7 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
         });
 
         // Check if superseded after dispatch_apply
-        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return {};
+        if (genPtr->load(std::memory_order_relaxed) != myGen) return {};
 
         // Merge thread-local results
         for (auto& v : threadResults) {

@@ -77,6 +77,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// P-4: Perform query and return results directly, eliminating NSNumber boxing overhead.
 - (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword maxResults:(uint32_t)maxResults;
 
+/// Perform query with session-scoped cancellation.
+- (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword
+                               maxResults:(uint32_t)maxResults
+                                sessionId:(uint64_t)sessionId;
+
+/// Cancel in-flight queries for the given session.
+- (void)cancelSession:(uint64_t)sessionId;
+
 /// P-4: Return most recently modified files as results directly.
 - (NSArray<MEFileResult *> *)recentResults:(uint32_t)count;
 

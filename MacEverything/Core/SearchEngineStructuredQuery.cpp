@@ -75,7 +75,7 @@ size_t SearchEngine::estimateTrigramCost(const std::string& keyword) const {
 // ---------------------------------------------------------------------------
 void SearchEngine::treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
                                 int fromSegIdx, int toSegIdx,
-                                size_t totalSize, uint64_t myGen,
+                                size_t totalSize, const QueryCancelCtx& cancel,
                                 std::vector<Match>& merged) const {
     // Build the full lowered directory path for this dir record
     auto lpView = lowerPathPool_.view(pathIndices_[dirIdx]);
@@ -119,7 +119,7 @@ void SearchEngine::treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
     // pathSegments[fromSegIdx], then recurse down
     const auto& segText = pq.pathSegments[fromSegIdx].text;
     for (uint32_t childIdx : childRecords) {
-        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+        if (cancel.cancelled()) return;
         if (types_[childIdx] != 2) continue; // must be directory
         const char* nd = namePool_.data(childIdx);
         uint16_t nl = namePool_.length(childIdx);
@@ -127,7 +127,7 @@ void SearchEngine::treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
         if (!me::simdContains(nd, nl, segText.data(), segText.size())) continue;
 
         // Recurse to next level
-        treeWalkDown(childIdx, pq, fromSegIdx + 1, toSegIdx, totalSize, myGen, merged);
+        treeWalkDown(childIdx, pq, fromSegIdx + 1, toSegIdx, totalSize, cancel, merged);
     }
 }
 
@@ -135,7 +135,7 @@ void SearchEngine::treeWalkDown(uint32_t dirIdx, const ParsedQuery& pq,
 // queryStructured: SEGMENTS and DIR_EXACT modes (with anchor-selection)
 // ---------------------------------------------------------------------------
 void SearchEngine::queryStructured(const ParsedQuery& pq,
-                                   size_t totalSize, uint64_t myGen,
+                                   size_t totalSize, const QueryCancelCtx& cancel,
                                    std::vector<Match>& merged) const {
     const auto& namePattern = pq.namePattern;
     if (namePattern.empty()) return;
@@ -170,11 +170,11 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
     if (bestCost <= trigramThreshold) {
         if (bestIdx == numPathSegs) {
             // Anchor is namePattern — original trigram path
-            if (queryStructuredNameAnchor(pq, totalSize, myGen, merged))
+            if (queryStructuredNameAnchor(pq, totalSize, cancel, merged))
                 return;
         } else {
             // Anchor is a path segment — tree-walk strategy
-            if (queryStructuredPathAnchor(pq, bestIdx, totalSize, myGen, merged))
+            if (queryStructuredPathAnchor(pq, bestIdx, totalSize, cancel, merged))
                 return;
         }
     }
@@ -206,7 +206,7 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
             if (pi >= pathIdxToRecords_.size()) return;
             const auto& recIds = pathIdxToRecords_[pi];
             for (uint32_t idx : recIds) {
-                if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+                if (cancel.cancelled()) return;
                 if (types_[idx] == 0) continue;
 
                 const char* nd = namePool_.data(idx);
@@ -235,7 +235,7 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
             if (allFound) {
                 usedTrigram = true;
                 for (uint32_t pi : candidatePaths) {
-                    if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+                    if (cancel.cancelled()) return;
                     if (!lowerPathPool_.isLive(pi)) continue;
                     std::string_view lpv(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
                     if (!pathSegmentsMatch(lpv, pq.pathSegments)) continue;
@@ -248,7 +248,7 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
             // Linear scan all paths (no usable trigrams)
             uint32_t pathCount = lowerPathPool_.entryCount();
             for (uint32_t pi = 0; pi < pathCount; pi++) {
-                if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+                if (cancel.cancelled()) return;
                 if (!lowerPathPool_.isLive(pi)) continue;
                 std::string_view lpv(lowerPathPool_.data(pi), lowerPathPool_.length(pi));
                 if (!pathSegmentsMatch(lpv, pq.pathSegments)) continue;
@@ -262,7 +262,7 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
         me::simdFindAll(namePool_.rawBuffer(), namePool_.rawSize(),
                         namePattern.data(), namePattern.size(), hitOffsets);
 
-        if (queryGeneration_.load(std::memory_order_relaxed) != myGen) return;
+        if (cancel.cancelled()) return;
 
         const auto* entries = namePool_.entries();
         uint32_t entryCount = namePool_.entryCount();
@@ -305,7 +305,7 @@ void SearchEngine::queryStructured(const ParsedQuery& pq,
 // Returns true if handled (even if 0 results), false to fall back to linear.
 // ---------------------------------------------------------------------------
 bool SearchEngine::queryStructuredNameAnchor(const ParsedQuery& pq,
-                                             size_t /*totalSize*/, uint64_t myGen,
+                                             size_t /*totalSize*/, const QueryCancelCtx& cancel,
                                              std::vector<Match>& merged) const {
     const auto& namePattern = pq.namePattern;
     bool allFound = false;
@@ -313,7 +313,7 @@ bool SearchEngine::queryStructuredNameAnchor(const ParsedQuery& pq,
     if (!allFound) return false;
 
     for (size_t ci = 0; ci < candidates.size(); ci++) {
-        if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return true;
+        if ((ci & 1023) == 0 && cancel.cancelled()) return true;
         uint32_t idx = candidates[ci];
         if (types_[idx] == 0) continue;
 
@@ -345,7 +345,7 @@ bool SearchEngine::queryStructuredNameAnchor(const ParsedQuery& pq,
 // ---------------------------------------------------------------------------
 bool SearchEngine::queryStructuredPathAnchor(const ParsedQuery& pq,
                                              size_t anchorIdx,
-                                             size_t totalSize, uint64_t myGen,
+                                             size_t totalSize, const QueryCancelCtx& cancel,
                                              std::vector<Match>& merged) const {
     size_t numPathSegs = pq.pathSegments.size();
 
@@ -365,7 +365,7 @@ bool SearchEngine::queryStructuredPathAnchor(const ParsedQuery& pq,
     int walkTo = static_cast<int>(numPathSegs) - 1;
 
     for (size_t ci = 0; ci < candidates.size(); ci++) {
-        if ((ci & 1023) == 0 && queryGeneration_.load(std::memory_order_relaxed) != myGen) return true;
+        if ((ci & 1023) == 0 && cancel.cancelled()) return true;
         uint32_t idx = candidates[ci];
         if (types_[idx] == 0) continue;
         if (types_[idx] != 2) continue; // anchor must be a directory
@@ -384,7 +384,7 @@ bool SearchEngine::queryStructuredPathAnchor(const ParsedQuery& pq,
         }
 
         // Tree-walk down through remaining path segments to namePattern
-        treeWalkDown(idx, pq, walkFrom, walkTo, totalSize, myGen, merged);
+        treeWalkDown(idx, pq, walkFrom, walkTo, totalSize, cancel, merged);
     }
     return true;
 }

@@ -122,4 +122,21 @@ final class MacEverythingUITests: XCTestCase {
         nameHeader.click()
         XCTAssertEqual(nameHeader.value as? String, "descending")
     }
+
+    func testApplicationCategoryAndIconScaleControlsExist() throws {
+        XCTAssertTrue(app.buttons["category-applications"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.sliders["iconScaleSlider"].waitForExistence(timeout: 5))
+    }
+
+    func testResultSelectionIsImmediate() throws {
+        let searchField = app.textFields["searchField"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+        searchField.click()
+        searchField.typeText("a")
+
+        let row = app.buttons["resultRow"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.click()
+        XCTAssertEqual(row.value as? String, "selected")
+    }
 }

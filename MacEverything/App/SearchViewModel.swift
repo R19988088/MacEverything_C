@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-struct FileItem: Identifiable {
+struct FileItem: Identifiable, Equatable {
     let id: String      // path-based stable ID
     let index: UInt32   // engine index for record lookup
     let name: String
@@ -11,7 +11,7 @@ struct FileItem: Identifiable {
     let modTime: time_t
 }
 
-struct ContentFileItem: Identifiable {
+struct ContentFileItem: Identifiable, Equatable {
     let id: String      // stable ID: filePath + ":" + matchOffset
     let fileName: String
     let filePath: String
@@ -21,11 +21,12 @@ struct ContentFileItem: Identifiable {
 }
 
 enum SearchCategory: Int, CaseIterable, Identifiable {
-    case files = 0, folders, images, videos, audio, archives
+    case applications = 0, files, folders, images, videos, audio, archives
 
     var id: Int { rawValue }
     var titleKey: String {
         switch self {
+        case .applications: return "category.applications"
         case .files: return "category.files"
         case .folders: return "category.folders"
         case .images: return "category.images"
@@ -331,6 +332,7 @@ class SearchViewModel: ObservableObject {
 
     private static func results(for category: SearchCategory, in facets: MEFacetQueryResult) -> [MEFileResult] {
         switch category {
+        case .applications: return facets.applications
         case .files: return facets.files
         case .folders: return facets.folders
         case .images: return facets.images
@@ -342,6 +344,7 @@ class SearchViewModel: ObservableObject {
 
     private static func count(for category: SearchCategory, in facets: MEFacetQueryResult) -> Int {
         switch category {
+        case .applications: return Int(facets.applicationsCount)
         case .files: return Int(facets.filesCount)
         case .folders: return Int(facets.foldersCount)
         case .images: return Int(facets.imagesCount)

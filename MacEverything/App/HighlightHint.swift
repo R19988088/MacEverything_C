@@ -17,7 +17,7 @@ enum HighlightField: UInt8 {
 }
 
 /// A structured highlight hint extracted from the C++ query AST.
-struct HighlightHint {
+struct HighlightHint: Equatable {
     let text: String
     let field: HighlightField
     let matchMode: HighlightMatchMode

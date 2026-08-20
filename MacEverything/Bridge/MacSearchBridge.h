@@ -45,24 +45,28 @@ NS_ASSUME_NONNULL_BEGIN
 /// A single faceted query. Counts cover the complete match set; arrays are
 /// capped per category for responsive list rendering.
 @interface MEFacetQueryResult : NSObject
+@property (nonatomic, readonly) uint64_t applicationsCount;
 @property (nonatomic, readonly) uint64_t filesCount;
 @property (nonatomic, readonly) uint64_t foldersCount;
 @property (nonatomic, readonly) uint64_t imagesCount;
 @property (nonatomic, readonly) uint64_t videosCount;
 @property (nonatomic, readonly) uint64_t audioCount;
 @property (nonatomic, readonly) uint64_t archivesCount;
+@property (nonatomic, readonly) NSArray<MEFileResult *> *applications;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *files;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *folders;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *images;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *videos;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *audio;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *archives;
-- (instancetype)initWithCounts:(uint64_t)filesCount
+- (instancetype)initWithCounts:(uint64_t)applicationsCount
+                          files:(uint64_t)filesCount
                         folders:(uint64_t)foldersCount
                          images:(uint64_t)imagesCount
                          videos:(uint64_t)videosCount
                            audio:(uint64_t)audioCount
                         archives:(uint64_t)archivesCount
+                    applications:(NSArray<MEFileResult *> *)applications
                            files:(NSArray<MEFileResult *> *)files
                          folders:(NSArray<MEFileResult *> *)folders
                           images:(NSArray<MEFileResult *> *)images

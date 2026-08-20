@@ -1,51 +1,59 @@
 import SwiftUI
 import AppKit
 
-struct ContentResultRow: View {
+struct ContentResultRow: View, Equatable {
     @ObservedObject private var settings = AppSettings.shared
     let item: ContentFileItem
     let keyword: String
+    let iconScale: Double
     let isSelected: Bool
     let onSelect: () -> Void
     let onOpen: () -> Void
     let onReveal: () -> Void
     @State private var isHovered = false
 
+    static func == (lhs: ContentResultRow, rhs: ContentResultRow) -> Bool {
+        lhs.item == rhs.item && lhs.keyword == rhs.keyword && lhs.iconScale == rhs.iconScale && lhs.isSelected == rhs.isSelected
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
-            fileIcon(for: item.filePath)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 24, height: 24)
+        Button(action: onSelect) {
+            HStack(spacing: 8) {
+                fileIcon(for: item.filePath)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: iconSize, height: iconSize)
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(item.fileName)
-                        .font(.title3)
-                        .fontWeight(.medium)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(item.fileName)
+                            .font(.title3)
+                            .fontWeight(.medium)
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
 
-                    Text(directoryPath(item.filePath))
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        Text(directoryPath(item.filePath))
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    highlightMatches(in: item.snippet, keyword: keyword, font: .caption, color: .secondary)
+                        .lineLimit(2)
                 }
 
-                highlightMatches(in: item.snippet, keyword: keyword, font: .caption, color: .secondary)
-                    .lineLimit(2)
+                Spacer()
             }
-
-            Spacer()
+            .padding(.vertical, 5)
+            .padding(.horizontal, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear))
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 5)
-        .padding(.horizontal, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear))
-        )
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
         .onHover { hovering in
             isHovered = hovering
         }
@@ -58,9 +66,9 @@ struct ContentResultRow: View {
         .onDrag {
             return NSItemProvider(object: NSURL(fileURLWithPath: item.filePath))
         }
-        .onTapGesture(count: 2) { onOpen() }
-        .onTapGesture(count: 1) { onSelect() }
+        .simultaneousGesture(TapGesture(count: 2).onEnded(onOpen))
         .accessibilityIdentifier("contentResultRow")
+        .accessibilityValue(isSelected ? "selected" : "not-selected")
     }
 
     private func directoryPath(_ fullPath: String) -> String {
@@ -73,6 +81,8 @@ struct ContentResultRow: View {
     private func fileIcon(for path: String) -> Image {
         Image(nsImage: FileIconCache.shared.icon(forPath: path))
     }
+
+    private var iconSize: CGFloat { 24 * iconScale }
 
     private func copyPath() {
         NSPasteboard.general.clearContents()

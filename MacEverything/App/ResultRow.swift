@@ -55,59 +55,67 @@ final class FileIconCache {
     }
 }
 
-struct ResultRow: View {
+struct ResultRow: View, Equatable {
     @ObservedObject private var settings = AppSettings.shared
     let item: FileItem
     let hints: [HighlightHint]
+    let iconScale: Double
     let isSelected: Bool
     let onSelect: () -> Void
     let onOpen: () -> Void
     let onReveal: () -> Void
     @State private var isHovered = false
 
+    static func == (lhs: ResultRow, rhs: ResultRow) -> Bool {
+        lhs.item == rhs.item && lhs.hints == rhs.hints && lhs.iconScale == rhs.iconScale && lhs.isSelected == rhs.isSelected
+    }
+
     var body: some View {
-        HStack(spacing: 0) {
-            let highlighted = highlightCrossMatches(
-                path: item.path, name: item.name, hints: hints,
-                nameFont: .body, nameColor: .primary,
-                pathFont: .subheadline, pathColor: .secondary)
+        Button(action: onSelect) {
+            HStack(spacing: 0) {
+                let highlighted = highlightCrossMatches(
+                    path: item.path, name: item.name, hints: hints,
+                    nameFont: .body, nameColor: .primary,
+                    pathFont: .subheadline, pathColor: .secondary)
 
-            HStack(spacing: 8) {
-                fileIcon(for: item)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 24, height: 24)
-                highlighted.nameText.lineLimit(1)
+                HStack(spacing: 8) {
+                    fileIcon(for: item)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: iconSize, height: iconSize)
+                    highlighted.nameText.lineLimit(1)
+                }
+                .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+
+                columnDivider
+                highlighted.pathText
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+
+                columnDivider
+                Text(item.type == 1 && item.size > 0 ? formatSize(item.size) : "—")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 92, alignment: .trailing)
+
+                columnDivider
+                Text(modifiedDate)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: 178, alignment: .trailing)
             }
-            .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
-
-            columnDivider
-            highlighted.pathText
-                .font(.subheadline)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
-
-            columnDivider
-            Text(item.type == 1 && item.size > 0 ? formatSize(item.size) : "—")
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 92, alignment: .trailing)
-
-            columnDivider
-            Text(modifiedDate)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: 178, alignment: .trailing)
+            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear))
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 7)
-        .padding(.horizontal, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear))
-        )
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
         .onHover { hovering in
             isHovered = hovering
         }
@@ -121,9 +129,9 @@ struct ResultRow: View {
             let fullPath = item.path + "/" + item.name
             return NSItemProvider(object: NSURL(fileURLWithPath: fullPath))
         }
-        .onTapGesture(count: 2) { onOpen() }
-        .onTapGesture(count: 1) { onSelect() }
+        .simultaneousGesture(TapGesture(count: 2).onEnded(onOpen))
         .accessibilityIdentifier("resultRow")
+        .accessibilityValue(isSelected ? "selected" : "not-selected")
     }
 
     private var columnDivider: some View {
@@ -135,11 +143,17 @@ struct ResultRow: View {
 
     private var modifiedDate: String {
         guard item.modTime > 0 else { return "—" }
+        return Self.dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.modTime)))
+    }
+
+    private var iconSize: CGFloat { 24 * iconScale }
+
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.modTime)))
-    }
+        return formatter
+    }()
 
     private func fileIcon(for item: FileItem) -> Image {
         Image(nsImage: FileIconCache.shared.icon(for: item))

@@ -110,38 +110,11 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .disabled(disabled)
                 .opacity(disabled ? 0.42 : 1)
-                .accessibilityIdentifier("category-\(category.rawValue)")
+                .accessibilityIdentifier("category-\(category.titleKey.replacingOccurrences(of: "category.", with: ""))")
             }
         }
         .padding(.horizontal, 10)
         .padding(.bottom, 7)
-    }
-
-    @ViewBuilder
-    private var statusSummary: some View {
-        HStack(spacing: 7) {
-            if viewModel.isScanning {
-                ProgressView().controlSize(.small)
-                Text("\(AppText.value("status.scanning", language: settings.language))… \(viewModel.scannedCount)")
-            } else if viewModel.scanComplete {
-                Circle().fill(.green).frame(width: 6, height: 6)
-                Text(AppText.value("status.live", language: settings.language))
-                    .foregroundStyle(.green)
-                Text("\(viewModel.totalRecords) \(AppText.value("status.indexed", language: settings.language))")
-                    .foregroundStyle(.secondary)
-                if viewModel.totalMatches > 0 {
-                    Text("·").foregroundStyle(.secondary)
-                    Text("\(viewModel.totalMatches) \(AppText.value("status.matches", language: settings.language))")
-                        .foregroundStyle(.secondary)
-                    Text(String(format: "%.1fms", viewModel.queryTimeMs))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .font(.callout)
-        .lineLimit(1)
-        .minimumScaleFactor(0.75)
-        .layoutPriority(0)
     }
 
     @ViewBuilder
@@ -164,11 +137,12 @@ struct ContentView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(viewModel.contentResults) { item in
                             let selected = actions.selected?.id == contentItem(item).id
-                            ContentResultRow(item: item, keyword: viewModel.contentKeyword,
+                            ContentResultRow(item: item, keyword: viewModel.contentKeyword, iconScale: settings.iconScale,
                                              isSelected: selected,
                                              onSelect: { select(contentItem(item)) },
                                              onOpen: { select(contentItem(item)); actions.openSelected() },
                                              onReveal: { select(contentItem(item)); actions.revealSelected() })
+                                .equatable()
                                 .padding(.horizontal, 8).padding(.vertical, 2)
                         }
                     }
@@ -187,11 +161,12 @@ struct ContentView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(viewModel.displayItems) { item in
-                            ResultRow(item: item, hints: viewModel.highlightHints,
+                            ResultRow(item: item, hints: viewModel.highlightHints, iconScale: settings.iconScale,
                                       isSelected: actions.selected?.id == item.id,
                                       onSelect: { select(item) },
                                       onOpen: { select(item); actions.openSelected() },
                                       onReveal: { select(item); actions.revealSelected() })
+                                .equatable()
                                 .overlay(alignment: .bottom) { Divider().opacity(0.45) }
                                 .id(item.id)
                         }
@@ -230,11 +205,24 @@ struct ContentView: View {
             actionButton("action.delete", systemImage: "trash", enabled: actions.selected != nil) { actions.deleteSelected() }
             actionButton("action.undo", systemImage: "arrow.uturn.backward", enabled: actions.canUndo) { actions.undoDelete() }
             Spacer(minLength: 16)
-            statusSummary
+            iconScaleControl
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    private var iconScaleControl: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "square.grid.3x3")
+                .font(.system(size: 10))
+            Slider(value: $settings.iconScale, in: 1...4)
+                .frame(width: 150)
+                .accessibilityIdentifier("iconScaleSlider")
+            Image(systemName: "square.grid.3x3")
+                .font(.system(size: 18))
+        }
+        .foregroundStyle(.secondary)
     }
 
     private func actionButton(_ key: String, systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {

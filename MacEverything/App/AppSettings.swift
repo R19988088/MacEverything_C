@@ -34,6 +34,9 @@ final class AppSettings: ObservableObject {
     @Published var launchDisplay: LaunchDisplay {
         didSet { defaults.set(launchDisplay.rawValue, forKey: Keys.launchDisplay) }
     }
+    @Published var iconScale: Double {
+        didSet { defaults.set(iconScale, forKey: Keys.iconScale) }
+    }
     @Published private(set) var lastQuery: String? {
         didSet { defaults.set(lastQuery, forKey: Keys.lastQuery) }
     }
@@ -44,12 +47,14 @@ final class AppSettings: ObservableObject {
         static let language = "app.language"
         static let launchDisplay = "app.launchDisplay"
         static let lastQuery = "app.lastQuery"
+        static let iconScale = "app.iconScale"
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         language = AppLanguage(rawValue: defaults.string(forKey: Keys.language) ?? "") ?? .english
         launchDisplay = LaunchDisplay(rawValue: defaults.string(forKey: Keys.launchDisplay) ?? "") ?? .blank
+        iconScale = min(max(defaults.double(forKey: Keys.iconScale), 1), 4)
         lastQuery = defaults.string(forKey: Keys.lastQuery)
     }
 
@@ -77,7 +82,7 @@ enum AppText {
 
     private static let english: [String: String] = [
         "search.placeholder": "Search files... (infile: for content search)",
-        "category.files": "Files", "category.folders": "Folders", "category.images": "Images",
+        "category.applications": "Apps", "category.files": "Files", "category.folders": "Folders", "category.images": "Images",
         "category.videos": "Videos", "category.audio": "Music", "category.archives": "Archives",
         "action.open": "Open", "action.reveal": "Open in Finder", "action.delete": "Delete", "action.undo": "Undo",
         "settings.title": "Settings", "settings.general": "General", "settings.shortcut": "Shortcuts", "settings.content": "Content",
@@ -92,7 +97,7 @@ enum AppText {
     ]
     private static let chinese: [String: String] = [
         "search.placeholder": "搜索文件…（使用 infile: 搜索内容）",
-        "category.files": "文件", "category.folders": "文件夹", "category.images": "图片",
+        "category.applications": "应用", "category.files": "文件", "category.folders": "文件夹", "category.images": "图片",
         "category.videos": "视频", "category.audio": "音乐", "category.archives": "压缩包",
         "action.open": "打开", "action.reveal": "打开所在文件夹", "action.delete": "删除", "action.undo": "撤销",
         "settings.title": "设置", "settings.general": "通用", "settings.shortcut": "快捷键", "settings.content": "内容",
@@ -106,7 +111,7 @@ enum AppText {
     ]
     private static let japanese: [String: String] = [
         "search.placeholder": "ファイルを検索…（内容検索は infile:）",
-        "category.files": "ファイル", "category.folders": "フォルダ", "category.images": "画像",
+        "category.applications": "アプリ", "category.files": "ファイル", "category.folders": "フォルダ", "category.images": "画像",
         "category.videos": "ビデオ", "category.audio": "音楽", "category.archives": "アーカイブ",
         "action.open": "開く", "action.reveal": "Finderで表示", "action.delete": "削除", "action.undo": "取り消す",
         "settings.title": "設定", "settings.general": "一般", "settings.shortcut": "ショートカット", "settings.content": "内容",

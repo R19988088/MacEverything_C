@@ -6,7 +6,8 @@
 #include <string_view>
 
 enum class FileCategory : uint8_t {
-    Files = 0,
+    Applications = 0,
+    Files,
     Folders,
     Images,
     Videos,
@@ -16,6 +17,7 @@ enum class FileCategory : uint8_t {
 };
 
 struct FileCategoryCounts {
+    uint64_t applications = 0;
     uint64_t files = 0;
     uint64_t folders = 0;
     uint64_t images = 0;
@@ -62,6 +64,7 @@ inline constexpr bool contains(const std::array<std::string_view, N>& values,
 inline constexpr bool matches(FileCategory category, uint8_t type,
                               std::string_view lowerName) {
     if (type == 0) return false;
+    if (category == FileCategory::Applications) return type == 5;
     if (category == FileCategory::Files) return type != 2;
     if (category == FileCategory::Folders) return type == 2;
     if (type == 2) return false;
@@ -78,6 +81,7 @@ inline constexpr bool matches(FileCategory category, uint8_t type,
 
 inline constexpr void accumulate(FileCategoryCounts& counts, uint8_t type,
                                  std::string_view lowerName) {
+    if (matches(FileCategory::Applications, type, lowerName)) ++counts.applications;
     if (matches(FileCategory::Files, type, lowerName)) ++counts.files;
     if (matches(FileCategory::Folders, type, lowerName)) ++counts.folders;
     if (matches(FileCategory::Images, type, lowerName)) ++counts.images;

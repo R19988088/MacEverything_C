@@ -259,16 +259,6 @@ struct HighlightedSearchField: NSViewRepresentable {
             applyHighlighting(textView)
         }
 
-        func textViewDidChangeSelection(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            // AppKit may deliver selection changes before it finishes changing
-            // the window's first responder. Read it on the next run loop turn.
-            DispatchQueue.main.async { [weak self, weak textView] in
-                guard let self, let textView else { return }
-                self.setFocus(textView.window?.firstResponder === textView)
-            }
-        }
-
         func setFocus(_ focused: Bool) {
             if parent.isFocused.wrappedValue != focused {
                 parent.isFocused.wrappedValue = focused
@@ -340,8 +330,15 @@ class HighlightedNSTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        onFocusChanged?(true)
+        if window?.firstResponder !== self {
+            window?.makeFirstResponder(self)
+        }
         super.mouseDown(with: event)
+        onFocusChanged?(window?.firstResponder === self)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 
     override func becomeFirstResponder() -> Bool {

@@ -36,6 +36,14 @@ enum SearchCategory: Int, CaseIterable, Identifiable {
     }
 }
 
+enum ResultSortField: String {
+    case name, path, size, modified
+}
+
+enum ResultSortDirection: String {
+    case ascending, descending
+}
+
 @MainActor
 class SearchViewModel: ObservableObject {
     @Published var searchText: String = ""
@@ -55,6 +63,8 @@ class SearchViewModel: ObservableObject {
     @Published private(set) var categoryCounts: [SearchCategory: Int] = Dictionary(
         uniqueKeysWithValues: SearchCategory.allCases.map { ($0, 0) }
     )
+    @Published private(set) var resultSortField: ResultSortField?
+    @Published private(set) var resultSortDirection: ResultSortDirection = .ascending
     @Published var isContentSearch: Bool = false
     @Published var contentResults: [ContentFileItem] = []
     @Published var isContentIndexing: Bool = false
@@ -292,8 +302,6 @@ class SearchViewModel: ObservableObject {
     private func performSearch(_ keyword: String) {
         let bridge = self.bridge
         let maxResults = Self.maxResults
-        let pageSize = Self.pageSize
-        let selectedCategory = self.selectedCategory
         let gen = searchGeneration
         let query = searchOptions.buildQuery(keyword)
         Task.detached { [weak self] in
@@ -301,37 +309,11 @@ class SearchViewModel: ObservableObject {
             let facets = bridge.queryFacetedResults(query, maxResultsPerCategory: maxResults,
                                                      sessionId: Self.guiSessionId)
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            let results: [MEFileResult]
-            let totalCount: Int
-            switch selectedCategory {
-            case .files: results = facets.files; totalCount = Int(facets.filesCount)
-            case .folders: results = facets.folders; totalCount = Int(facets.foldersCount)
-            case .images: results = facets.images; totalCount = Int(facets.imagesCount)
-            case .videos: results = facets.videos; totalCount = Int(facets.videosCount)
-            case .audio: results = facets.audio; totalCount = Int(facets.audioCount)
-            case .archives: results = facets.archives; totalCount = Int(facets.archivesCount)
-            }
-
-            let firstPageCount = min(totalCount, pageSize)
-            var items: [FileItem] = []
-            items.reserveCapacity(firstPageCount)
-            for i in 0..<firstPageCount {
-                let r = results[i]
-                items.append(FileItem(
-                    id: "\(r.path)/\(r.name)", index: 0,
-                    name: r.name, path: r.path,
-                    type: r.type, size: r.size, modTime: r.modTime
-                ))
-            }
-
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else { return }
                 self.categoryResults = Self.resultDictionary(from: facets)
                 self.categoryCounts = Self.countDictionary(from: facets)
-                self.cachedResults = results
-                self.loadedCount = firstPageCount
-                self.displayItems = items
-                self.totalMatches = totalCount
+                self.updateDisplayedCategory()
                 self.queryTimeMs = elapsed
                 self.showingRecent = false
                 self.appSettings.recordSuccessfulQuery(keyword)
@@ -371,11 +353,51 @@ class SearchViewModel: ObservableObject {
 
     private func updateDisplayedCategory() {
         guard !isContentSearch else { return }
-        let results = categoryResults[selectedCategory] ?? []
+        let results = sortedResults(categoryResults[selectedCategory] ?? [])
+        categoryResults[selectedCategory] = results
         cachedResults = results
         loadedCount = min(results.count, Self.pageSize)
         displayItems = results.prefix(loadedCount).map(makeItem)
         totalMatches = categoryCounts[selectedCategory] ?? 0
+    }
+
+    func toggleResultSort(_ field: ResultSortField) {
+        if resultSortField == field {
+            resultSortDirection = resultSortDirection == .ascending ? .descending : .ascending
+        } else {
+            resultSortField = field
+            resultSortDirection = .ascending
+        }
+        updateDisplayedCategory()
+    }
+
+    private func sortedResults(_ results: [MEFileResult]) -> [MEFileResult] {
+        guard let field = resultSortField else { return results }
+        let direction = resultSortDirection
+        return results.sorted { lhs, rhs in
+            let comparison = Self.compare(lhs, rhs, by: field)
+            return direction == .ascending ? comparison == .orderedAscending : comparison == .orderedDescending
+        }
+    }
+
+    private static func compare(_ lhs: MEFileResult, _ rhs: MEFileResult,
+                                by field: ResultSortField) -> ComparisonResult {
+        let primary: ComparisonResult
+        switch field {
+        case .name:
+            primary = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        case .path:
+            primary = lhs.path.localizedCaseInsensitiveCompare(rhs.path)
+        case .size:
+            primary = lhs.size == rhs.size ? .orderedSame : (lhs.size < rhs.size ? .orderedAscending : .orderedDescending)
+        case .modified:
+            primary = lhs.modTime == rhs.modTime ? .orderedSame : (lhs.modTime < rhs.modTime ? .orderedAscending : .orderedDescending)
+        }
+        guard primary == .orderedSame else { return primary }
+
+        let name = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        if name != .orderedSame { return name }
+        return lhs.path.localizedCaseInsensitiveCompare(rhs.path)
     }
 
     private func makeItem(_ result: MEFileResult) -> FileItem {

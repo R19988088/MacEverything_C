@@ -249,22 +249,39 @@ struct ContentView: View {
 
     private var resultHeader: some View {
         HStack(spacing: 0) {
-            Text(AppText.value("result.name", language: settings.language))
-                .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+            sortableHeader("result.name", field: .name, minWidth: 220, alignment: .leading)
             headerDivider
-            Text(AppText.value("result.path", language: settings.language))
-                .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+            sortableHeader("result.path", field: .path, minWidth: 180, alignment: .leading)
             headerDivider
-            Text(AppText.value("result.size", language: settings.language))
-                .frame(width: 92, alignment: .trailing)
+            sortableHeader("result.size", field: .size, width: 92, alignment: .trailing)
             headerDivider
-            Text(AppText.value("result.modified", language: settings.language))
-                .frame(width: 178, alignment: .trailing)
+            sortableHeader("result.modified", field: .modified, width: 178, alignment: .trailing)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    private func sortableHeader(_ key: String, field: ResultSortField,
+                                minWidth: CGFloat = 0, width: CGFloat? = nil,
+                                alignment: Alignment) -> some View {
+        Button { viewModel.toggleResultSort(field) } label: {
+            HStack(spacing: 4) {
+                if alignment == .trailing { Spacer(minLength: 0) }
+                Text(AppText.value(key, language: settings.language))
+                if viewModel.resultSortField == field {
+                    Image(systemName: viewModel.resultSortDirection == .ascending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                }
+                if alignment == .leading { Spacer(minLength: 0) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(minWidth: width ?? minWidth, maxWidth: width ?? .infinity, alignment: alignment)
+        .accessibilityIdentifier("sort-\(field.rawValue)")
+        .accessibilityValue(viewModel.resultSortField == field ? viewModel.resultSortDirection.rawValue : "none")
     }
 
     private var headerDivider: some View {

@@ -108,4 +108,18 @@ final class MacEverythingUITests: XCTestCase {
         let text = indexedCount.label
         XCTAssertTrue(text.contains("files indexed"), "Should show files indexed count")
     }
+
+    func testResultHeaderTogglesSortDirection() throws {
+        let searchField = app.textFields["searchField"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+        searchField.click()
+        searchField.typeText("a")
+
+        let nameHeader = app.buttons["sort-name"]
+        XCTAssertTrue(nameHeader.waitForExistence(timeout: 10), "Name header should be clickable")
+        nameHeader.click()
+        XCTAssertEqual(nameHeader.value as? String, "ascending")
+        nameHeader.click()
+        XCTAssertEqual(nameHeader.value as? String, "descending")
+    }
 }

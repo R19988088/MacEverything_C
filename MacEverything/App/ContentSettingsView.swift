@@ -71,6 +71,31 @@ struct ContentSettingsView: View {
                     applySettings()
                 }
             }
+
+            Section(AppText.value("settings.excludedFolders", language: settings.language)) {
+                if settings.excludedFolders.isEmpty {
+                    Text(AppText.value("settings.noExcludedFolders", language: settings.language))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(settings.excludedFolders, id: \.self) { folder in
+                        HStack(spacing: 8) {
+                            Image(systemName: "folder.fill")
+                                .foregroundStyle(.secondary)
+                            Text(folder)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            Button {
+                                settings.restoreFolder(folder)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.plain)
+                            .help(AppText.value("settings.restoreFolder", language: settings.language))
+                        }
+                    }
+                }
+            }
         }
         .padding()
         .frame(width: 400, height: 420)

@@ -90,6 +90,19 @@ final class MacEverythingUITests: XCTestCase {
         XCTAssertTrue(searchField.exists, "App should still be responsive after rapid typing")
     }
 
+    func testSelectAllThenTypeReplacesSearchText() throws {
+        let searchField = app.textFields["searchField"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+
+        searchField.click()
+        searchField.typeText("existing")
+        searchField.click()
+        searchField.typeKey("a", modifierFlags: .command)
+        searchField.typeText("new")
+
+        XCTAssertEqual(searchField.value as? String, "new")
+    }
+
     func testResultCountDisplayed() throws {
         let searchField = app.textFields["searchField"]
         XCTAssertTrue(searchField.waitForExistence(timeout: 5))

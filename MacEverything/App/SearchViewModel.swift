@@ -90,6 +90,7 @@ class SearchViewModel: ObservableObject {
     private var recentTask: Task<Void, Never>?
     private var settledTask: Task<Void, Never>?
     private var optionsSink: AnyCancellable?
+    private var exclusionsSink: AnyCancellable?
     private var cachedResults: [MEFileResult] = []
     private var loadedCount: Int = 0
     private var searchGeneration: UInt64 = 0
@@ -141,6 +142,9 @@ class SearchViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.onSearchOptionsChanged()
             }
+        }
+        exclusionsSink = appSettings.$excludedFolders.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshExcludedResults() }
         }
         startIncremental()
     }
@@ -356,12 +360,37 @@ class SearchViewModel: ObservableObject {
 
     private func updateDisplayedCategory() {
         guard !isContentSearch else { return }
-        let results = sortedResults(categoryResults[selectedCategory] ?? [])
-        categoryResults[selectedCategory] = results
+        let filteredByCategory = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { category in
+            (category, categoryResults[category, default: []].filter { !isExcluded($0) })
+        })
+        let results = sortedResults(filteredByCategory[selectedCategory] ?? [])
         cachedResults = results
         loadedCount = min(results.count, Self.pageSize)
         displayItems = results.prefix(loadedCount).map(makeItem)
-        totalMatches = categoryCounts[selectedCategory] ?? 0
+        categoryCounts = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { category in
+            (category, filteredByCategory[category]?.count ?? 0)
+        })
+        totalMatches = filteredByCategory[selectedCategory]?.count ?? 0
+    }
+
+    private func refreshExcludedResults() {
+        guard !isContentSearch else { return }
+        updateDisplayedCategory()
+    }
+
+    private func isExcluded(_ result: MEFileResult) -> Bool {
+        let fullPath = URL(fileURLWithPath: result.path)
+            .appendingPathComponent(result.name).standardizedFileURL.path
+        return appSettings.excludedFolders.contains { folder in
+            fullPath == folder || fullPath.hasPrefix(folder + "/") || result.path == folder || result.path.hasPrefix(folder + "/")
+        }
+    }
+
+    func excludeFolder(for item: FileItem) {
+        let folder = item.type == 2
+            ? URL(fileURLWithPath: item.path).appendingPathComponent(item.name).path
+            : item.path
+        appSettings.excludeFolder(folder)
     }
 
     func toggleResultSort(_ field: ResultSortField) {

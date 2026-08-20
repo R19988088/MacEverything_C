@@ -16,6 +16,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Delay by one frame to let SwiftUI create the window
         DispatchQueue.main.async { [weak self] in
             self?.mainSearchWindow = NSApp.windows.first { $0.title == "MacEverything" }
+            if let window = self?.mainSearchWindow {
+                // Liquid Glass needs the host window to expose the desktop behind it.
+                window.isOpaque = false
+                window.backgroundColor = .clear
+                window.styleMask.insert(.fullSizeContentView)
+                window.titlebarAppearsTransparent = true
+                window.titleVisibility = .hidden
+                window.titlebarSeparatorStyle = .none
+                window.isMovableByWindowBackground = true
+            }
             if shouldMinimize {
                 self?.mainSearchWindow?.orderOut(nil)
                 NSApp.hide(nil)

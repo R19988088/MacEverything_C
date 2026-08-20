@@ -64,6 +64,7 @@ struct ResultRow: View, Equatable {
     let onSelect: () -> Void
     let onOpen: () -> Void
     let onReveal: () -> Void
+    let onExcludeFolder: () -> Void
     @State private var isHovered = false
 
     static func == (lhs: ResultRow, rhs: ResultRow) -> Bool {
@@ -122,6 +123,7 @@ struct ResultRow: View, Equatable {
         .contextMenu {
             Button(AppText.value("action.open", language: settings.language)) { onOpen() }
             Button(AppText.value("action.reveal", language: settings.language)) { onReveal() }
+            Button(AppText.value("action.excludeFolder", language: settings.language)) { onExcludeFolder() }
             Divider()
             Button("Copy Path") { copyPath(item) }
         }

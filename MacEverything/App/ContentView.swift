@@ -9,17 +9,20 @@ struct ContentView: View {
     @ObservedObject private var searchOptions = SearchOptions.shared
     @ObservedObject private var settings = AppSettings.shared
     @State private var scrollViewID = 0
-    @State private var isSearchFieldFocused = true
+    @FocusState private var isSearchFieldFocused: Bool
     @State private var quickLookController: QuickLookController?
 
     var body: some View {
         VStack(spacing: 0) {
+            customTitleBar
             PermissionView()
             searchHeader
             categoryBar
             resultsArea
             actionBar
         }
+        .modifier(WindowMaterialBackground())
+        .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 640, minHeight: 430)
         .environment(\.locale, settings.language.locale)
         .onReceive(NotificationCenter.default.publisher(for: .rebuildIndex)) { _ in viewModel.rebuildIndex() }
@@ -53,23 +56,48 @@ struct ContentView: View {
         }
     }
 
+    private var customTitleBar: some View {
+        ZStack {
+            Text("maceverything")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 38)
+        .contentShape(Rectangle())
+    }
+
     private var searchHeader: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 21, weight: .semibold))
                 .foregroundStyle(.tint)
-            HighlightedSearchField(
-                text: $viewModel.searchText,
-                placeholder: AppText.value("search.placeholder", language: settings.language),
-                ghostSuggestion: viewModel.ghostSuggestion,
-                isFocused: $isSearchFieldFocused,
-                onTab: {
-                    if viewModel.ghostSuggestion != nil { viewModel.acceptGhostSuggestion(); return true }
-                    return false
+            ZStack(alignment: .leading) {
+                if let ghost = viewModel.ghostSuggestion, !ghost.isEmpty {
+                    Text(ghost)
+                        .font(.system(size: 26))
+                        .foregroundStyle(.secondary.opacity(0.4))
+                        .lineLimit(1)
+                        .allowsHitTesting(false)
                 }
-            )
+                TextField(
+                    AppText.value("search.placeholder", language: settings.language),
+                    text: $viewModel.searchText
+                )
+                .focused($isSearchFieldFocused)
+                .textFieldStyle(.plain)
+                .font(.system(size: 26))
+                .accessibilityIdentifier("searchField")
+                .onChange(of: viewModel.searchText) { viewModel.onSearchTextChanged() }
+                .onKeyPress(.tab) {
+                    if viewModel.ghostSuggestion != nil {
+                        viewModel.acceptGhostSuggestion()
+                        return .handled
+                    }
+                    return .ignored
+                }
+            }
             .frame(height: 34)
-            .onChange(of: viewModel.searchText) { viewModel.onSearchTextChanged() }
             SearchOptionBadges(options: searchOptions)
             if !viewModel.searchText.isEmpty {
                 Button { viewModel.searchText = "" } label: {
@@ -165,7 +193,8 @@ struct ContentView: View {
                                       isSelected: actions.selected?.id == item.id,
                                       onSelect: { select(item) },
                                       onOpen: { select(item); actions.openSelected() },
-                                      onReveal: { select(item); actions.revealSelected() })
+                                      onReveal: { select(item); actions.revealSelected() },
+                                      onExcludeFolder: { viewModel.excludeFolder(for: item) })
                                 .equatable()
                                 .overlay(alignment: .bottom) { Divider().opacity(0.45) }
                                 .id(item.id)
@@ -290,6 +319,16 @@ struct ContentView: View {
         return FileItem(id: item.filePath, index: 0, name: url.lastPathComponent,
                         path: url.deletingLastPathComponent().path, type: item.fileType,
                         size: 0, modTime: 0)
+    }
+}
+
+private struct WindowMaterialBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
+        } else {
+            content.background(.ultraThinMaterial)
+        }
     }
 }
 

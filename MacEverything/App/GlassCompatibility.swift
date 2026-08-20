@@ -3,7 +3,7 @@ import SwiftUI
 struct GlassCompatibility: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.glassEffect()
+            content.glassEffect(.regular, in: Capsule())
         } else {
             content.background(.ultraThinMaterial)
         }

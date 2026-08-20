@@ -194,6 +194,9 @@ struct HighlightedSearchField: NSViewRepresentable {
         textView.isSelectable = true
         textView.delegate = context.coordinator
         textView.setAccessibilityIdentifier("searchField")
+        textView.onFocusChanged = { [weak coordinator = context.coordinator] focused in
+            coordinator?.setFocus(focused)
+        }
 
         // Single-line behavior: disable Enter/Return
         textView.isFieldEditor = true
@@ -212,6 +215,7 @@ struct HighlightedSearchField: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? HighlightedNSTextView else { return }
+        context.coordinator.parent = self
 
         // Update text if externally changed (e.g., clear button, ghost suggestion accept)
         if textView.string != text {
@@ -256,12 +260,18 @@ struct HighlightedSearchField: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            // Keep focus state in sync
-            if let textView = notification.object as? NSTextView {
-                let isFocused = textView.window?.firstResponder === textView
-                if parent.isFocused.wrappedValue != isFocused {
-                    parent.isFocused.wrappedValue = isFocused
-                }
+            guard let textView = notification.object as? NSTextView else { return }
+            // AppKit may deliver selection changes before it finishes changing
+            // the window's first responder. Read it on the next run loop turn.
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                self.setFocus(textView.window?.firstResponder === textView)
+            }
+        }
+
+        func setFocus(_ focused: Bool) {
+            if parent.isFocused.wrappedValue != focused {
+                parent.isFocused.wrappedValue = focused
             }
         }
 
@@ -313,6 +323,7 @@ struct HighlightedSearchField: NSViewRepresentable {
 
 class HighlightedNSTextView: NSTextView {
     var onTabKey: (() -> Bool)?
+    var onFocusChanged: ((Bool) -> Void)?
     var placeholderString: String = ""
     var ghostSuggestion: String? {
         didSet { needsDisplay = true }
@@ -326,6 +337,23 @@ class HighlightedNSTextView: NSTextView {
             }
         }
         super.keyDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onFocusChanged?(true)
+        super.mouseDown(with: event)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onFocusChanged?(true) }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { onFocusChanged?(false) }
+        return resigned
     }
 
     override func draw(_ dirtyRect: NSRect) {

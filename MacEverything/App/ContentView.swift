@@ -17,7 +17,6 @@ struct ContentView: View {
             PermissionView()
             searchHeader
             categoryBar
-            statusBar
             resultsArea
             actionBar
         }
@@ -118,7 +117,8 @@ struct ContentView: View {
         .padding(.bottom, 7)
     }
 
-    private var statusBar: some View {
+    @ViewBuilder
+    private var statusSummary: some View {
         HStack(spacing: 7) {
             if viewModel.isScanning {
                 ProgressView().controlSize(.small)
@@ -137,12 +137,11 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Spacer()
         }
         .font(.callout)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+        .lineLimit(1)
+        .minimumScaleFactor(0.75)
+        .layoutPriority(0)
     }
 
     @ViewBuilder
@@ -226,12 +225,12 @@ struct ContentView: View {
 
     private var actionBar: some View {
         HStack(spacing: 8) {
-            Spacer()
             actionButton("action.open", systemImage: "arrow.up.forward.app", enabled: actions.selected != nil) { actions.openSelected() }
             actionButton("action.reveal", systemImage: "folder", enabled: actions.selected != nil) { actions.revealSelected() }
             actionButton("action.delete", systemImage: "trash", enabled: actions.selected != nil) { actions.deleteSelected() }
             actionButton("action.undo", systemImage: "arrow.uturn.backward", enabled: actions.canUndo) { actions.undoDelete() }
-            Spacer()
+            Spacer(minLength: 16)
+            statusSummary
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -243,7 +242,7 @@ struct ContentView: View {
             Label(AppText.value(key, language: settings.language), systemImage: systemImage)
         }
         .buttonStyle(.bordered)
-        .frame(minWidth: 112)
+        .controlSize(.small)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.45)
     }

@@ -216,15 +216,26 @@ struct HighlightedSearchField: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? HighlightedNSTextView else { return }
         context.coordinator.parent = self
+        if textView.string == text {
+            context.coordinator.hasPendingUserEdit = false
+        }
 
         // Update text if externally changed (e.g., clear button, ghost suggestion accept)
         if textView.string != text {
-            context.coordinator.isUpdatingFromSwiftUI = true
-            let selectedRanges = textView.selectedRanges
-            textView.string = text
-            context.coordinator.applyHighlighting(textView)
-            textView.selectedRanges = selectedRanges
-            context.coordinator.isUpdatingFromSwiftUI = false
+            // SwiftUI may render once with the old binding immediately after a
+            // user replacement. Only apply external changes that differ from
+            // the last text we acknowledged, so the new edit cannot be rolled
+            // back by that stale render.
+            if context.coordinator.hasPendingUserEdit {
+                context.coordinator.hasPendingUserEdit = false
+            } else {
+                context.coordinator.isUpdatingFromSwiftUI = true
+                let selectedRanges = textView.selectedRanges
+                textView.string = text
+                context.coordinator.applyHighlighting(textView)
+                textView.selectedRanges = selectedRanges
+                context.coordinator.isUpdatingFromSwiftUI = false
+            }
         }
 
         // Update ghost suggestion
@@ -246,6 +257,7 @@ struct HighlightedSearchField: NSViewRepresentable {
         var parent: HighlightedSearchField
         weak var textView: NSTextView?
         var isUpdatingFromSwiftUI = false
+        var hasPendingUserEdit = false
 
         init(_ parent: HighlightedSearchField) {
             self.parent = parent
@@ -256,6 +268,7 @@ struct HighlightedSearchField: NSViewRepresentable {
                   let textView = notification.object as? NSTextView else { return }
 
             parent.text = textView.string
+            hasPendingUserEdit = true
             applyHighlighting(textView)
         }
 

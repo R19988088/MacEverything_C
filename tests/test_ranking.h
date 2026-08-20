@@ -29,6 +29,18 @@ static void runSearchRankingTests() {
               "Ranking: exact scoring-term match 'Alfred' is first result");
     }
 
+    // A space separates independent substring terms: arbitrary characters may
+    // occur between them, while records missing either term are excluded.
+    {
+        SearchEngine engine;
+        engine.addRecord(FileRecord{"A21212B121212", "/fixture", 1, 1, 1});
+        engine.addRecord(FileRecord{"A-only", "/fixture", 1, 1, 1});
+        engine.addRecord(FileRecord{"B-only", "/fixture", 1, 1, 1});
+        const auto res = engine.query("A B", 0, false);
+        check(res.size() == 1 && engine.getRecord(res[0]).name == "A21212B121212",
+              "Ranking: space-separated terms match with arbitrary text between them");
+    }
+
     // ── Test 2: Prefix match before contains match ──
     std::cout << "\n  --- Prefix vs contains priority ---\n";
     {

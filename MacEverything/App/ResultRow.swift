@@ -66,31 +66,43 @@ struct ResultRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            fileIcon(for: item)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 24, height: 24)
+        HStack(spacing: 0) {
+            let highlighted = highlightCrossMatches(
+                path: item.path, name: item.name, hints: hints,
+                nameFont: .body, nameColor: .primary,
+                pathFont: .subheadline, pathColor: .secondary)
 
-            VStack(alignment: .leading, spacing: 2) {
-                let highlighted = highlightCrossMatches(
-                    path: item.path, name: item.name, hints: hints,
-                    nameFont: .title3, nameColor: .primary,
-                    pathFont: .subheadline, pathColor: .secondary)
+            HStack(spacing: 8) {
+                fileIcon(for: item)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 24, height: 24)
                 highlighted.nameText.lineLimit(1)
-                highlighted.pathText.lineLimit(1)
             }
+            .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
 
-            Spacer()
+            columnDivider
+            highlighted.pathText
+                .font(.subheadline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
 
-            if item.type == 1 && item.size > 0 {
-                Text(formatSize(item.size))
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
+            columnDivider
+            Text(item.type == 1 && item.size > 0 ? formatSize(item.size) : "—")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 92, alignment: .trailing)
+
+            columnDivider
+            Text(modifiedDate)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: 178, alignment: .trailing)
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 10)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear))
@@ -112,6 +124,21 @@ struct ResultRow: View {
         .onTapGesture(count: 2) { onOpen() }
         .onTapGesture(count: 1) { onSelect() }
         .accessibilityIdentifier("resultRow")
+    }
+
+    private var columnDivider: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.16))
+            .frame(width: 1, height: 24)
+            .padding(.horizontal, 10)
+    }
+
+    private var modifiedDate: String {
+        guard item.modTime > 0 else { return "—" }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.modTime)))
     }
 
     private func fileIcon(for item: FileItem) -> Image {

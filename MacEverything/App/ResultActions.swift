@@ -5,6 +5,7 @@ import SwiftUI
 final class ResultActions: ObservableObject {
     @Published private(set) var selected: FileItem?
     @Published private(set) var canUndo = false
+    @Published var isSearchFieldFocused = true
     @Published var errorMessage: String?
 
     private var trashedURL: URL?

@@ -231,6 +231,8 @@ struct HighlightedSearchField: NSViewRepresentable {
         // Handle focus
         if isFocused.wrappedValue && textView.window != nil && textView.window?.firstResponder !== textView {
             textView.window?.makeFirstResponder(textView)
+        } else if !isFocused.wrappedValue && textView.window?.firstResponder === textView {
+            textView.window?.makeFirstResponder(nil)
         }
     }
 

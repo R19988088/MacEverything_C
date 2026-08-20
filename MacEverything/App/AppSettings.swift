@@ -87,7 +87,8 @@ enum AppText {
         ,"shortcut.title": "Global Hotkey Settings", "shortcut.description": "Set the global hotkey for showing or hiding MacEverything.",
         "shortcut.current": "Current Shortcut", "shortcut.record": "Press a key combination...", "shortcut.reset": "Reset to Default",
         "content.indexing": "Content Indexing", "content.indexed": "Indexed Files", "content.maxSize": "Max File Size",
-        "content.extensions": "File Extensions", "content.addPlaceholder": "Add extension...", "content.add": "Add", "content.apply": "Apply"
+        "content.extensions": "File Extensions", "content.addPlaceholder": "Add extension...", "content.add": "Add", "content.apply": "Apply",
+        "result.name": "Name", "result.path": "Path", "result.size": "Size", "result.modified": "Date Modified"
     ]
     private static let chinese: [String: String] = [
         "search.placeholder": "搜索文件…（使用 infile: 搜索内容）",
@@ -100,7 +101,8 @@ enum AppText {
         "empty.noResults": "没有找到结果", "empty.start": "输入内容搜索文件", "empty.content": "没有匹配的内容"
         ,"shortcut.title": "全局快捷键设置", "shortcut.description": "设置显示或隐藏 MacEverything 的全局快捷键。", "shortcut.current": "当前快捷键",
         "shortcut.record": "按下快捷键组合…", "shortcut.reset": "恢复默认", "content.indexing": "内容索引", "content.indexed": "已索引文件",
-        "content.maxSize": "最大文件大小", "content.extensions": "文件扩展名", "content.addPlaceholder": "添加扩展名…", "content.add": "添加", "content.apply": "应用"
+        "content.maxSize": "最大文件大小", "content.extensions": "文件扩展名", "content.addPlaceholder": "添加扩展名…", "content.add": "添加", "content.apply": "应用",
+        "result.name": "名字", "result.path": "位置", "result.size": "尺寸", "result.modified": "修改日期"
     ]
     private static let japanese: [String: String] = [
         "search.placeholder": "ファイルを検索…（内容検索は infile:）",
@@ -113,6 +115,7 @@ enum AppText {
         "empty.noResults": "結果がありません", "empty.start": "入力してファイルを検索", "empty.content": "内容に一致する結果がありません"
         ,"shortcut.title": "グローバルショートカット設定", "shortcut.description": "MacEverything の表示と非表示を切り替えるショートカットを設定します。", "shortcut.current": "現在のショートカット",
         "shortcut.record": "キーの組み合わせを押してください…", "shortcut.reset": "デフォルトに戻す", "content.indexing": "内容の索引", "content.indexed": "索引済みファイル",
-        "content.maxSize": "最大ファイルサイズ", "content.extensions": "ファイル拡張子", "content.addPlaceholder": "拡張子を追加…", "content.add": "追加", "content.apply": "適用"
+        "content.maxSize": "最大ファイルサイズ", "content.extensions": "ファイル拡張子", "content.addPlaceholder": "拡張子を追加…", "content.add": "追加", "content.apply": "適用",
+        "result.name": "名前", "result.path": "場所", "result.size": "サイズ", "result.modified": "変更日"
     ]
 }

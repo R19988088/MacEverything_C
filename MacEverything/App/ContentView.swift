@@ -9,7 +9,7 @@ struct ContentView: View {
     @ObservedObject private var searchOptions = SearchOptions.shared
     @ObservedObject private var settings = AppSettings.shared
     @State private var scrollViewID = 0
-    @FocusState private var isSearchFieldFocused: Bool
+    @State private var isSearchFieldFocused = true
     @State private var quickLookController: QuickLookController?
 
     var body: some View {

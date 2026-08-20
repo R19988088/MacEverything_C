@@ -161,7 +161,7 @@ struct HighlightedSearchField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String = ""
     var ghostSuggestion: String?
-    var isFocused: FocusState<Bool>.Binding
+    var isFocused: Binding<Bool>
     var onTab: (() -> Bool)?
 
     func makeCoordinator() -> Coordinator {

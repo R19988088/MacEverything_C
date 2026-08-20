@@ -20,6 +20,22 @@ struct ContentFileItem: Identifiable {
     let fileType: UInt8
 }
 
+enum SearchCategory: Int, CaseIterable, Identifiable {
+    case files = 0, folders, images, videos, audio, archives
+
+    var id: Int { rawValue }
+    var titleKey: String {
+        switch self {
+        case .files: return "category.files"
+        case .folders: return "category.folders"
+        case .images: return "category.images"
+        case .videos: return "category.videos"
+        case .audio: return "category.audio"
+        case .archives: return "category.archives"
+        }
+    }
+}
+
 @MainActor
 class SearchViewModel: ObservableObject {
     @Published var searchText: String = ""
@@ -33,6 +49,12 @@ class SearchViewModel: ObservableObject {
     @Published var scannedCount: UInt64 = 0
     var isLoadingMore: Bool = false
     @Published var showingRecent: Bool = false
+    @Published var selectedCategory: SearchCategory = .files {
+        didSet { updateDisplayedCategory() }
+    }
+    @Published private(set) var categoryCounts: [SearchCategory: Int] = Dictionary(
+        uniqueKeysWithValues: SearchCategory.allCases.map { ($0, 0) }
+    )
     @Published var isContentSearch: Bool = false
     @Published var contentResults: [ContentFileItem] = []
     @Published var isContentIndexing: Bool = false
@@ -51,6 +73,7 @@ class SearchViewModel: ObservableObject {
 
     private let bridge = MacSearchBridge.shared()
     private let historyStore = SearchHistoryStore()
+    private let appSettings = AppSettings.shared
     private let searchOptions = SearchOptions.shared
     private var searchTask: Task<Void, Never>?
     private var recentTask: Task<Void, Never>?
@@ -63,7 +86,11 @@ class SearchViewModel: ObservableObject {
 
     private static let pageSize: Int = 100
     private static let maxResults: UInt32 = 10000
-    private static let indexChangeThrottleNs: UInt64 = 5_000_000_000 // 5 seconds
+    private static let indexChangeThrottleNs: UInt64 = 500_000_000
+
+    private var categoryResults: [SearchCategory: [MEFileResult]] = Dictionary(
+        uniqueKeysWithValues: SearchCategory.allCases.map { ($0, []) }
+    )
 
     private var indexChangeTask: Task<Void, Never>?
     let refreshThrottle = IndexRefreshThrottle()
@@ -96,6 +123,9 @@ class SearchViewModel: ObservableObject {
     }
 
     init() {
+        if let launchQuery = appSettings.launchQuery {
+            searchText = launchQuery
+        }
         optionsSink = searchOptions.objectWillChange.sink { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.onSearchOptionsChanged()
@@ -163,8 +193,6 @@ class SearchViewModel: ObservableObject {
 
                 if !self.searchText.isEmpty {
                     self.performSearch(self.searchText)
-                } else {
-                    self.loadRecentFiles()
                 }
             }
         }
@@ -179,6 +207,8 @@ class SearchViewModel: ObservableObject {
         scanComplete = false
         displayItems = []
         totalMatches = 0
+        categoryCounts = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { ($0, 0) })
+        categoryResults = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { ($0, []) })
         queryTimeMs = 0
         contentResults = []
         isContentSearch = false
@@ -212,18 +242,10 @@ class SearchViewModel: ObservableObject {
             settledTask?.cancel()
             // Cancel any in-flight queries for this GUI session
             bridge.cancelSession(Self.guiSessionId)
-            if scanComplete {
-                // Slight delay so the stale query's dispatch_apply threads
-                // detect the generation change and exit before we compete for the thread pool
-                recentTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
-                    guard !Task.isCancelled, let self else { return }
-                    self.loadRecentFiles()
-                }
-            } else {
-                displayItems = []
-                showingRecent = false
-            }
+            displayItems = []
+            showingRecent = false
+            categoryCounts = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { ($0, 0) })
+            categoryResults = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { ($0, []) })
             return
         }
         showingRecent = false
@@ -271,14 +293,24 @@ class SearchViewModel: ObservableObject {
         let bridge = self.bridge
         let maxResults = Self.maxResults
         let pageSize = Self.pageSize
+        let selectedCategory = self.selectedCategory
         let gen = searchGeneration
         let query = searchOptions.buildQuery(keyword)
         Task.detached { [weak self] in
             let start = CFAbsoluteTimeGetCurrent()
-            // P-4: Use batch method — single engine lock, no NSNumber boxing
-            let results = bridge.queryResults(query, maxResults: maxResults, sessionId: Self.guiSessionId)
+            let facets = bridge.queryFacetedResults(query, maxResultsPerCategory: maxResults,
+                                                     sessionId: Self.guiSessionId)
             let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            let totalCount = results.count
+            let results: [MEFileResult]
+            let totalCount: Int
+            switch selectedCategory {
+            case .files: results = facets.files; totalCount = Int(facets.filesCount)
+            case .folders: results = facets.folders; totalCount = Int(facets.foldersCount)
+            case .images: results = facets.images; totalCount = Int(facets.imagesCount)
+            case .videos: results = facets.videos; totalCount = Int(facets.videosCount)
+            case .audio: results = facets.audio; totalCount = Int(facets.audioCount)
+            case .archives: results = facets.archives; totalCount = Int(facets.archivesCount)
+            }
 
             let firstPageCount = min(totalCount, pageSize)
             var items: [FileItem] = []
@@ -294,13 +326,61 @@ class SearchViewModel: ObservableObject {
 
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else { return }
+                self.categoryResults = Self.resultDictionary(from: facets)
+                self.categoryCounts = Self.countDictionary(from: facets)
                 self.cachedResults = results
                 self.loadedCount = firstPageCount
                 self.displayItems = items
                 self.totalMatches = totalCount
                 self.queryTimeMs = elapsed
+                self.showingRecent = false
+                self.appSettings.recordSuccessfulQuery(keyword)
             }
         }
+    }
+
+    private static func resultDictionary(from facets: MEFacetQueryResult) -> [SearchCategory: [MEFileResult]] {
+        Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { ($0, results(for: $0, in: facets)) })
+    }
+
+    private static func countDictionary(from facets: MEFacetQueryResult) -> [SearchCategory: Int] {
+        Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { ($0, count(for: $0, in: facets)) })
+    }
+
+    private static func results(for category: SearchCategory, in facets: MEFacetQueryResult) -> [MEFileResult] {
+        switch category {
+        case .files: return facets.files
+        case .folders: return facets.folders
+        case .images: return facets.images
+        case .videos: return facets.videos
+        case .audio: return facets.audio
+        case .archives: return facets.archives
+        }
+    }
+
+    private static func count(for category: SearchCategory, in facets: MEFacetQueryResult) -> Int {
+        switch category {
+        case .files: return Int(facets.filesCount)
+        case .folders: return Int(facets.foldersCount)
+        case .images: return Int(facets.imagesCount)
+        case .videos: return Int(facets.videosCount)
+        case .audio: return Int(facets.audioCount)
+        case .archives: return Int(facets.archivesCount)
+        }
+    }
+
+    private func updateDisplayedCategory() {
+        guard !isContentSearch else { return }
+        let results = categoryResults[selectedCategory] ?? []
+        cachedResults = results
+        loadedCount = min(results.count, Self.pageSize)
+        displayItems = results.prefix(loadedCount).map(makeItem)
+        totalMatches = categoryCounts[selectedCategory] ?? 0
+    }
+
+    private func makeItem(_ result: MEFileResult) -> FileItem {
+        FileItem(id: "\(result.path)/\(result.name)", index: 0, name: result.name,
+                 path: result.path, type: result.type, size: result.size, modTime: result.modTime)
     }
 
     private func performContentSearch(_ keyword: String) {
@@ -327,7 +407,12 @@ class SearchViewModel: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self, self.searchGeneration == gen else { return }
                 self.contentResults = items
-                self.totalMatches = items.count
+        self.totalMatches = items.count
+        self.categoryCounts = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map {
+            ($0, $0 == .files ? items.count : 0)
+        })
+        self.categoryResults = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { ($0, []) })
+        self.categoryResults[.files] = []
                 self.queryTimeMs = elapsed
             }
         }
@@ -370,28 +455,8 @@ class SearchViewModel: ObservableObject {
     }
 
     private func loadRecentFiles() {
-        recentTask?.cancel()
-        let bridge = self.bridge
-        let gen = searchGeneration
-        recentTask = Task.detached { [weak self] in
-            // P-4: Use batch method — single engine lock, no NSNumber boxing
-            let results = bridge.recentResults(100)
-            var items: [FileItem] = []
-            items.reserveCapacity(results.count)
-            for r in results {
-                guard !Task.isCancelled else { return }
-                items.append(FileItem(
-                    id: "\(r.path)/\(r.name)", index: 0,
-                    name: r.name, path: r.path,
-                    type: r.type, size: r.size, modTime: r.modTime
-                ))
-            }
-            await MainActor.run { [weak self] in
-                guard let self, self.searchGeneration == gen else { return }
-                self.displayItems = items
-                self.showingRecent = true
-            }
-        }
+        displayItems = []
+        showingRecent = false
     }
 
     private func onIndexChanged() {
@@ -441,8 +506,8 @@ class SearchViewModel: ObservableObject {
             performSearch(searchText)
         } else if isContentSearch && !contentKeyword.isEmpty {
             performContentSearch(contentKeyword)
-        } else if showingRecent {
-            loadRecentFiles()
+        } else if searchText.isEmpty {
+            displayItems = []
         }
     }
 

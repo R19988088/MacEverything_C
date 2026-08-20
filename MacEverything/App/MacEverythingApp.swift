@@ -4,13 +4,19 @@ import SwiftUI
 struct MacEverythingApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @ObservedObject private var searchOptions = SearchOptions.shared
+    @ObservedObject private var settings = AppSettings.shared
 
     var body: some Scene {
         Window("MacEverything", id: "main") {
             ContentView()
         }
-        .windowStyle(.titleBar)
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 800, height: 600)
+        .environment(\.locale, settings.language.locale)
+        Settings {
+            SettingsView()
+                .environment(\.locale, settings.language.locale)
+        }
         .commands {
             CommandMenu("Search") {
                 Toggle("Regex", isOn: $searchOptions.isRegex)
@@ -35,15 +41,6 @@ struct MacEverythingApp: App {
                     NotificationCenter.default.post(name: .rebuildIndex, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-
-                Button("Shortcut Settings...") {
-                    ShortcutSettingsWindowController.shared.showWindow()
-                }
-                .keyboardShortcut(",", modifiers: [.command])
-
-                Button("Content Settings...") {
-                    ContentSettingsWindowController.shared.showWindow()
-                }
 
                 Divider()
 

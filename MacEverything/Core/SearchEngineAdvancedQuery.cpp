@@ -578,12 +578,30 @@ namespace me_test {
     }
 }
 
+void SearchEngine::collectFacetMatches(
+    const std::vector<Match>& merged,
+    FacetedQueryResult& output,
+    std::array<std::vector<Match>, static_cast<size_t>(FileCategory::Count)>& grouped) const {
+    for (const Match& match : merged) {
+        const uint8_t type = types_[match.idx];
+        const std::string_view name = namePool_.view(match.idx);
+        me::file_category::accumulate(output.counts, type, name);
+        for (size_t raw = 0; raw < grouped.size(); ++raw) {
+            const auto category = static_cast<FileCategory>(raw);
+            if (me::file_category::matches(category, type, name)) {
+                grouped[raw].push_back(match);
+            }
+        }
+    }
+}
+
 std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
                                                    uint32_t maxResults,
                                                    bool useTrigram,
                                                    QueryTimingInfo& timing,
                                                    uint64_t myGen,
-                                                   const std::atomic<uint64_t>* genPtr) const {
+                                                   const std::atomic<uint64_t>* genPtr,
+                                                   FacetedQueryResult* faceted) const {
     // If no external generation pointer, create a local dummy (no cancellation)
     std::atomic<uint64_t> dummyGen{myGen};
     if (!genPtr) genPtr = &dummyGen;
@@ -1016,9 +1034,54 @@ std::vector<uint32_t> SearchEngine::queryAdvanced(const std::string& input,
 
     auto afterPhase = std::chrono::steady_clock::now();
 
+    FacetedQueryResult facetOutput;
+    std::array<std::vector<Match>, static_cast<size_t>(FileCategory::Count)> facetGroups;
+    if (faceted) {
+        collectFacetMatches(merged, facetOutput, facetGroups);
+    }
+
     // Release lock before sorting
     auto beforeUnlock = std::chrono::steady_clock::now();
     lock.unlock();
+
+    if (faceted) {
+        auto beforeSort = std::chrono::steady_clock::now();
+        auto cmp = [](const Match& a, const Match& b) {
+            if (a.priority != b.priority) return a.priority < b.priority;
+            return a.pathLen < b.pathLen;
+        };
+
+        for (size_t raw = 0; raw < facetGroups.size(); ++raw) {
+            auto& matches = facetGroups[raw];
+            size_t resultCount = matches.size();
+            if (maxResults > 0 && resultCount > maxResults) resultCount = maxResults;
+            if (resultCount < matches.size()) {
+                std::partial_sort(matches.begin(), matches.begin() + resultCount, matches.end(), cmp);
+            } else {
+                std::sort(matches.begin(), matches.end(), cmp);
+            }
+            auto& indices = facetOutput.indices[raw];
+            indices.reserve(resultCount);
+            for (size_t i = 0; i < resultCount; ++i) indices.push_back(matches[i].idx);
+        }
+
+        auto afterSort = std::chrono::steady_clock::now();
+        *faceted = std::move(facetOutput);
+        auto toMs = [](auto dur) { return std::chrono::duration<double, std::milli>(dur).count(); };
+        timing.totalMs = toMs(std::chrono::steady_clock::now() - queryStart);
+        timing.lockWaitMs = toMs(afterLock - beforeLock);
+        timing.lockHeldMs = toMs(beforeUnlock - afterLock);
+        timing.sortMs = toMs(afterSort - beforeSort);
+        timing.trigramMs = toMs(afterTrigram - beforeTrigram);
+        timing.phase1Ms = 0;
+        timing.phase2Ms = toMs(afterPhase - beforePhase);
+        timing.totalRecords = totalSize;
+        timing.candidates = candidates.size();
+        timing.resultCount = 0;
+        timing.usedTrigram = useTrigramIndex;
+        timing.searchPath = "advanced-faceted";
+        return {};
+    }
 
     // Sort by priority, then path length
     auto beforeSort = std::chrono::steady_clock::now();

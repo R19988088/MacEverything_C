@@ -58,8 +58,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Show MacEverything", action: #selector(toggleWindow), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Rebuild Index", action: #selector(rebuildIndex), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Shortcut Settings...", action: #selector(openShortcutSettings), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Content Settings...", action: #selector(openContentSettings), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: AppText.value("settings.title"), action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Search Syntax Help...", action: #selector(openSearchSyntaxHelp), keyEquivalent: ""))
 
         let mcpSubmenu = NSMenu(title: "MCP Integration")
@@ -112,14 +111,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.post(name: .rebuildIndex, object: nil)
     }
 
-    @objc private func openShortcutSettings() {
+    @objc private func openSettings() {
         NSApp.activate(ignoringOtherApps: true)
-        ShortcutSettingsWindowController.shared.showWindow()
-    }
-
-    @objc private func openContentSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        ContentSettingsWindowController.shared.showWindow()
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     @objc private func openSearchSyntaxHelp() {

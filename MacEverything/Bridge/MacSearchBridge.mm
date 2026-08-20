@@ -62,6 +62,23 @@
 
 @end
 
+@implementation MEFacetQueryResult
+- (instancetype)initWithCounts:(uint64_t)filesCount folders:(uint64_t)foldersCount images:(uint64_t)imagesCount
+                         videos:(uint64_t)videosCount audio:(uint64_t)audioCount archives:(uint64_t)archivesCount
+                          files:(NSArray<MEFileResult *> *)files folders:(NSArray<MEFileResult *> *)folders
+                         images:(NSArray<MEFileResult *> *)images videos:(NSArray<MEFileResult *> *)videos
+                           audio:(NSArray<MEFileResult *> *)audio archives:(NSArray<MEFileResult *> *)archives {
+    self = [super init];
+    if (self) {
+        _filesCount = filesCount; _foldersCount = foldersCount; _imagesCount = imagesCount;
+        _videosCount = videosCount; _audioCount = audioCount; _archivesCount = archivesCount;
+        _files = [files copy]; _folders = [folders copy]; _images = [images copy];
+        _videos = [videos copy]; _audio = [audio copy]; _archives = [archives copy];
+    }
+    return self;
+}
+@end
+
 @implementation MacSearchBridge
 
 + (instancetype)shared {
@@ -347,6 +364,38 @@
                                                      modTime:r.modTime]];
     });
     return results;
+}
+
+- (MEFacetQueryResult *)queryFacetedResults:(NSString *)keyword
+                   maxResultsPerCategory:(uint32_t)maxResults
+                                sessionId:(uint64_t)sessionId {
+    auto engine = _serviceEngine->safeEngine();
+    MEFacetQueryResult *result = [MEFacetQueryResult new];
+    if (!engine) return result;
+
+    const auto facets = engine->queryFaceted(std::string([keyword UTF8String]),
+                                             maxResults, true, sessionId);
+    NSMutableArray<MEFileResult *> *groups[static_cast<size_t>(FileCategory::Count)];
+    for (size_t i = 0; i < static_cast<size_t>(FileCategory::Count); ++i) {
+        groups[i] = [NSMutableArray arrayWithCapacity:facets.indices[i].size()];
+        engine->forEachRecordWithPath(facets.indices[i], [&](uint32_t, const FileRecord& r, const std::string& path) {
+            NSString *name = [NSString stringWithUTF8String:r.name.c_str()];
+            NSString *nsPath = [NSString stringWithUTF8String:path.c_str()];
+            if (name && nsPath) {
+                [groups[i] addObject:[[MEFileResult alloc] initWithName:name path:nsPath
+                                                                     type:r.type size:r.size modTime:r.modTime]];
+            }
+        });
+    }
+
+    return [[MEFacetQueryResult alloc] initWithCounts:facets.counts.files
+                                              folders:facets.counts.folders
+                                               images:facets.counts.images
+                                               videos:facets.counts.videos
+                                                 audio:facets.counts.audio
+                                              archives:facets.counts.archives
+                                                 files:groups[0] folders:groups[1] images:groups[2]
+                                                videos:groups[3] audio:groups[4] archives:groups[5]];
 }
 
 - (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword

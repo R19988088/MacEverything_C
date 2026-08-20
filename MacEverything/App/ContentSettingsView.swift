@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ContentSettingsView: View {
+    @ObservedObject private var settings = AppSettings.shared
     @State private var extensions: [String] = []
     @State private var newExtension: String = ""
     @State private var maxFileSizeMB: Double = 1.0
@@ -13,14 +14,14 @@ struct ContentSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Content Indexing") {
+            Section(AppText.value("content.indexing", language: settings.language)) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Indexed Files: \(indexedCount)")
+                    Text("\(AppText.value("content.indexed", language: settings.language)): \(indexedCount)")
                         .font(.headline)
 
                     Divider()
 
-                    Text("Max File Size")
+                    Text(AppText.value("content.maxSize", language: settings.language))
                         .font(.subheadline)
                     HStack {
                         Slider(value: $maxFileSizeMB, in: 0.1...10.0, step: 0.1)
@@ -30,7 +31,7 @@ struct ContentSettingsView: View {
 
                     Divider()
 
-                    Text("File Extensions")
+                    Text(AppText.value("content.extensions", language: settings.language))
                         .font(.subheadline)
 
                     ScrollView {
@@ -56,17 +57,17 @@ struct ContentSettingsView: View {
                     .frame(maxHeight: 120)
 
                     HStack {
-                        TextField("Add extension...", text: $newExtension)
+                        TextField(AppText.value("content.addPlaceholder", language: settings.language), text: $newExtension)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { addExtension() }
-                        Button("Add") { addExtension() }
+                        Button(AppText.value("content.add", language: settings.language)) { addExtension() }
                             .disabled(newExtension.isEmpty)
                     }
                 }
             }
 
             Section {
-                Button("Apply") {
+                Button(AppText.value("content.apply", language: settings.language)) {
                     applySettings()
                 }
             }

@@ -57,6 +57,11 @@
 		A100002A /* SearchOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000043; };
 		D1000001 /* MCPConfigManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000001; };
 		D1000002 /* MacEverythingMCP in Copy MCP Binary */ = {isa = PBXBuildFile; fileRef = C2000099; };
+		A1000040 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000050; };
+		A1000041 /* GlassCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000051; };
+		A1000042 /* ResultActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000052; };
+		A1000043 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000053; };
+		A1000044 /* QuickLookUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000054; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -154,6 +159,11 @@
 		B2000002 /* MacEverythingUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacEverythingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000001 /* mcp_main.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = mcp_main.cpp; sourceTree = "<group>"; };
 		C2000099 /* MacEverythingMCP */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = MacEverythingMCP; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000050 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		A2000051 /* GlassCompatibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassCompatibility.swift; sourceTree = "<group>"; };
+		A2000052 /* ResultActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultActions.swift; sourceTree = "<group>"; };
+		A2000053 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A2000054 /* QuickLookUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuickLookUI.framework; path = System/Library/Frameworks/QuickLookUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -202,6 +212,7 @@
 			files = (
 				A100000B /* Carbon.framework in Frameworks */,
 				A100000D /* CoreServices.framework in Frameworks */,
+				A1000044 /* QuickLookUI.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -271,6 +282,10 @@
 				D2000001 /* MCPConfigManager.swift */,
 				A2000043 /* SearchOptions.swift */,
 				A2000045 /* SearchSyntaxHelpView.swift */,
+				A2000050 /* AppSettings.swift */,
+				A2000051 /* GlassCompatibility.swift */,
+				A2000052 /* ResultActions.swift */,
+				A2000053 /* SettingsView.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -341,6 +356,7 @@
 			children = (
 				A200000F /* Carbon.framework */,
 				A2000015 /* CoreServices.framework */,
+				A2000054 /* QuickLookUI.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -489,6 +505,10 @@
 				A1000028 /* SearchEngineAdvancedQuery.cpp in Sources */,
 				A1000029 /* SearchEngineStructuredQuery.cpp in Sources */,
 				A100002A /* SearchOptions.swift in Sources */,
+				A1000040 /* AppSettings.swift in Sources */,
+				A1000041 /* GlassCompatibility.swift in Sources */,
+				A1000042 /* ResultActions.swift in Sources */,
+				A1000043 /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

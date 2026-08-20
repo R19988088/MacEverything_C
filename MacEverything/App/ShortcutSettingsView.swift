@@ -2,6 +2,7 @@ import SwiftUI
 import Carbon.HIToolbox
 
 struct ShortcutSettingsView: View {
+    @ObservedObject private var settings = AppSettings.shared
     @State private var isRecording = false
     @State private var currentShortcut: String = ""
     @State private var modifiers: UInt32 = UInt32(optionKey)
@@ -9,25 +10,25 @@ struct ShortcutSettingsView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Text("Global Hotkey Settings")
+            Text(AppText.value("shortcut.title", language: settings.language))
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Click the button below and press your desired key combination to set the global hotkey for showing/hiding MacEverything.")
+            Text(AppText.value("shortcut.description", language: settings.language))
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
 
             VStack(spacing: 12) {
-                Text("Current Shortcut")
+                Text(AppText.value("shortcut.current", language: settings.language))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
 
                 Button(action: {
                     isRecording.toggle()
                 }) {
-                    Text(isRecording ? "Press a key combination..." : currentShortcut)
+                    Text(isRecording ? AppText.value("shortcut.record", language: settings.language) : currentShortcut)
                         .font(.title3)
                         .fontWeight(.medium)
                         .foregroundColor(isRecording ? .accentColor : .primary)
@@ -61,17 +62,13 @@ struct ShortcutSettingsView: View {
             }
 
             HStack(spacing: 16) {
-                Button("Reset to Default") {
+                Button(AppText.value("shortcut.reset", language: settings.language)) {
                     keyCode = UInt32(kVK_Space)
                     modifiers = UInt32(optionKey)
                     currentShortcut = describeShortcut(keyCode: keyCode, modifiers: modifiers)
                     saveAndApply()
                 }
 
-                Button("Close") {
-                    NSApp.keyWindow?.close()
-                }
-                .keyboardShortcut(.cancelAction)
             }
         }
         .padding(30)

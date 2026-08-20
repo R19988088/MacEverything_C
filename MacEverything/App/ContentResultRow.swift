@@ -2,8 +2,13 @@ import SwiftUI
 import AppKit
 
 struct ContentResultRow: View {
+    @ObservedObject private var settings = AppSettings.shared
     let item: ContentFileItem
     let keyword: String
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+    let onReveal: () -> Void
     @State private var isHovered = false
 
     var body: some View {
@@ -38,33 +43,23 @@ struct ContentResultRow: View {
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+                .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear))
         )
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
         }
         .contextMenu {
-            Button("Open") { openFile() }
-            Button("Reveal in Finder") { revealInFinder() }
+            Button(AppText.value("action.open", language: settings.language)) { onOpen() }
+            Button(AppText.value("action.reveal", language: settings.language)) { onReveal() }
             Divider()
             Button("Copy Path") { copyPath() }
         }
         .onDrag {
             return NSItemProvider(object: NSURL(fileURLWithPath: item.filePath))
         }
-        .onTapGesture(count: 2) {
-            if NSEvent.modifierFlags.contains(.command) {
-                revealInFinder()
-            } else {
-                openFile()
-            }
-        }
-        .onTapGesture(count: 1) {
-            if NSEvent.modifierFlags.contains(.command) {
-                revealInFinder()
-            }
-        }
+        .onTapGesture(count: 2) { onOpen() }
+        .onTapGesture(count: 1) { onSelect() }
         .accessibilityIdentifier("contentResultRow")
     }
 
@@ -77,16 +72,6 @@ struct ContentResultRow: View {
 
     private func fileIcon(for path: String) -> Image {
         Image(nsImage: FileIconCache.shared.icon(forPath: path))
-    }
-
-    private func openFile() {
-        if !NSWorkspace.shared.open(URL(fileURLWithPath: item.filePath)) {
-            NSSound.beep()
-        }
-    }
-
-    private func revealInFinder() {
-        NSWorkspace.shared.selectFile(item.filePath, inFileViewerRootedAtPath: "")
     }
 
     private func copyPath() {

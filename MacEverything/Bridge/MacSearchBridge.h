@@ -42,6 +42,35 @@ NS_ASSUME_NONNULL_BEGIN
                caseSensitive:(BOOL)caseSensitive;
 @end
 
+/// A single faceted query. Counts cover the complete match set; arrays are
+/// capped per category for responsive list rendering.
+@interface MEFacetQueryResult : NSObject
+@property (nonatomic, readonly) uint64_t filesCount;
+@property (nonatomic, readonly) uint64_t foldersCount;
+@property (nonatomic, readonly) uint64_t imagesCount;
+@property (nonatomic, readonly) uint64_t videosCount;
+@property (nonatomic, readonly) uint64_t audioCount;
+@property (nonatomic, readonly) uint64_t archivesCount;
+@property (nonatomic, readonly) NSArray<MEFileResult *> *files;
+@property (nonatomic, readonly) NSArray<MEFileResult *> *folders;
+@property (nonatomic, readonly) NSArray<MEFileResult *> *images;
+@property (nonatomic, readonly) NSArray<MEFileResult *> *videos;
+@property (nonatomic, readonly) NSArray<MEFileResult *> *audio;
+@property (nonatomic, readonly) NSArray<MEFileResult *> *archives;
+- (instancetype)initWithCounts:(uint64_t)filesCount
+                        folders:(uint64_t)foldersCount
+                         images:(uint64_t)imagesCount
+                         videos:(uint64_t)videosCount
+                           audio:(uint64_t)audioCount
+                        archives:(uint64_t)archivesCount
+                           files:(NSArray<MEFileResult *> *)files
+                         folders:(NSArray<MEFileResult *> *)folders
+                          images:(NSArray<MEFileResult *> *)images
+                          videos:(NSArray<MEFileResult *> *)videos
+                            audio:(NSArray<MEFileResult *> *)audio
+                         archives:(NSArray<MEFileResult *> *)archives;
+@end
+
 /// Bridge between the C++ search engine and Swift/SwiftUI.
 @interface MacSearchBridge : NSObject
 
@@ -76,6 +105,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// P-4: Perform query and return results directly, eliminating NSNumber boxing overhead.
 - (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword maxResults:(uint32_t)maxResults;
+
+/// Perform one query and return complete counts plus capped arrays for each category.
+- (MEFacetQueryResult *)queryFacetedResults:(NSString *)keyword
+                   maxResultsPerCategory:(uint32_t)maxResults
+                                sessionId:(uint64_t)sessionId;
 
 /// Perform query with session-scoped cancellation.
 - (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword

@@ -1,4 +1,5 @@
 #pragma once
+#include "FileCategory.h"
 #include "QueryAST.h"
 #include "QueryDateParser.h"
 #include "StringUtils.h"
@@ -6,6 +7,8 @@
 #include <cctype>
 #include <cstdint>
 #include <algorithm>
+#include <array>
+#include <string_view>
 
 /// Parse filter arguments and populate structured fields on QueryNode.
 /// Called after the parser creates a FILTER node from raw filterName + filterArg.
@@ -67,21 +70,36 @@ public:
         }
         // Phase 4: Macros — convert to ext: filter
         else if (name == "audio") {
-            expandMacro(node, "mp3;wav;flac;aac;ogg;m4a;wma;alac");
+            expandMacro(node, me::file_category::audio);
         } else if (name == "video") {
-            expandMacro(node, "mp4;avi;mkv;mov;wmv;flv;webm;m4v");
+            expandMacro(node, me::file_category::videos);
         } else if (name == "pic") {
-            expandMacro(node, "jpg;jpeg;png;gif;bmp;tiff;tif;webp;svg;ico;heic;heif;raw");
+            expandMacro(node, me::file_category::images);
         } else if (name == "doc") {
             expandMacro(node, "pdf;doc;docx;xls;xlsx;ppt;pptx;txt;rtf;odt;ods;odp;csv;md");
         } else if (name == "exe") {
             expandMacro(node, "app;dmg;pkg;sh;command;csh;action");
         } else if (name == "zip") {
-            expandMacro(node, "zip;rar;7z;tar;gz;bz2;xz;tgz;zst;lz4");
+            expandMacro(node, me::file_category::archives);
         }
     }
 
 private:
+    template <size_t N>
+    static void expandMacro(QueryNode& node,
+                            const std::array<std::string_view, N>& extensions) {
+        node.filterName = "ext";
+        node.op = CompareOp::EQ;
+        node.extList.clear();
+        node.extList.reserve(N);
+        node.filterArg.clear();
+        for (const auto ext : extensions) {
+            if (!node.filterArg.empty()) node.filterArg.push_back(';');
+            node.filterArg.append(ext);
+            node.extList.emplace_back(ext);
+        }
+    }
+
     /// Expand a macro (audio:, video:, etc.) into an ext: filter.
     static void expandMacro(QueryNode& node, const std::string& extString) {
         node.filterName = "ext";

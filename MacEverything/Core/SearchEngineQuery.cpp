@@ -252,6 +252,60 @@ std::vector<uint32_t> SearchEngine::query(const std::string& keyword, uint32_t m
     return queryAdvanced(pq.original, maxResults, useTrigram, timing, myGen, genAtom.get());
 }
 
+SearchEngine::FacetedQueryResult SearchEngine::queryFaceted(
+    const std::string& keyword, uint32_t maxResultsPerCategory,
+    bool useTrigram, uint64_t sessionId) const {
+    FacetedQueryResult output;
+    auto [genAtom, myGen] = acquireSessionGeneration(sessionId);
+    if (keyword.empty()) return output;
+
+    auto pq = preprocessQuery(keyword);
+    if (pq.original.empty()) return output;
+
+    auto parsedQuery = parseQuery(pq.original, pq.lower);
+    if (parsedQuery.mode == QueryMode::DIR_LIST) {
+        std::shared_lock lock(mutex_);
+        if (types_.empty()) return output;
+
+        const size_t totalSize = types_.size();
+        std::vector<Match> merged;
+        QueryCancelCtx cancel{genAtom.get(), myGen};
+        queryDirList(parsedQuery, totalSize, cancel, merged);
+        if (cancel.cancelled()) return {};
+
+        std::array<std::vector<Match>, static_cast<size_t>(FileCategory::Count)> groups;
+        collectFacetMatches(merged, output, groups);
+        lock.unlock();
+
+        auto cmp = [](const Match& a, const Match& b) {
+            if (a.priority != b.priority) return a.priority < b.priority;
+            return a.pathLen < b.pathLen;
+        };
+        for (size_t raw = 0; raw < groups.size(); ++raw) {
+            auto& matches = groups[raw];
+            size_t resultCount = matches.size();
+            if (maxResultsPerCategory > 0 && resultCount > maxResultsPerCategory) {
+                resultCount = maxResultsPerCategory;
+            }
+            if (resultCount < matches.size()) {
+                std::partial_sort(matches.begin(), matches.begin() + resultCount, matches.end(), cmp);
+            } else {
+                std::sort(matches.begin(), matches.end(), cmp);
+            }
+            auto& indices = output.indices[raw];
+            indices.reserve(resultCount);
+            for (size_t i = 0; i < resultCount; ++i) indices.push_back(matches[i].idx);
+        }
+        return cancel.cancelled() ? FacetedQueryResult{} : output;
+    }
+
+    QueryTimingInfo timing;
+    queryAdvanced(pq.original, maxResultsPerCategory, useTrigram, timing,
+                  myGen, genAtom.get(), &output);
+    if (genAtom->load(std::memory_order_relaxed) != myGen) return {};
+    return output;
+}
+
 // ---------------------------------------------------------------------------
 // Per-session generation management
 // ---------------------------------------------------------------------------

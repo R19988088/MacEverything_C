@@ -1,9 +1,11 @@
 #pragma once
 #include "FileRecord.h"
+#include "FileCategory.h"
 #include "ContentIndex.h" // for Trigram type and extractTrigrams/makeTrigram
 #include "StringPool.h"
 #include "SIMDSearch.h"
 #include <vector>
+#include <array>
 #include <string>
 #include <string_view>
 #include <cstdint>
@@ -161,6 +163,20 @@ public:
                                 bool useTrigram, QueryTimingInfo& timing,
                                 uint64_t sessionId = 0) const;
 
+    struct FacetedQueryResult {
+        FileCategoryCounts counts;
+        std::array<std::vector<uint32_t>, static_cast<size_t>(FileCategory::Count)> indices;
+
+        const std::vector<uint32_t>& indicesFor(FileCategory category) const {
+            return indices[static_cast<size_t>(category)];
+        }
+    };
+
+    FacetedQueryResult queryFaceted(const std::string& keyword,
+                                    uint32_t maxResultsPerCategory = 10000,
+                                    bool useTrigram = true,
+                                    uint64_t sessionId = 0) const;
+
     /// Advanced query: evaluate an AST with boolean operators, quoted phrases,
     /// and filter nodes. Uses trigram index for TERM nodes, then applies
     /// AND/OR/NOT logic. Called automatically by query() when advanced syntax
@@ -168,7 +184,8 @@ public:
     std::vector<uint32_t> queryAdvanced(const std::string& input, uint32_t maxResults,
                                          bool useTrigram, QueryTimingInfo& timing,
                                          uint64_t myGen = 0,
-                                         const std::atomic<uint64_t>* genPtr = nullptr) const;
+                                         const std::atomic<uint64_t>* genPtr = nullptr,
+                                         FacetedQueryResult* faceted = nullptr) const;
 
     /// Cancel in-flight queries for the given session. Lock-free on the generation atomic.
     void cancelSession(uint64_t sessionId) const;
@@ -453,6 +470,11 @@ private:
     void queryDirList(const ParsedQuery& pq,
                       size_t totalSize, const QueryCancelCtx& cancel,
                       std::vector<Match>& merged) const;
+
+    void collectFacetMatches(
+        const std::vector<Match>& merged,
+        FacetedQueryResult& output,
+        std::array<std::vector<Match>, static_cast<size_t>(FileCategory::Count)>& grouped) const;
 
 public:
     /// Check if a directory path matches the path segment constraints.

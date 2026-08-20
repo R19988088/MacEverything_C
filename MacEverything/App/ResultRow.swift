@@ -56,8 +56,13 @@ final class FileIconCache {
 }
 
 struct ResultRow: View {
+    @ObservedObject private var settings = AppSettings.shared
     let item: FileItem
     let hints: [HighlightHint]
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+    let onReveal: () -> Void
     @State private var isHovered = false
 
     var body: some View {
@@ -88,15 +93,15 @@ struct ResultRow: View {
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+                .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear))
         )
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
         }
         .contextMenu {
-            Button("Open") { openFile(item) }
-            Button("Reveal in Finder") { revealInFinder(item) }
+            Button(AppText.value("action.open", language: settings.language)) { onOpen() }
+            Button(AppText.value("action.reveal", language: settings.language)) { onReveal() }
             Divider()
             Button("Copy Path") { copyPath(item) }
         }
@@ -104,18 +109,8 @@ struct ResultRow: View {
             let fullPath = item.path + "/" + item.name
             return NSItemProvider(object: NSURL(fileURLWithPath: fullPath))
         }
-        .onTapGesture(count: 2) {
-            if NSEvent.modifierFlags.contains(.command) {
-                revealInFinder(item)
-            } else {
-                openFile(item)
-            }
-        }
-        .onTapGesture(count: 1) {
-            if NSEvent.modifierFlags.contains(.command) {
-                revealInFinder(item)
-            }
-        }
+        .onTapGesture(count: 2) { onOpen() }
+        .onTapGesture(count: 1) { onSelect() }
         .accessibilityIdentifier("resultRow")
     }
 
@@ -133,23 +128,6 @@ struct ResultRow: View {
         }
         if unitIndex == 0 { return "\(bytes) B" }
         return String(format: "%.1f %@", size, units[unitIndex])
-    }
-
-    private func openFile(_ item: FileItem) {
-        let fullPath = item.path + "/" + item.name
-        if item.type == 5 {
-            let url = URL(fileURLWithPath: fullPath)
-            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
-        } else {
-            if !NSWorkspace.shared.open(URL(fileURLWithPath: fullPath)) {
-                NSSound.beep()
-            }
-        }
-    }
-
-    private func revealInFinder(_ item: FileItem) {
-        let fullPath = item.path + "/" + item.name
-        NSWorkspace.shared.selectFile(fullPath, inFileViewerRootedAtPath: "")
     }
 
     private func copyPath(_ item: FileItem) {

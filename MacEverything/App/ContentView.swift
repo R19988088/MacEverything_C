@@ -17,16 +17,11 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            customTitleBar
-            PermissionView()
-            searchHeader
-            categoryBar
-            resultsArea
-            actionBar
+            mainWorkspace
         }
         .modifier(WindowMaterialBackground())
         .ignoresSafeArea(.container, edges: .top)
-        .frame(minWidth: 640, minHeight: 430)
+        .frame(minWidth: 1080, minHeight: 600)
         .tint(Color(hex: settings.themeColorHex))
         .accentColor(Color(hex: settings.themeColorHex))
         .environment(\.locale, settings.language.locale)
@@ -80,26 +75,43 @@ struct ContentView: View {
         }
     }
 
-    private var customTitleBar: some View {
-        ZStack {
-            Text("maceverything")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
+    private var mainWorkspace: some View {
+        HStack(spacing: 0) {
+            leftSidebar
+            rightContent
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 38)
-        .contentShape(Rectangle())
+    }
+
+    private var leftSidebar: some View {
+        VStack(spacing: 0) {
+            searchHeader
+            historySection
+        }
+        .frame(width: 300)
+        .padding(.top, 38)
+        .background(Color.black.opacity(0.06))
+    }
+
+    private var rightContent: some View {
+        VStack(spacing: 0) {
+            PermissionView()
+            categoryBar
+            resultsArea
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            bottomControlBar
+        }
+        .padding(.top, 8)
     }
 
     private var searchHeader: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 21, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.tint)
             ZStack(alignment: .leading) {
                 if let ghost = viewModel.ghostSuggestion, !ghost.isEmpty {
                     Text(ghost)
-                        .font(.system(size: 26))
+                        .font(.system(size: 18))
                         .foregroundStyle(.secondary.opacity(0.4))
                         .lineLimit(1)
                         .allowsHitTesting(false)
@@ -110,7 +122,7 @@ struct ContentView: View {
                 )
                 .focused($isSearchFieldFocused)
                 .textFieldStyle(.plain)
-                .font(.system(size: 26))
+                .font(.system(size: 18))
                 .accessibilityIdentifier("searchField")
                 .onChange(of: viewModel.searchText) { viewModel.onSearchTextChanged() }
                 .onKeyPress(.tab) {
@@ -121,7 +133,7 @@ struct ContentView: View {
                     return .ignored
                 }
             }
-            .frame(height: 34)
+            .frame(height: 26)
             SearchOptionBadges(options: searchOptions)
             if !viewModel.searchText.isEmpty {
                 Button { viewModel.searchText = "" } label: {
@@ -132,12 +144,66 @@ struct ContentView: View {
                 .accessibilityIdentifier("clearButton")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 11)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
         .macEverythingGlass()
         .clipShape(Capsule())
         .overlay(Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 1))
         .padding(10)
+    }
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(AppText.value("history.title", language: settings.language))
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+
+            if viewModel.searchHistoryQueries.isEmpty {
+                Text(AppText.value("history.empty", language: settings.language))
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(viewModel.searchHistoryEntries) { entry in
+                            let query = entry.query
+                            Button {
+                                viewModel.selectHistoryQuery(query)
+                                isSearchFieldFocused = true
+                            } label: {
+                                Text(query)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 5)
+                            .accessibilityIdentifier("historyQuery")
+                            .contextMenu {
+                                Button {
+                                    viewModel.toggleHistoryPin(query)
+                                } label: {
+                                    Label(
+                                        AppText.value(entry.isPinned ? "history.unpin" : "history.pin", language: settings.language),
+                                        systemImage: entry.isPinned ? "pin.slash" : "pin")
+                                }
+                                Button(role: .destructive) {
+                                    viewModel.deleteHistoryQuery(query)
+                                } label: {
+                                    Label(AppText.value("history.delete", language: settings.language), systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.top, 8)
     }
 
     @ViewBuilder
@@ -257,7 +323,7 @@ struct ContentView: View {
             .padding(.bottom, 8)
     }
 
-    private var actionBar: some View {
+    private var bottomControlBar: some View {
         HStack(spacing: 8) {
             actionButton("action.open", systemImage: "arrow.up.forward.app", enabled: actions.selected != nil) { actions.openSelected() }
             actionButton("action.reveal", systemImage: "folder", enabled: actions.selected != nil) { actions.revealSelected() }
@@ -267,8 +333,8 @@ struct ContentView: View {
             iconScaleControl
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.clear)
+        .padding(.vertical, 10)
+        .frame(height: 60)
     }
 
     private var iconScaleControl: some View {
@@ -284,15 +350,24 @@ struct ContentView: View {
         .foregroundStyle(.secondary)
     }
 
+    @ViewBuilder
     private func actionButton(_ key: String, systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        let button = Button(action: action) {
             Label(AppText.value(key, language: settings.language), systemImage: systemImage)
+                .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.regular)
-        .frame(minHeight: 36)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.45)
+
+        if #available(macOS 26.0, *) {
+            button
+                .buttonStyle(.glass)
+                .controlSize(.large)
+        } else {
+            button
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+        }
     }
 
     private var resultHeader: some View {

@@ -77,6 +77,8 @@ class SearchViewModel: ObservableObject {
     @Published var contentIndexedCount: UInt32 = 0
     @Published var isSyncing: Bool = false
     @Published var ghostSuggestion: String? = nil
+    @Published private(set) var searchHistoryQueries: [String] = []
+    @Published private(set) var searchHistoryEntries: [SearchHistoryStore.Entry] = []
 
     /// Structured highlight hints extracted from the C++ query AST.
     /// Replaces the old keyword-based approach with field-aware, mode-aware hints.
@@ -96,6 +98,7 @@ class SearchViewModel: ObservableObject {
     private var optionsSink: AnyCancellable?
     private var exclusionsSink: AnyCancellable?
     private var enabledCategoriesSink: AnyCancellable?
+    private var historyRetentionSink: AnyCancellable?
     private var cachedResults: [MEFileResult] = []
     private var loadedCount: Int = 0
     private var searchGeneration: UInt64 = 0
@@ -141,6 +144,8 @@ class SearchViewModel: ObservableObject {
 
     init() {
         selectedCategory = SearchCategory(rawValue: appSettings.selectedCategoryRawValue) ?? .files
+        historyStore.prune(olderThanDays: appSettings.historyRetentionDays)
+        refreshSearchHistory()
         if let launchQuery = appSettings.launchQuery {
             searchText = launchQuery
         }
@@ -154,6 +159,13 @@ class SearchViewModel: ObservableObject {
         }
         enabledCategoriesSink = appSettings.$enabledCategoryRawValues.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.updateDisplayedCategory() }
+        }
+        historyRetentionSink = appSettings.$historyRetentionDays.sink { [weak self] days in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                historyStore.prune(olderThanDays: days)
+                refreshSearchHistory()
+            }
         }
         startIncremental()
     }
@@ -542,6 +554,7 @@ class SearchViewModel: ObservableObject {
             let text = searchText
             if text.count >= 2 && !text.lowercased().hasPrefix("infile:") {
                 historyStore.recordQuery(text)
+                refreshSearchHistory()
             }
         }
         if refreshThrottle.focusChanged(focused) {
@@ -644,7 +657,31 @@ class SearchViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
             guard !Task.isCancelled, let self, self.searchText == text else { return }
             self.historyStore.recordQuery(text)
+            self.refreshSearchHistory()
         }
+    }
+
+    func selectHistoryQuery(_ query: String) {
+        searchText = query
+        ghostSuggestion = nil
+        historyStore.recordQuery(query)
+        refreshSearchHistory()
+    }
+
+    func toggleHistoryPin(_ query: String) {
+        let pinned = searchHistoryEntries.first { $0.query.caseInsensitiveCompare(query) == .orderedSame }?.isPinned ?? false
+        historyStore.setPinned(query, pinned: !pinned)
+        refreshSearchHistory()
+    }
+
+    func deleteHistoryQuery(_ query: String) {
+        historyStore.deleteQuery(query)
+        refreshSearchHistory()
+    }
+
+    private func refreshSearchHistory() {
+        searchHistoryEntries = historyStore.recentEntries(limit: 20)
+        searchHistoryQueries = searchHistoryEntries.map(\.query)
     }
 
     func acceptGhostSuggestion() {
@@ -652,5 +689,6 @@ class SearchViewModel: ObservableObject {
         searchText = suggestion
         ghostSuggestion = nil
         historyStore.recordQuery(suggestion)
+        refreshSearchHistory()
     }
 }

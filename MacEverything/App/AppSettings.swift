@@ -76,6 +76,9 @@ final class AppSettings: ObservableObject {
     @Published var themeColorRawValue: String {
         didSet { defaults.set(themeColorRawValue, forKey: Keys.themeColor) }
     }
+    @Published var historyRetentionDays: Int {
+        didSet { defaults.set(historyRetentionDays, forKey: Keys.historyRetentionDays) }
+    }
 
     var themeColorHex: String {
         ThemeColor(rawValue: themeColorRawValue)?.hex ?? ThemeColor.vermilion.hex
@@ -92,6 +95,7 @@ final class AppSettings: ObservableObject {
         static let selectedCategory = "app.selectedCategory"
         static let enabledCategories = "app.enabledCategories"
         static let themeColor = "app.themeColor"
+        static let historyRetentionDays = "app.historyRetentionDays"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -99,12 +103,18 @@ final class AppSettings: ObservableObject {
         language = AppLanguage(rawValue: defaults.string(forKey: Keys.language) ?? "") ?? .english
         launchDisplay = LaunchDisplay(rawValue: defaults.string(forKey: Keys.launchDisplay) ?? "") ?? .blank
         iconScale = min(max(defaults.double(forKey: Keys.iconScale), 1), 4)
-        excludedFolders = defaults.stringArray(forKey: Keys.excludedFolders) ?? []
+        var configuredExcludedFolders = defaults.stringArray(forKey: Keys.excludedFolders) ?? []
+        if !configuredExcludedFolders.contains("/private/tmp") {
+            configuredExcludedFolders.append("/private/tmp")
+        }
+        excludedFolders = configuredExcludedFolders
         lastQuery = defaults.string(forKey: Keys.lastQuery)
         selectedCategoryRawValue = defaults.object(forKey: Keys.selectedCategory) as? Int ?? 1
         enabledCategoryRawValues = defaults.array(forKey: Keys.enabledCategories) as? [Int]
             ?? SearchCategory.allCases.map(\.rawValue)
         themeColorRawValue = defaults.string(forKey: Keys.themeColor) ?? ThemeColor.vermilion.rawValue
+        let savedRetentionDays = defaults.object(forKey: Keys.historyRetentionDays) as? Int ?? 15
+        historyRetentionDays = [5, 10, 15, 30, 90].contains(savedRetentionDays) ? savedRetentionDays : 15
     }
 
     func isCategoryEnabled(_ category: SearchCategory) -> Bool {
@@ -158,12 +168,18 @@ enum AppText {
         "settings.language": "Language", "settings.launch": "Launch display", "settings.blank": "Show nothing", "settings.last": "Show last result", "settings.excludedFolders": "Excluded folders", "settings.noExcludedFolders": "No excluded folders", "settings.restoreFolder": "Restore folder",
         "settings.displayTypes": "Display types", "settings.enabledTypes": "Enabled types",
         "settings.theme": "Theme color",
+        "settings.historyRetention": "History retention",
+        "history.days": "%d days",
+        "history.pin": "Pin",
+        "history.unpin": "Unpin",
+        "history.delete": "Delete",
         "settings.themeSource": "Theme color source",
         "settings.rebuild": "Rebuild Index",
         "menu.show": "Show MacEverything", "menu.hide": "Hide MacEverything", "menu.rebuild": "Rebuild Index", "menu.syntax": "Search Syntax Help...", "menu.mcp": "MCP Integration", "menu.login": "Launch at Login", "menu.quit": "Quit MacEverything", "menu.about": "About MacEverything", "menu.services": "Services", "menu.hideOthers": "Hide Others", "menu.showAll": "Show All",
         "permission.openSettings": "Open Settings", "permission.fullDisk": "Full Disk Access is required to scan all files.", "command.search": "Search", "command.regex": "Regex", "command.caseSensitive": "Case Sensitive", "command.wholeWord": "Whole Word", "command.matchFilename": "Match Filename",
         "status.scanning": "Scanning", "status.live": "Live", "status.indexed": "indexed", "status.matches": "matches",
         "empty.noResults": "No results found", "empty.start": "Type to search your files", "empty.content": "No content matches found"
+        ,"history.title": "History", "history.empty": "No search history"
         ,"shortcut.title": "Global Hotkey Settings", "shortcut.description": "Set the global hotkey for showing or hiding MacEverything.",
         "shortcut.current": "Current Shortcut", "shortcut.record": "Press a key combination...", "shortcut.reset": "Reset to Default",
         "content.indexing": "Content Indexing", "content.indexed": "Indexed Files", "content.maxSize": "Max File Size",
@@ -179,12 +195,18 @@ enum AppText {
         "settings.language": "语言", "settings.launch": "启动显示", "settings.blank": "不显示", "settings.last": "显示最后的结果", "settings.excludedFolders": "排除的文件夹", "settings.noExcludedFolders": "暂无排除的文件夹", "settings.restoreFolder": "恢复文件夹",
         "settings.displayTypes": "显示类型", "settings.enabledTypes": "启用的类型",
         "settings.theme": "主题颜色",
+        "settings.historyRetention": "历史记录保留天数",
+        "history.days": "保留 %d 天",
+        "history.pin": "置顶",
+        "history.unpin": "取消置顶",
+        "history.delete": "删除",
         "settings.themeSource": "主题色资料来源",
         "settings.rebuild": "重建索引",
         "menu.show": "显示 MacEverything", "menu.hide": "隐藏 MacEverything", "menu.rebuild": "重建索引", "menu.syntax": "搜索语法帮助…", "menu.mcp": "MCP 集成", "menu.login": "登录时启动", "menu.quit": "退出 MacEverything", "menu.about": "关于 MacEverything", "menu.services": "服务", "menu.hideOthers": "隐藏其他应用", "menu.showAll": "显示全部",
         "permission.openSettings": "打开设置", "permission.fullDisk": "扫描所有文件需要“完全磁盘访问权限”。", "command.search": "搜索", "command.regex": "正则表达式", "command.caseSensitive": "区分大小写", "command.wholeWord": "完整单词", "command.matchFilename": "匹配文件名",
         "status.scanning": "正在扫描", "status.live": "实时", "status.indexed": "已索引", "status.matches": "个匹配",
         "empty.noResults": "没有找到结果", "empty.start": "输入内容搜索文件", "empty.content": "没有匹配的内容"
+        ,"history.title": "历史记录", "history.empty": "暂无搜索记录"
         ,"shortcut.title": "全局快捷键设置", "shortcut.description": "设置显示或隐藏 MacEverything 的全局快捷键。", "shortcut.current": "当前快捷键",
         "shortcut.record": "按下快捷键组合…", "shortcut.reset": "恢复默认", "content.indexing": "内容索引", "content.indexed": "已索引文件",
         "content.maxSize": "最大文件大小", "content.extensions": "文件扩展名", "content.addPlaceholder": "添加扩展名…", "content.add": "添加", "content.apply": "应用",
@@ -199,12 +221,18 @@ enum AppText {
         "settings.language": "言語", "settings.launch": "起動時の表示", "settings.blank": "何も表示しない", "settings.last": "最後の結果を表示", "settings.excludedFolders": "除外フォルダ", "settings.noExcludedFolders": "除外フォルダはありません", "settings.restoreFolder": "フォルダを復元",
         "settings.displayTypes": "表示タイプ", "settings.enabledTypes": "有効なタイプ",
         "settings.theme": "テーマカラー",
+        "settings.historyRetention": "検索履歴の保持期間",
+        "history.days": "%d 日",
+        "history.pin": "ピン留め",
+        "history.unpin": "ピン留め解除",
+        "history.delete": "削除",
         "settings.themeSource": "テーマカラーの出典",
         "settings.rebuild": "索引を再構築",
         "menu.show": "MacEverything を表示", "menu.hide": "MacEverything を隠す", "menu.rebuild": "索引を再構築", "menu.syntax": "検索構文ヘルプ…", "menu.mcp": "MCP 統合", "menu.login": "ログイン時に起動", "menu.quit": "MacEverything を終了", "menu.about": "MacEverything について", "menu.services": "サービス", "menu.hideOthers": "ほかを隠す", "menu.showAll": "すべてを表示",
         "permission.openSettings": "設定を開く", "permission.fullDisk": "すべてのファイルをスキャンするにはフルディスクアクセスが必要です。", "command.search": "検索", "command.regex": "正規表現", "command.caseSensitive": "大文字と小文字を区別", "command.wholeWord": "単語全体", "command.matchFilename": "ファイル名に一致",
         "status.scanning": "スキャン中", "status.live": "ライブ", "status.indexed": "件を索引", "status.matches": "件の一致",
         "empty.noResults": "結果がありません", "empty.start": "入力してファイルを検索", "empty.content": "内容に一致する結果がありません"
+        ,"history.title": "検索履歴", "history.empty": "検索履歴はありません"
         ,"shortcut.title": "グローバルショートカット設定", "shortcut.description": "MacEverything の表示と非表示を切り替えるショートカットを設定します。", "shortcut.current": "現在のショートカット",
         "shortcut.record": "キーの組み合わせを押してください…", "shortcut.reset": "デフォルトに戻す", "content.indexing": "内容の索引", "content.indexed": "索引済みファイル",
         "content.maxSize": "最大ファイルサイズ", "content.extensions": "ファイル拡張子", "content.addPlaceholder": "拡張子を追加…", "content.add": "追加", "content.apply": "適用",

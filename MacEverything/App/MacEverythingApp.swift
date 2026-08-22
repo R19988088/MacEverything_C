@@ -7,11 +7,11 @@ struct MacEverythingApp: App {
     @ObservedObject private var settings = AppSettings.shared
 
     var body: some Scene {
-        Window("MacEverything", id: "main") {
+        Window("maceverything", id: "main") {
             ContentView()
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 800, height: 600)
+        .defaultSize(width: 1200, height: 720)
         .environment(\.locale, settings.language.locale)
         Settings {
             SettingsView()

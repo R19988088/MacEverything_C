@@ -6,10 +6,29 @@ final class SearchHistoryStore {
     private static let maxEntries = 200
     private static let minQueryLength = 2
 
-    struct Entry: Codable {
+    struct Entry: Codable, Equatable, Identifiable {
+        var id: String { query.lowercased() }
         var query: String
         var lastUsed: Date
         var count: Int
+        var isPinned: Bool
+
+        init(query: String, lastUsed: Date, count: Int, isPinned: Bool = false) {
+            self.query = query
+            self.lastUsed = lastUsed
+            self.count = count
+            self.isPinned = isPinned
+        }
+
+        enum CodingKeys: String, CodingKey { case query, lastUsed, count, isPinned }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            query = try values.decode(String.self, forKey: .query)
+            lastUsed = try values.decode(Date.self, forKey: .lastUsed)
+            count = try values.decode(Int.self, forKey: .count)
+            isPinned = try values.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        }
     }
 
     private var entries: [Entry] = []
@@ -55,6 +74,42 @@ final class SearchHistoryStore {
             return a.lastUsed < b.lastUsed
         }
         return best?.query
+    }
+
+    func recentQueries(limit: Int) -> [String] {
+        recentEntries(limit: limit).map(\.query)
+    }
+
+    func recentEntries(limit: Int) -> [Entry] {
+        entries
+            .sorted { lhs, rhs in
+                if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+                return lhs.lastUsed > rhs.lastUsed
+            }
+            .prefix(max(0, limit))
+            .map { $0 }
+    }
+
+    @discardableResult
+    func prune(olderThanDays days: Int, now: Date = Date()) -> Bool {
+        let cutoff = now.addingTimeInterval(-Double(max(0, days)) * 86_400)
+        let retained = entries.filter { $0.isPinned || $0.lastUsed >= cutoff }
+        guard retained.count != entries.count else { return false }
+        entries = retained
+        save()
+        return true
+    }
+
+    func setPinned(_ query: String, pinned: Bool) {
+        guard let index = entries.firstIndex(where: { $0.query.lowercased() == query.lowercased() }) else { return }
+        entries[index].isPinned = pinned
+        save()
+    }
+
+    func deleteQuery(_ query: String) {
+        let originalCount = entries.count
+        entries.removeAll { $0.query.lowercased() == query.lowercased() }
+        if entries.count != originalCount { save() }
     }
 
     // MARK: - Persistence

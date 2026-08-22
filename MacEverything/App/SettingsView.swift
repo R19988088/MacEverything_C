@@ -41,6 +41,12 @@ struct SettingsView: View {
                     }
                 }
                 Section {
+                    Picker(AppText.value("settings.historyRetention", language: settings.language), selection: $settings.historyRetentionDays) {
+                        ForEach([5, 10, 15, 30, 90], id: \.self) { days in
+                            Text(String(format: AppText.value("history.days", language: settings.language), days))
+                                .tag(days)
+                        }
+                    }
                     Button(AppText.value("settings.rebuild", language: settings.language)) {
                         NotificationCenter.default.post(name: .rebuildIndex, object: nil)
                     }

@@ -21,7 +21,7 @@ struct ContentFileItem: Identifiable, Equatable {
 }
 
 enum SearchCategory: Int, CaseIterable, Identifiable {
-    case applications = 0, files, folders, images, videos, audio, archives
+    case applications = 0, files, folders, images, videos, audio, archives, brushes
 
     var id: Int { rawValue }
     var titleKey: String {
@@ -33,6 +33,7 @@ enum SearchCategory: Int, CaseIterable, Identifiable {
         case .videos: return "category.videos"
         case .audio: return "category.audio"
         case .archives: return "category.archives"
+        case .brushes: return "category.brushes"
         }
     }
 }
@@ -59,7 +60,10 @@ class SearchViewModel: ObservableObject {
     var isLoadingMore: Bool = false
     @Published var showingRecent: Bool = false
     @Published var selectedCategory: SearchCategory = .files {
-        didSet { updateDisplayedCategory() }
+        didSet {
+            appSettings.selectedCategoryRawValue = selectedCategory.rawValue
+            updateDisplayedCategory()
+        }
     }
     @Published private(set) var categoryCounts: [SearchCategory: Int] = Dictionary(
         uniqueKeysWithValues: SearchCategory.allCases.map { ($0, 0) }
@@ -91,6 +95,7 @@ class SearchViewModel: ObservableObject {
     private var settledTask: Task<Void, Never>?
     private var optionsSink: AnyCancellable?
     private var exclusionsSink: AnyCancellable?
+    private var enabledCategoriesSink: AnyCancellable?
     private var cachedResults: [MEFileResult] = []
     private var loadedCount: Int = 0
     private var searchGeneration: UInt64 = 0
@@ -135,6 +140,7 @@ class SearchViewModel: ObservableObject {
     }
 
     init() {
+        selectedCategory = SearchCategory(rawValue: appSettings.selectedCategoryRawValue) ?? .files
         if let launchQuery = appSettings.launchQuery {
             searchText = launchQuery
         }
@@ -145,6 +151,9 @@ class SearchViewModel: ObservableObject {
         }
         exclusionsSink = appSettings.$excludedFolders.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshExcludedResults() }
+        }
+        enabledCategoriesSink = appSettings.$enabledCategoryRawValues.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.updateDisplayedCategory() }
         }
         startIncremental()
     }
@@ -343,6 +352,7 @@ class SearchViewModel: ObservableObject {
         case .videos: return facets.videos
         case .audio: return facets.audio
         case .archives: return facets.archives
+        case .brushes: return facets.brushes
         }
     }
 
@@ -355,11 +365,17 @@ class SearchViewModel: ObservableObject {
         case .videos: return Int(facets.videosCount)
         case .audio: return Int(facets.audioCount)
         case .archives: return Int(facets.archivesCount)
+        case .brushes: return Int(facets.brushesCount)
         }
     }
 
     private func updateDisplayedCategory() {
         guard !isContentSearch else { return }
+        if !appSettings.isCategoryEnabled(selectedCategory),
+           let fallback = SearchCategory.allCases.first(where: appSettings.isCategoryEnabled) {
+            selectedCategory = fallback
+            return
+        }
         let filteredByCategory = Dictionary(uniqueKeysWithValues: SearchCategory.allCases.map { category in
             (category, categoryResults[category, default: []].filter { !isExcluded($0) })
         })

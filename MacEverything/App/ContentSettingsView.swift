@@ -25,6 +25,7 @@ struct ContentSettingsView: View {
                         .font(.subheadline)
                     HStack {
                         Slider(value: $maxFileSizeMB, in: 0.1...10.0, step: 0.1)
+                            .focusable(false)
                         Text(String(format: "%.1f MB", maxFileSizeMB))
                             .frame(width: 60)
                     }
@@ -66,6 +67,35 @@ struct ContentSettingsView: View {
                 }
             }
 
+            Section(AppText.value("settings.displayTypes", language: settings.language)) {
+                let groups: [[SearchCategory]] = [
+                    [.applications, .images, .archives],
+                    [.files, .videos, .brushes],
+                    [.folders, .audio]
+                ]
+                HStack(spacing: 16) {
+                    ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(group) { category in
+                                HStack(spacing: 10) {
+                                    Text(AppText.value(category.titleKey, language: settings.language))
+                                    Toggle("", isOn: Binding(
+                                        get: { settings.isCategoryEnabled(category) },
+                                        set: { settings.setCategory(category, enabled: $0) }
+                                    ))
+                                    .labelsHidden()
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .background(settings.isCategoryEnabled(category) ? Color(hex: settings.themeColorHex).opacity(0.18) : .clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+
             Section {
                 Button(AppText.value("content.apply", language: settings.language)) {
                     applySettings()
@@ -97,8 +127,9 @@ struct ContentSettingsView: View {
                 }
             }
         }
-        .padding()
-        .frame(width: 400, height: 420)
+        .formStyle(.grouped)
+        .padding(16)
+        .tint(Color(hex: settings.themeColorHex))
         .onAppear { loadSettings() }
     }
 

@@ -71,8 +71,8 @@ struct ShortcutSettingsView: View {
 
             }
         }
-        .padding(30)
-        .frame(width: 440, height: 280)
+        .padding(16)
+        .tint(Color(hex: settings.themeColorHex))
         .onAppear {
             loadSaved()
         }

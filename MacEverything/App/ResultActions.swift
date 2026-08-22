@@ -13,6 +13,13 @@ final class ResultActions: ObservableObject {
 
     func select(_ item: FileItem?) { selected = item }
 
+    func copySelected() {
+        guard let item = selected else { return }
+        let path = URL(fileURLWithPath: item.path).appendingPathComponent(item.name).path
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
     func openSelected() {
         guard let item = selected else { return }
         let url = URL(fileURLWithPath: item.path).appendingPathComponent(item.name)

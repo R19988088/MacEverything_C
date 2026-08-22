@@ -18,33 +18,26 @@ struct MacEverythingApp: App {
                 .environment(\.locale, settings.language.locale)
         }
         .commands {
-            CommandMenu("Search") {
-                Toggle("Regex", isOn: $searchOptions.isRegex)
+            CommandMenu(AppText.value("command.search", language: settings.language)) {
+                Toggle(AppText.value("command.regex", language: settings.language), isOn: $searchOptions.isRegex)
                     .keyboardShortcut("r", modifiers: [.command])
-                Toggle("Case Sensitive", isOn: $searchOptions.isCaseSensitive)
+                Toggle(AppText.value("command.caseSensitive", language: settings.language), isOn: $searchOptions.isCaseSensitive)
                     .keyboardShortcut("c", modifiers: [.command, .shift])
-                Toggle("Whole Word", isOn: $searchOptions.isWholeWord)
+                Toggle(AppText.value("command.wholeWord", language: settings.language), isOn: $searchOptions.isWholeWord)
                     .keyboardShortcut("w", modifiers: [.command, .shift])
-                Toggle("Match Filename", isOn: $searchOptions.isMatchFilename)
+                Toggle(AppText.value("command.matchFilename", language: settings.language), isOn: $searchOptions.isMatchFilename)
                     .keyboardShortcut("f", modifiers: [.command, .shift])
             }
 
             CommandGroup(replacing: .help) {
-                Button("Search Syntax Help") {
+                Button(AppText.value("menu.syntax", language: settings.language)) {
                     SearchSyntaxHelpWindowController.shared.showWindow()
                 }
                 .keyboardShortcut("/", modifiers: [.command, .shift])
             }
 
             CommandGroup(after: .appSettings) {
-                Button("Rebuild Index") {
-                    NotificationCenter.default.post(name: .rebuildIndex, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-
-                Divider()
-
-                Menu("MCP Integration") {
+                Menu(AppText.value("menu.mcp", language: settings.language)) {
                     ForEach(MCPClient.allCases, id: \.self) { client in
                         Toggle(client.displayName, isOn: Binding(
                             get: { MCPConfigManager.isEnabled(for: client) },

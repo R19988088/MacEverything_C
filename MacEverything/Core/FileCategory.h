@@ -13,6 +13,7 @@ enum class FileCategory : uint8_t {
     Videos,
     Audio,
     Archives,
+    Brushes,
     Count
 };
 
@@ -24,6 +25,7 @@ struct FileCategoryCounts {
     uint64_t videos = 0;
     uint64_t audio = 0;
     uint64_t archives = 0;
+    uint64_t brushes = 0;
 };
 
 namespace me::file_category {
@@ -43,6 +45,10 @@ inline constexpr std::array<std::string_view, 8> audio = {
 
 inline constexpr std::array<std::string_view, 10> archives = {
     "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", "zst", "lz4"
+};
+
+inline constexpr std::array<std::string_view, 9> brushes = {
+    "abr", "tpl", "ssspreset", "brushset", "sut", "mtd", "mtc", "clip", "artstudio_brushes"
 };
 
 inline constexpr std::string_view extensionOf(std::string_view lowerName) {
@@ -75,6 +81,7 @@ inline constexpr bool matches(FileCategory category, uint8_t type,
         case FileCategory::Videos: return contains(videos, ext);
         case FileCategory::Audio: return contains(audio, ext);
         case FileCategory::Archives: return contains(archives, ext);
+        case FileCategory::Brushes: return contains(brushes, ext);
         default: return false;
     }
 }
@@ -88,6 +95,7 @@ inline constexpr void accumulate(FileCategoryCounts& counts, uint8_t type,
     if (matches(FileCategory::Videos, type, lowerName)) ++counts.videos;
     if (matches(FileCategory::Audio, type, lowerName)) ++counts.audio;
     if (matches(FileCategory::Archives, type, lowerName)) ++counts.archives;
+    if (matches(FileCategory::Brushes, type, lowerName)) ++counts.brushes;
 }
 
 } // namespace me::file_category

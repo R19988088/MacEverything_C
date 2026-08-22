@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+content="$root/MacEverything/App/ContentView.swift"
+settings="$root/MacEverything/App/AppSettings.swift"
+text="$root/MacEverything/App/ContentSettingsView.swift"
+
+grep -q 'ForEach(SearchCategory.allCases)' "$content"
+! grep -q 'categoryMenu' "$content"
+grep -q 'enabledCategoryRawValues' "$settings"
+grep -q 'settings.displayTypes' "$text"
+grep -q 'LazyVGrid' "$text"
+grep -q 'SearchCategory.allCases.map' "$settings"
+grep -q '"settings.displayTypes"' "$settings"
+grep -q 'menu.show' "$settings"
+grep -q 'menu.rebuild' "$settings"
+grep -q 'ThemeColor' "$settings"
+grep -q 'settings.theme' "$settings"
+grep -q 'background(Color.clear)' "$root/MacEverything/App/ContentView.swift"
+grep -q 'themeColorHex' "$settings"
+grep -q 'themeSource' "$settings"
+grep -q 'zhongguo-traditional-colors' "$root/MacEverything/App/SettingsView.swift"
+grep -q '"settings.displayTypes"' "$settings"

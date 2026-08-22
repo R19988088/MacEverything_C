@@ -52,6 +52,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) uint64_t videosCount;
 @property (nonatomic, readonly) uint64_t audioCount;
 @property (nonatomic, readonly) uint64_t archivesCount;
+@property (nonatomic, readonly) uint64_t brushesCount;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *applications;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *files;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *folders;
@@ -59,6 +60,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSArray<MEFileResult *> *videos;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *audio;
 @property (nonatomic, readonly) NSArray<MEFileResult *> *archives;
+@property (nonatomic, readonly) NSArray<MEFileResult *> *brushes;
 - (instancetype)initWithCounts:(uint64_t)applicationsCount
                           files:(uint64_t)filesCount
                         folders:(uint64_t)foldersCount
@@ -66,13 +68,15 @@ NS_ASSUME_NONNULL_BEGIN
                          videos:(uint64_t)videosCount
                            audio:(uint64_t)audioCount
                         archives:(uint64_t)archivesCount
+                         brushes:(uint64_t)brushesCount
                     applications:(NSArray<MEFileResult *> *)applications
                            files:(NSArray<MEFileResult *> *)files
                          folders:(NSArray<MEFileResult *> *)folders
                           images:(NSArray<MEFileResult *> *)images
                           videos:(NSArray<MEFileResult *> *)videos
                             audio:(NSArray<MEFileResult *> *)audio
-                         archives:(NSArray<MEFileResult *> *)archives;
+                         archives:(NSArray<MEFileResult *> *)archives
+                         brushes:(NSArray<MEFileResult *> *)brushes;
 @end
 
 /// Bridge between the C++ search engine and Swift/SwiftUI.

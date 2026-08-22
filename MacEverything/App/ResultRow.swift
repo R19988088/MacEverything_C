@@ -66,57 +66,56 @@ struct ResultRow: View, Equatable {
     let onReveal: () -> Void
     let onExcludeFolder: () -> Void
     @State private var isHovered = false
+    @State private var lastTapUptime: TimeInterval = 0
 
     static func == (lhs: ResultRow, rhs: ResultRow) -> Bool {
-        lhs.item == rhs.item && lhs.hints == rhs.hints && lhs.iconScale == rhs.iconScale && lhs.isSelected == rhs.isSelected
+        lhs.item == rhs.item && lhs.hints == rhs.hints && lhs.iconScale == rhs.iconScale && lhs.isSelected == rhs.isSelected && lhs.settings.themeColorRawValue == rhs.settings.themeColorRawValue
     }
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 0) {
-                let highlighted = highlightCrossMatches(
-                    path: item.path, name: item.name, hints: hints,
-                    nameFont: .body, nameColor: .primary,
-                    pathFont: .subheadline, pathColor: .secondary)
+        HStack(spacing: 0) {
+            let highlighted = highlightCrossMatches(
+                path: item.path, name: item.name, hints: hints,
+                nameFont: .body, nameColor: .primary,
+                pathFont: .subheadline, pathColor: .secondary,
+                highlightColor: Color(hex: settings.themeColorHex))
 
-                HStack(spacing: 8) {
-                    fileIcon(for: item)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: iconSize, height: iconSize)
-                    highlighted.nameText.lineLimit(1)
-                }
-                .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
-
-                columnDivider
-                highlighted.pathText
-                    .font(.subheadline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
-
-                columnDivider
-                Text(item.type == 1 && item.size > 0 ? formatSize(item.size) : "—")
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 92, alignment: .trailing)
-
-                columnDivider
-                Text(modifiedDate)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: 178, alignment: .trailing)
+            HStack(spacing: 8) {
+                fileIcon(for: item)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: iconSize, height: iconSize)
+                highlighted.nameText.lineLimit(1)
             }
-            .padding(.vertical, 7)
-            .padding(.horizontal, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? Color.accentColor.opacity(0.24) : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear))
-            )
-            .contentShape(Rectangle())
+            .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+
+            columnDivider
+            highlighted.pathText
+                .font(.subheadline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
+
+            columnDivider
+            Text(item.type == 1 && item.size > 0 ? formatSize(item.size) : "—")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 88, alignment: .leading)
+
+            columnDivider
+            Text(modifiedDate)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: 168, alignment: .leading)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? Color(hex: settings.themeColorHex).opacity(0.24) : (isHovered ? Color(hex: settings.themeColorHex).opacity(0.12) : Color.clear))
+        )
+        .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
         }
@@ -131,8 +130,9 @@ struct ResultRow: View, Equatable {
             let fullPath = item.path + "/" + item.name
             return NSItemProvider(object: NSURL(fileURLWithPath: fullPath))
         }
-        .simultaneousGesture(TapGesture(count: 2).onEnded(onOpen))
+        .onTapGesture(perform: handleTap)
         .accessibilityIdentifier("resultRow")
+        .accessibilityAddTraits(.isButton)
         .accessibilityValue(isSelected ? "selected" : "not-selected")
     }
 
@@ -140,7 +140,7 @@ struct ResultRow: View, Equatable {
         Rectangle()
             .fill(Color.secondary.opacity(0.16))
             .frame(width: 1, height: 24)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 6)
     }
 
     private var modifiedDate: String {
@@ -148,12 +148,23 @@ struct ResultRow: View, Equatable {
         return Self.dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(item.modTime)))
     }
 
+    private func handleTap() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastTapUptime < 0.35 {
+            onOpen()
+            lastTapUptime = 0
+        } else {
+            onSelect()
+            lastTapUptime = now
+        }
+    }
+
     private var iconSize: CGFloat { 24 * iconScale }
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy MM dd HH:mm"
         return formatter
     }()
 

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PermissionView: View {
+    @ObservedObject private var settings = AppSettings.shared
     @State private var hasFullDiskAccess: Bool = true
 
     var body: some View {
@@ -16,10 +17,10 @@ struct PermissionView: View {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundColor(.yellow)
-                Text("Full Disk Access is required to scan all files.")
+                Text(AppText.value("permission.fullDisk", language: settings.language))
                     .font(.caption)
                 Spacer()
-                Button("Open Settings") {
+                Button(AppText.value("permission.openSettings", language: settings.language)) {
                     openPrivacySettings()
                 }
                 .font(.caption)

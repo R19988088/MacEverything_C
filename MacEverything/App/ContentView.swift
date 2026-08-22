@@ -10,7 +10,10 @@ struct ContentView: View {
     @ObservedObject private var settings = AppSettings.shared
     @State private var scrollViewID = 0
     @FocusState private var isSearchFieldFocused: Bool
+    @FocusState private var isResultsFocused: Bool
     @State private var quickLookController: QuickLookController?
+    @State private var copyController: SelectionCopyController?
+    @State private var navigationController: ResultNavigationController?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +27,8 @@ struct ContentView: View {
         .modifier(WindowMaterialBackground())
         .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 640, minHeight: 430)
+        .tint(Color(hex: settings.themeColorHex))
+        .accentColor(Color(hex: settings.themeColorHex))
         .environment(\.locale, settings.language.locale)
         .onReceive(NotificationCenter.default.publisher(for: .rebuildIndex)) { _ in viewModel.rebuildIndex() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -37,18 +42,37 @@ struct ContentView: View {
         .onChange(of: isSearchFieldFocused) { actions.isSearchFieldFocused = isSearchFieldFocused }
         .onAppear {
             let controller = QuickLookController(
-                urlProvider: { [weak actions] in
-                    guard let item = actions?.selected else { return nil }
-                    return URL(fileURLWithPath: item.path).appendingPathComponent(item.name)
-                },
+                itemsProvider: { [weak viewModel] in viewModel?.displayItems ?? [] },
+                selectedIDProvider: { [weak actions] in actions?.selected?.id },
+                onNavigate: { [weak actions] item in actions?.select(item) },
                 canPreview: { [weak actions] in
                     guard let actions else { return false }
                     return actions.selected != nil && !actions.isSearchFieldFocused
                 })
             controller.install()
             quickLookController = controller
+            let navigation = ResultNavigationController { [weak viewModel, weak actions] direction in
+                guard let viewModel, let actions, !actions.isSearchFieldFocused,
+                      !viewModel.isContentSearch else { return }
+                let items = viewModel.displayItems
+                guard !items.isEmpty else { return }
+                let current = actions.selected.flatMap { selected in items.firstIndex(where: { $0.id == selected.id }) } ?? (direction > 0 ? -1 : items.count)
+                let next = min(max(current + direction, 0), items.count - 1)
+                guard next != current else { return }
+                actions.select(items[next])
+            }
+            navigation.install()
+            navigationController = navigation
+            let copyController = SelectionCopyController { [weak actions] in actions?.copySelected() }
+            copyController.install()
+            self.copyController = copyController
         }
-        .onDisappear { quickLookController?.uninstall() }
+        .onDisappear {
+            quickLookController?.uninstall()
+            copyController?.uninstall()
+            navigationController?.uninstall()
+        }
+        .onChange(of: actions.selected?.id) { quickLookController?.selectionDidChange() }
         .alert("", isPresented: Binding(get: { actions.errorMessage != nil }, set: { if !$0 { actions.errorMessage = nil } })) {
             Button("OK") { actions.errorMessage = nil }
         } message: {
@@ -116,11 +140,11 @@ struct ContentView: View {
         .padding(10)
     }
 
+    @ViewBuilder
     private var categoryBar: some View {
         HStack(spacing: 4) {
             ForEach(SearchCategory.allCases) { category in
                 let count = viewModel.categoryCounts[category] ?? 0
-                let disabled = viewModel.isContentSearch && category != .files
                 Button {
                     viewModel.selectedCategory = category
                 } label: {
@@ -132,12 +156,12 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 7)
-                    .background(viewModel.selectedCategory == category ? Color.accentColor.opacity(0.18) : .clear)
+                    .background(viewModel.selectedCategory == category ? Color(hex: settings.themeColorHex).opacity(0.18) : .clear)
                     .clipShape(RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
-                .disabled(disabled)
-                .opacity(disabled ? 0.42 : 1)
+                .disabled((viewModel.isContentSearch && category != .files) || !settings.isCategoryEnabled(category))
+                .opacity(settings.isCategoryEnabled(category) ? 1 : 0.4)
                 .accessibilityIdentifier("category-\(category.titleKey.replacingOccurrences(of: "category.", with: ""))")
             }
         }
@@ -183,13 +207,14 @@ struct ContentView: View {
         } else if viewModel.displayItems.isEmpty && viewModel.scanComplete {
             emptyState(AppText.value("empty.noResults", language: settings.language))
         } else {
+            let highlightHints = viewModel.highlightHints
             VStack(spacing: 0) {
                 resultHeader
                 Divider()
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(viewModel.displayItems) { item in
-                            ResultRow(item: item, hints: viewModel.highlightHints, iconScale: settings.iconScale,
+                            ResultRow(item: item, hints: highlightHints, iconScale: settings.iconScale,
                                       isSelected: actions.selected?.id == item.id,
                                       onSelect: { select(item) },
                                       onOpen: { select(item); actions.openSelected() },
@@ -197,7 +222,6 @@ struct ContentView: View {
                                       onExcludeFolder: { viewModel.excludeFolder(for: item) })
                                 .equatable()
                                 .overlay(alignment: .bottom) { Divider().opacity(0.45) }
-                                .id(item.id)
                         }
                         if viewModel.hasMoreResults {
                             ProgressView().controlSize(.small).padding(8).onAppear { viewModel.loadMore() }
@@ -206,6 +230,12 @@ struct ContentView: View {
                 }
                 .id(scrollViewID)
                 .accessibilityIdentifier("fileResultsList")
+                .focusable(true)
+                .focusEffectDisabled()
+                .focused($isResultsFocused)
+                .onMoveCommand { direction in
+                    moveSelection(direction)
+                }
             }
             .padding(8)
             .background(Color(nsColor: .textBackgroundColor).opacity(0.52))
@@ -238,7 +268,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.bar)
+        .background(Color.clear)
     }
 
     private var iconScaleControl: some View {
@@ -259,7 +289,8 @@ struct ContentView: View {
             Label(AppText.value(key, language: settings.language), systemImage: systemImage)
         }
         .buttonStyle(.bordered)
-        .controlSize(.small)
+        .controlSize(.regular)
+        .frame(minHeight: 36)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.45)
     }
@@ -270,9 +301,9 @@ struct ContentView: View {
             headerDivider
             sortableHeader("result.path", field: .path, minWidth: 180, alignment: .leading)
             headerDivider
-            sortableHeader("result.size", field: .size, width: 92, alignment: .trailing)
+            sortableHeader("result.size", field: .size, width: 88, alignment: .leading)
             headerDivider
-            sortableHeader("result.modified", field: .modified, width: 178, alignment: .trailing)
+            sortableHeader("result.modified", field: .modified, width: 168, alignment: .leading)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
@@ -305,13 +336,25 @@ struct ContentView: View {
         Rectangle()
             .fill(Color.secondary.opacity(0.18))
             .frame(width: 1, height: 16)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 6)
     }
 
     private func select(_ item: FileItem) {
         isSearchFieldFocused = false
+        isResultsFocused = true
         actions.isSearchFieldFocused = false
         actions.select(item)
+    }
+
+    private func moveSelection(_ direction: MoveCommandDirection) {
+        guard !viewModel.displayItems.isEmpty else { return }
+        let delta = direction == .down ? 1 : -1
+        let current = actions.selected.flatMap { selected in
+            viewModel.displayItems.firstIndex(where: { $0.id == selected.id })
+        } ?? (delta > 0 ? -1 : viewModel.displayItems.count)
+        let next = min(max(current + delta, 0), viewModel.displayItems.count - 1)
+        guard next != current else { return }
+        select(viewModel.displayItems[next])
     }
 
     private func contentItem(_ item: ContentFileItem) -> FileItem {
@@ -333,28 +376,95 @@ private struct WindowMaterialBackground: ViewModifier {
 }
 
 final class QuickLookController: NSObject, QLPreviewPanelDataSource {
-    private let urlProvider: () -> URL?
+    private let itemsProvider: () -> [FileItem]
+    private let selectedIDProvider: () -> String?
+    private let onNavigate: (FileItem) -> Void
     private let canPreview: () -> Bool
     private var monitor: Any?
+    private var navigationMonitor: Any?
 
-    init(urlProvider: @escaping () -> URL?, canPreview: @escaping () -> Bool) {
-        self.urlProvider = urlProvider
+    init(itemsProvider: @escaping () -> [FileItem], selectedIDProvider: @escaping () -> String?, onNavigate: @escaping (FileItem) -> Void, canPreview: @escaping () -> Bool) {
+        self.itemsProvider = itemsProvider
+        self.selectedIDProvider = selectedIDProvider
+        self.onNavigate = onNavigate
         self.canPreview = canPreview
     }
 
     func install() {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if let self, self.handleNavigation(event) { return nil }
             guard event.keyCode == 49,
                   event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
-                  let self, self.canPreview(), let url = self.urlProvider() else { return event }
+                  let self, self.canPreview(), !self.itemsProvider().isEmpty else { return event }
             if QLPreviewPanel.shared().isVisible {
                 QLPreviewPanel.shared().orderOut(nil)
                 return nil
             }
             QLPreviewPanel.shared().dataSource = self
             QLPreviewPanel.shared().reloadData()
+            let items = self.itemsProvider()
+            if let selectedID = self.selectedIDProvider(),
+               let index = items.firstIndex(where: { $0.id == selectedID }) {
+                QLPreviewPanel.shared().currentPreviewItemIndex = index
+            }
             QLPreviewPanel.shared().makeKeyAndOrderFront(nil)
-            _ = url
+            return nil
+        }
+    }
+
+    func uninstall() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        if let navigationMonitor { NSEvent.removeMonitor(navigationMonitor) }
+        navigationMonitor = nil
+    }
+
+    private func handleNavigation(_ event: NSEvent) -> Bool {
+        guard QLPreviewPanel.shared().isVisible,
+              event.keyCode == 125 || event.keyCode == 126,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return false }
+        let items = itemsProvider()
+        guard items.count > 1 else { return false }
+        guard let panel = QLPreviewPanel.shared() else { return false }
+        let current = panel.currentPreviewItemIndex >= 0 ? panel.currentPreviewItemIndex : 0
+        let next = event.keyCode == 125
+            ? min(current + 1, items.count - 1)
+            : max(current - 1, 0)
+        guard next != current else { return true }
+        onNavigate(items[next])
+        return true
+    }
+
+    func selectionDidChange() {
+        guard let panel = QLPreviewPanel.shared(), panel.isVisible else { return }
+        let items = itemsProvider()
+        guard let selectedID = selectedIDProvider(),
+              let index = items.firstIndex(where: { $0.id == selectedID }) else { return }
+        panel.reloadData()
+        panel.currentPreviewItemIndex = index
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel) -> Int { itemsProvider().count }
+    func previewPanel(_ panel: QLPreviewPanel, previewItemAt index: Int) -> QLPreviewItem {
+        let item = itemsProvider()[index]
+        return URL(fileURLWithPath: item.path).appendingPathComponent(item.name) as NSURL
+    }
+}
+
+@MainActor
+final class SelectionCopyController {
+    private let copy: () -> Void
+    private var monitor: Any?
+
+    init(copy: @escaping () -> Void) { self.copy = copy }
+
+    func install() {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard event.keyCode == 8, modifiers == .command,
+                  !(event.window?.firstResponder is NSTextView),
+                  !(event.window?.firstResponder is NSTextField) else { return event }
+            self?.copy()
             return nil
         }
     }
@@ -363,9 +473,28 @@ final class QuickLookController: NSObject, QLPreviewPanelDataSource {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
     }
+}
 
-    func numberOfPreviewItems(in panel: QLPreviewPanel) -> Int { urlProvider() == nil ? 0 : 1 }
-    func previewPanel(_ panel: QLPreviewPanel, previewItemAt index: Int) -> QLPreviewItem {
-        urlProvider()! as NSURL
+@MainActor
+final class ResultNavigationController {
+    private let move: (Int) -> Void
+    private var monitor: Any?
+
+    init(move: @escaping (Int) -> Void) { self.move = move }
+
+    func install() {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                  event.keyCode == 125 || event.keyCode == 126,
+                  !(QLPreviewPanel.shared()?.isVisible ?? false) else { return event }
+            self.move(event.keyCode == 125 ? 1 : -1)
+            return nil
+        }
+    }
+
+    func uninstall() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
     }
 }

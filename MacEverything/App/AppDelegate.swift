@@ -7,6 +7,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchAtLoginItem: NSMenuItem?
     private var mcpMenuItems: [MCPClient: NSMenuItem] = [:]
     private(set) var mainSearchWindow: NSWindow?
+    private var currentLanguage: AppLanguage {
+        AppLanguage(rawValue: UserDefaults.standard.string(forKey: "app.language") ?? "") ?? .english
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacSearchBridge.initializeLogger()
@@ -24,7 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 window.titlebarAppearsTransparent = true
                 window.titleVisibility = .hidden
                 window.titlebarSeparatorStyle = .none
-                window.isMovableByWindowBackground = true
+                window.isMovableByWindowBackground = false
             }
             if shouldMinimize {
                 self?.mainSearchWindow?.orderOut(nil)
@@ -65,29 +68,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(NSMenuItem(title: "Show MacEverything", action: #selector(toggleWindow), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: AppText.value("menu.show", language: currentLanguage), action: #selector(toggleWindow), keyEquivalent: ""))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Rebuild Index", action: #selector(rebuildIndex), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: AppText.value("settings.title"), action: #selector(openSettings), keyEquivalent: ","))
-        menu.addItem(NSMenuItem(title: "Search Syntax Help...", action: #selector(openSearchSyntaxHelp), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: AppText.value("settings.title", language: currentLanguage), action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: AppText.value("menu.syntax", language: currentLanguage), action: #selector(openSearchSyntaxHelp), keyEquivalent: ""))
 
-        let mcpSubmenu = NSMenu(title: "MCP Integration")
+        let mcpSubmenu = NSMenu(title: AppText.value("menu.mcp", language: currentLanguage))
         for client in MCPClient.allCases {
             let item = NSMenuItem(title: client.displayName, action: #selector(toggleMCPClient(_:)), keyEquivalent: "")
             item.representedObject = client
             mcpMenuItems[client] = item
             mcpSubmenu.addItem(item)
         }
-        let mcpItem = NSMenuItem(title: "MCP Integration", action: nil, keyEquivalent: "")
+        let mcpItem = NSMenuItem(title: AppText.value("menu.mcp", language: currentLanguage), action: nil, keyEquivalent: "")
         mcpItem.submenu = mcpSubmenu
         menu.addItem(mcpItem)
 
         menu.addItem(.separator())
-        let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        let loginItem = NSMenuItem(title: AppText.value("menu.login", language: currentLanguage), action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchAtLoginItem = loginItem
         menu.addItem(loginItem)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit MacEverything", action: #selector(quitApp), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: AppText.value("menu.quit", language: currentLanguage), action: #selector(quitApp), keyEquivalent: "q"))
         statusItem?.menu = menu
     }
 
@@ -96,8 +98,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         if let item = menu.items.first {
             let isVisible = mainSearchWindow?.isVisible ?? false
-            item.title = isVisible ? "Hide MacEverything" : "Show MacEverything"
+            item.title = AppText.value(isVisible ? "menu.hide" : "menu.show", language: currentLanguage)
         }
+        if menu.items.count > 2 {
+            menu.items[2].title = AppText.value("settings.title", language: currentLanguage)
+            menu.items[3].title = AppText.value("menu.syntax", language: currentLanguage)
+        }
+        if menu.items.count > 6 { menu.items[6].title = AppText.value("menu.login", language: currentLanguage) }
+        if menu.items.count > 8 { menu.items[8].title = AppText.value("menu.quit", language: currentLanguage) }
         launchAtLoginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
         for (client, item) in mcpMenuItems {
             item.state = MCPConfigManager.isEnabled(for: client) ? .on : .off

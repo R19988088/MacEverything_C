@@ -64,16 +64,16 @@
 
 @implementation MEFacetQueryResult
 - (instancetype)initWithCounts:(uint64_t)applicationsCount files:(uint64_t)filesCount folders:(uint64_t)foldersCount images:(uint64_t)imagesCount
-                         videos:(uint64_t)videosCount audio:(uint64_t)audioCount archives:(uint64_t)archivesCount
+                         videos:(uint64_t)videosCount audio:(uint64_t)audioCount archives:(uint64_t)archivesCount brushes:(uint64_t)brushesCount
                     applications:(NSArray<MEFileResult *> *)applications files:(NSArray<MEFileResult *> *)files folders:(NSArray<MEFileResult *> *)folders
                          images:(NSArray<MEFileResult *> *)images videos:(NSArray<MEFileResult *> *)videos
-                           audio:(NSArray<MEFileResult *> *)audio archives:(NSArray<MEFileResult *> *)archives {
+                           audio:(NSArray<MEFileResult *> *)audio archives:(NSArray<MEFileResult *> *)archives brushes:(NSArray<MEFileResult *> *)brushes {
     self = [super init];
     if (self) {
         _applicationsCount = applicationsCount; _filesCount = filesCount; _foldersCount = foldersCount; _imagesCount = imagesCount;
-        _videosCount = videosCount; _audioCount = audioCount; _archivesCount = archivesCount;
+        _videosCount = videosCount; _audioCount = audioCount; _archivesCount = archivesCount; _brushesCount = brushesCount;
         _applications = [applications copy]; _files = [files copy]; _folders = [folders copy]; _images = [images copy];
-        _videos = [videos copy]; _audio = [audio copy]; _archives = [archives copy];
+        _videos = [videos copy]; _audio = [audio copy]; _archives = [archives copy]; _brushes = [brushes copy];
     }
     return self;
 }
@@ -393,10 +393,10 @@
                                               folders:facets.counts.folders
                                                images:facets.counts.images
                                                videos:facets.counts.videos
-                                                 audio:facets.counts.audio
-                                              archives:facets.counts.archives
+                                              audio:facets.counts.audio
+                                              archives:facets.counts.archives brushes:facets.counts.brushes
                                           applications:groups[0] files:groups[1] folders:groups[2]
-                                               images:groups[3] videos:groups[4] audio:groups[5] archives:groups[6]];
+                                               images:groups[3] videos:groups[4] audio:groups[5] archives:groups[6] brushes:groups[7]];
 }
 
 - (NSArray<MEFileResult *> *)queryResults:(NSString *)keyword

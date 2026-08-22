@@ -51,6 +51,7 @@ class SearchOptions: ObservableObject {
 
 struct SearchOptionBadges: View {
     @ObservedObject var options: SearchOptions
+    @ObservedObject private var settings = AppSettings.shared
 
     var body: some View {
         if options.hasActiveOptions {
@@ -65,7 +66,7 @@ struct SearchOptionBadges: View {
                     badge("W", color: .blue) { options.isWholeWord.toggle() }
                 }
                 if options.isMatchFilename {
-                    badge("FN", color: .green) { options.isMatchFilename.toggle() }
+                    badge("FN", color: Color(hex: settings.themeColorHex)) { options.isMatchFilename.toggle() }
                 }
             }
         }
